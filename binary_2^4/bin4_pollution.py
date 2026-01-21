@@ -1,16 +1,12 @@
 import os
 import pyerasure
 import pyerasure.finite_field
+import random
 from icecream import ic
-from operations_bin4.operations_bin4 import inner_product_bytes
+from operations_bin4.operations_bin4 import inner_product_bytes, pollute_packet
 from orthogonal_tag_creator import OrthogonalTagGenerator
 
-def gen_polluted_packet():
-    poll_packet = []
-
-
-    return poll_packet
-
+pollution = True
 
 def main():
     # Field GF(2^4)
@@ -48,12 +44,17 @@ def main():
     # bytearray(1)  ->   x00
     # bytearray([1]) ->  x01
 
-    ic.disable()
-    symbols_bytes = [S1, S2]
+    #testing orthogonality of packets
+    ic(inner_product_bytes(field, S1_orth, S2_orth))
+
+
+
+
+    symbols_bytes = [S1_orth, S2_orth]
 
     symbols = len(symbols_bytes)
     ic(symbols)
-    elements = len(S1)  # 
+    elements = len(S1_orth)  # 
     ic(elements)
 
     encoder = pyerasure.Encoder(field, symbols, elements)
@@ -100,6 +101,14 @@ def main():
     for i, coeffs in enumerate(coeff_list):
         ic(i,coeffs)
         symbol = encoder.encode_symbol(coeffs)        # encode with chosen coeffs
+
+
+        # insert our polluted packet here
+        if i == 1 and pollution:
+            ic("länge des Symbols", len(symbol), pollute_packet(len(symbol)))
+
+            symbol = pollute_packet(len(symbol))
+
         print_packet(coeffs, symbol, f"PACKET {i}")
         ic(symbol)
 
@@ -111,6 +120,8 @@ def main():
 
         # The decoder changes The symbols that you feed him with "decode_symbol()"
         # so if he decodes a symbol it will mutate the symbol you give him
+
+
         ic("before decode", symbol)
         decoder.decode_symbol(symbol, coeffs)         # decode with same coeffs
         print("  decoder rank:", decoder.rank, "\n")
@@ -131,8 +142,6 @@ def main():
 
 # TODO: this implementation is wrong and only works with 1's as data for XORING
 # because we only use the first of 8 bits in the byte and addition is just XOring that
-
-
 
 
 if __name__ == "__main__":

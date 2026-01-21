@@ -1,5 +1,6 @@
 import pyerasure
 import pyerasure.finite_field
+import random
 from icecream import ic
 
 def inner_product_bytes(field:pyerasure.finite_field, x: bytes, y: bytes) -> int:
@@ -15,11 +16,24 @@ def inner_product_bytes(field:pyerasure.finite_field, x: bytes, y: bytes) -> int
 
     return acc
 
-if __name__ == "__main__":
+def pollute_packet(lenght:int) -> bytearray:
+    return bytearray(random.randint(0, 15) for _ in range(lenght))
 
+# TODO: implement data, tag pollution 
+
+
+def test_inner_product():
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[5],[5])) # 5*5 = 2
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[3],[3])) # 3*3 = 5
-    ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[0],[0])) # 5*5 = 2
+    ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[0],[0])) # 0*0 = 0
 
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[17],[17])) # should be an assertion error becasue from pyerasure
+
+
+
+
+if __name__ == "__main__":
+
+    ic(pollute_packet(3))
+
 
