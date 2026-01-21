@@ -1,0 +1,3 @@
+galois==0.4.10
+icecream==2.1.9
+pyerasure==1.3.0
