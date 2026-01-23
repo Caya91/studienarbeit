@@ -7,7 +7,7 @@ MIN_INT = 0
 MAX_INT = 15
 
 def inner_product_bytes(field:pyerasure.finite_field, x: bytes, y: bytes) -> int:
-    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^8) using PyErasure vector ops."""
+    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^4) using PyErasure vector ops."""
     assert len(x) == len(y)
     acc = 0
     tmp = bytearray(1)

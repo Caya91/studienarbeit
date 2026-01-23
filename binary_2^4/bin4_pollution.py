@@ -17,12 +17,12 @@ class Pollution(Enum):
     DATA = 1
     TAG = 2
 
-pollution = False
-poll_enum: Pollution = Pollution.TAG
+pollution = True
+poll_enum: Pollution = Pollution.DATA
 
 print_packets = True   # Print accepted packets yes or no
 
-NUM_TRIALS = 10
+NUM_TRIALS = 1000
 
 
 
@@ -351,13 +351,18 @@ def random_data():
         inner_product_bytes(field,P2,P2) == 0
     )
 
+
+    # Pakete die den Edge case haben, das ihr self tag 0 ist
+    # werden hier akzeptier
+    # TODO: noch generalisierne für mehr Pakete und allgemeine Längen von Paketen
     t11 = S1_orth[data_len]
 
     if t11 == 0 and not accept:
         accept = True
-        print("EDGE CASE: t11 was 0")
-        print_ints(S1_orth)
-        print_ints(S2_orth)
+        if print_packets:
+            print("EDGE CASE: t11 was 0")
+            print_ints(S1_orth)
+            print_ints(S2_orth)
 
 
 

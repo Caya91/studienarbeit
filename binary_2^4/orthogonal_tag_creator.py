@@ -5,6 +5,8 @@ from icecream import ic
 from operations_bin4.operations_bin4 import inner_product_bytes, print_ints
 from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
 
+verbose = False
+
 
 field = pyerasure.finite_field.Binary4()
 
@@ -38,7 +40,6 @@ class OrthogonalTagGenerator:
 
         t2 = self.square_to_root.get(d, None)
         if t2 is not None:
-            ic(t2)
             return t2
         
         # Rare fallback: try next t1
@@ -58,6 +59,11 @@ class OrthogonalTagGenerator:
         assert t1 <= self.field.max_value
 
         # falls der Tag des anderen Packets 0 ist -> wähle einen Tag random aus
+        ic.disable()
+        if verbose:
+            ic.enable()
+            
+        
         if t1 == 0:
             return random.randint(0, field.max_value)
         ic(self.mul_table[t1])
@@ -324,6 +330,37 @@ def failed_test_case():
     return
 
 
+def generate_examples(data_len:int):
+
+    tag_gen = OrthogonalTagGenerator(field)
+
+    data = [random.randint(0, 15) for _ in range(data_len)]
+
+    S1= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
+    S2= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
+    
+    t11 = tag_gen.generate_tag(inner_product_bytes(field, S1,S1))
+
+    S1[data_len] = t11
+
+    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes(field,S1,S2))
+
+    S2[data_len] = t21
+
+    t22 = tag_gen.generate_tag(inner_product_bytes(field,S2,S2))
+
+    S2[data_len+1] = t22
+    print_ints(S1)
+    print_ints(S2)
+
+    ic(
+        inner_product_bytes(field,S1,S1),
+        inner_product_bytes(field,S1,S2),
+        inner_product_bytes(field,S2,S2)
+       )
+
+
+
 if __name__ == "__main__":
     #test_orthogonalgenerator()
     #test_cross_generation()
@@ -331,8 +368,7 @@ if __name__ == "__main__":
     #test_failed_packets()
     #failed_test_case()
 
-
-    test_case_2()
+    generate_examples(3)
 
     '''
     generator=OrthogonalTagGenerator(field)
