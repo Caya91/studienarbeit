@@ -5,7 +5,7 @@ from icecream import ic
 from operations_bin4.operations_bin4 import inner_product_bytes, print_ints
 from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
 
-verbose = False
+verbose = True
 
 
 field = pyerasure.finite_field.Binary4()
@@ -368,7 +368,7 @@ if __name__ == "__main__":
     #test_failed_packets()
     #failed_test_case()
 
-    generate_examples(3)
+    #generate_examples(3)
 
     '''
     generator=OrthogonalTagGenerator(field)

@@ -1,6 +1,6 @@
 import os
 import pyerasure
-#import pyerasure.finite_field
+import pyerasure.finite_field
 from icecream import ic
 
 def inner_product_bytes(field, x: bytes, y: bytes) -> int:
