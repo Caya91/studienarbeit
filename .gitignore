@@ -11,3 +11,9 @@ __pycache__/
 *$py.class
 
 structure.txt
+
+
+pyproject.toml
+__init__.py
+binary_2pow4.egg-info
+src

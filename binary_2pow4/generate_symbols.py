@@ -97,12 +97,73 @@ def generate_all_tags(generation:list[bytearray]):
     return new_symbols
 
 
-def test_orth_generation(generation:list[bytearray]):
-    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
-    for packet in generation:
-        for p in generation:
-            assert inner_product_bytes(field,packet,p) == 0
+def test_orth_fixed(generation:list[bytearray]) -> bool:
+    '''
+    in diesem Test versuche ich den die Ausnahme aus dem orthogonalitätstest herauszufiltern
+    TODO: das letzte Paket braucht diese Regel nicht
+    '''
 
+    gen_size = len(generation)
+    data_len = len(generation[0]) - gen_size
+
+    failures = []
+    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
+    ic()
+    ic(generation)
+    for p in generation:
+        print_ints(p)
+
+    # filter the 0 self orthogonal packets
+
+    new_gen = []
+    for i in range(gen_size):
+        ic(generation[i][data_len + i], i , data_len + i,gen_size)
+        if i == (gen_size - 1): # last packet doesnt need this check
+            new_gen.append(generation[i])
+            continue
+        if not generation[i][data_len + i] == 0:
+            new_gen.append(generation[i])
+
+    print("NEW Generation")
+    for p in new_gen:
+        print_ints(p)   
+    
+
+    for i, packet in enumerate(new_gen):
+        for j, p in enumerate(new_gen):
+            prod = inner_product_bytes(field, packet, p)
+            if prod != 0:
+                failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
+    if failures:
+        raise AssertionError("\n".join(failures))
+    
+    print("All pairs orthogonal!")  # Success message
+    
+    ic(failures)
+
+    return True
+
+
+def test_orth_generation(generation:list[bytearray]) -> bool:
+    failures = []
+    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
+    ic()
+    ic(generation)
+    for p in generation:
+        print_ints(p)
+
+
+    for i, packet in enumerate(generation):
+        for j, p in enumerate(generation):
+            prod = inner_product_bytes(field, packet, p)
+            if prod != 0:
+                failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
+    if failures:
+        raise AssertionError("\n".join(failures))
+    
+    print("All pairs orthogonal!")  # Success message
+    
+    ic(failures)
     return True
 
 def test_1():
@@ -135,10 +196,56 @@ def test_2():
 
     return 
 
+
+
+
+def gen_failed_generation():
+    '''# this is our specific case where the tag is generated as 0, which then makes other packets unable to create a corresponding tag for  <p1,p2>= 0
+    '''
+    S1 = bytearray([5, 15, 10, 0, 0, 0, 0, 0])
+    S2 = bytearray([6, 2, 2, 9, 15, 0, 0, 0])
+    S3 = bytearray([5, 13, 0, 5, 1, 12, 0, 0])
+    S4 = bytearray([3, 8, 5, 5, 12, 13, 10, 0])
+    S5 = bytearray([15, 2, 3, 8, 3, 7, 11, 9])
+
+    gen = [S1,S2,S3,S4,S5]
+
+
+    ic(gen, len(gen))
+
+    return test_orth_fixed(gen)
+    return test_orth_generation(gen)
+
+
+
+
+
+
 if __name__ == "__main__":
     # test_1()
 
-    test_2()
+    #test_2()
+    
+    ic(gen_failed_generation())
+    
+    
+    
+    
+    
+    
+    '''failed_gen = []
+    for i in range(100):
+        gen = generate_symbols_random(3,5)
+
+        tagged_gen = generate_all_tags(gen)
+
+        if not test_orth_generation(tagged_gen):
+            failed_gen = tagged_gen
+            ic(failed_gen)
+            break
+'''
+
+
 
     '''
     symbols = generate_symbols_random(3,3)
