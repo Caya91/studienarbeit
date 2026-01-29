@@ -5,7 +5,7 @@ from icecream import ic
 from operations_bin4.operations_bin4 import inner_product_bytes, print_ints
 from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
 
-verbose = True
+verbose = False
 
 
 field = pyerasure.finite_field.Binary4()
@@ -43,7 +43,7 @@ class OrthogonalTagGenerator:
             return t2
         
         # Rare fallback: try next t1
-        ic("t2 should not be none", t2)
+        #ic("t2 should not be none", t2)
         return None # self.tags(d)  # Recurse (very rare
     
 

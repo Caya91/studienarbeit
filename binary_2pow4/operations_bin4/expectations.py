@@ -98,12 +98,22 @@ def test_prob(data_len:int):
 
     return accept
 
+'''
+def test_gen(generation:list[bytearray]) -> bool:
+
+    accept = (
+        inner_product_bytes(field,S1,S1) == 0
+        and inner_product_bytes(field,S1,S2_poll) == 0
+        and inner_product_bytes(field,S2_poll,S2_poll) == 0
+    )
+'''
+
 
 def monte_carlo_test():
     accepts = []
 
     for trial in range(NUM_TRIALS):
-        accepts.append(test_prob(DATA_FIELDS))
+        accepts.append(test_orth_fixed(DATA_FIELDS))
 
     ic.enable()
     prob = statistics.mean(accepts)

@@ -53,10 +53,10 @@ def generate_symbols_random(data_len:int, gen_size:int) -> list:
         symbols.append(symbol)
 
     #ic(len(symbols),symbols)
-
+    '''
     for symbol in symbols:
         print_ints(symbol)
-
+    '''
     return symbols
 
 # TODO: implement complete generation of all tags in one function
@@ -70,17 +70,17 @@ def generate_all_tags(generation:list[bytearray]):
 
     i = data_len
 
-    ic(generation)
+    #ic(generation)
 
     for count, symbol in enumerate(generation):
-        ic("OUTER LOOP", i, count, symbol)
+        #ic("OUTER LOOP", i, count, symbol)
 
         i = data_len + 1
 
         new_symbol = symbol.copy()
         for tag_nr in range(count + 1):
 
-            ic("INNER LOOP", tag_nr, count)
+            #ic("INNER LOOP", tag_nr, count)
             if tag_nr == count: # if the tag_nr and the count is the same, we calculate our own inner product, to make packet self orthogonal
                 tag = tag_gen.generate_tag(inner_product_bytes(field, new_symbol, new_symbol))
                 new_symbol[data_len + tag_nr] = tag
@@ -108,26 +108,30 @@ def test_orth_fixed(generation:list[bytearray]) -> bool:
 
     failures = []
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
+    
+    # auskommentiert für notebook use
+    '''
     ic()
     ic(generation)
     for p in generation:
         print_ints(p)
-
+    '''
     # filter the 0 self orthogonal packets
 
     new_gen = []
     for i in range(gen_size):
-        ic(generation[i][data_len + i], i , data_len + i,gen_size)
+        #ic(generation[i][data_len + i], i , data_len + i,gen_size)
         if i == (gen_size - 1): # last packet doesnt need this check
             new_gen.append(generation[i])
             continue
         if not generation[i][data_len + i] == 0:
             new_gen.append(generation[i])
 
+    '''
     print("NEW Generation")
     for p in new_gen:
         print_ints(p)   
-    
+    '''
 
     for i, packet in enumerate(new_gen):
         for j, p in enumerate(new_gen):
@@ -137,7 +141,8 @@ def test_orth_fixed(generation:list[bytearray]) -> bool:
     if failures:
         raise AssertionError("\n".join(failures))
     
-    print("All pairs orthogonal!")  # Success message
+    
+    # print("All pairs orthogonal!")  # Success message
     
     ic(failures)
 
@@ -147,11 +152,13 @@ def test_orth_fixed(generation:list[bytearray]) -> bool:
 def test_orth_generation(generation:list[bytearray]) -> bool:
     failures = []
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
+    
+    '''
     ic()
     ic(generation)
     for p in generation:
         print_ints(p)
-
+    ''' 
 
     for i, packet in enumerate(generation):
         for j, p in enumerate(generation):
@@ -159,11 +166,13 @@ def test_orth_generation(generation:list[bytearray]) -> bool:
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
     if failures:
-        raise AssertionError("\n".join(failures))
+        print("\n".join(failures))
+        # raise AssertionError("\n".join(failures))
     
     print("All pairs orthogonal!")  # Success message
-    
-    ic(failures)
+    if failures:
+        return False
+    #ic(failures)
     return True
 
 def test_1():
