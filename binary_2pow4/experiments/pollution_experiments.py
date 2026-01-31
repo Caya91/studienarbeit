@@ -1,28 +1,23 @@
-import os
 import pyerasure
-import pyerasure.finite_field
-import random
 from icecream import ic
-from operations_bin4 import inner_product_bytes, pollute_packet, pollute_data_packet, pollute_tags_packet
-
-from operations_bin4 import MIN_INT, MAX_INT
-from operations_bin4 import print_ints
-
-from orthogonal_tag_creator import OrthogonalTagGenerator
-from enum import Enum
+import random
 import statistics
 
-class Pollution(Enum):
-    ALL = 0
-    DATA = 1
-    TAG = 2
+from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
+from binary_2pow4.operations_bin4 import inner_product_bytes, print_ints, MIN_INT, MAX_INT
 
+from binary_2pow4.pollution import Pollution, pollute_data_packet, pollute_tags_packet, pollute_full_packet
+
+
+# TODO:  diese durch Funktionsargumente austauschen
 pollution = True
 poll_enum: Pollution = Pollution.DATA
 
 print_packets = False   # Print accepted packets yes or no
 
 NUM_TRIALS = 1000
+
+
 
 
 def static_data():
@@ -129,7 +124,7 @@ def static_data():
         # insert our polluted packet here for packet 2 atm. will be changed down the line
         if i == 1 and pollution:
             match poll_enum:
-                case Pollution.ALL: symbol = pollute_packet(symbol)
+                case Pollution.ALL: symbol = pollute_full_packet(symbol)
                 case Pollution.DATA : symbol = pollute_data_packet(data_len, symbol)
                 case Pollution.TAG : symbol = pollute_tags_packet(data_len, symbol)
                 case _: print("no matching Pollution", poll_enum)
@@ -301,7 +296,7 @@ def random_data():
         # insert our polluted packet here for packet 2 atm. will be changed down the line
         if i == 1 and pollution:
             match poll_enum:
-                case Pollution.ALL: symbol = pollute_packet(symbol)
+                case Pollution.ALL: symbol = pollute_full_packet(symbol)
                 case Pollution.DATA : symbol = pollute_data_packet(data_len, symbol)
                 case Pollution.TAG : symbol = pollute_tags_packet(data_len, symbol)
                 case _: print("no matching Pollution", poll_enum)

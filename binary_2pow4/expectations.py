@@ -3,21 +3,8 @@ import pyerasure.finite_field
 import random
 import statistics
 from icecream import ic
-from operations_bin4 import inner_product_bytes, print_ints
-from operations_bin4 import MIN_INT, MAX_INT
-from operations_bin4 import pollute_packet, pollute_data_packet, pollute_tags_packet
-from generate_symbols import generate_symbols_random, generate_all_tags, test_orth_fixed, test_orth_generation
-
 
 field = pyerasure.finite_field.Binary4()
-
-
-DATA_FIELDS = 5
-GEN_SIZE = 5
-
-NUM_TRIALS = 10000
-
-accepted_packets = set()
 
 
 def write_to_file(text):
@@ -27,113 +14,12 @@ def write_to_file(text):
 
 #ic.configureOutput(outputFunction=write_to_file)
 
+# TODO: implement functions for estimating
+# 1. probability of polluted packet to be accepted
+# 2. probability of generating a packet with inner product 0
+# 3. 
 
 
-def probability():
-    
-    return 
-
-
-def test_prob(data_len:int):
-    ic.disable()
-
-    S1 = []
-    S2 = []
-
-
-    if data_len == 2:
-        S1 = bytearray([13, 14, 3, 0])
-        S2 = bytearray([5, 3, 10, 12])
-
-    elif data_len == 3:
-        S1 = bytearray([9, 15, 3, 5, 0])
-        S2 =bytearray([15, 3, 10, 11, 13])
-
-
-    assert len(S1) > 0
-
-    ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2),
-        inner_product_bytes(field,S2,S2)
-       )
-
-    #add random data pollution here
-
-    #print_ints(S2)
-    S2_poll = pollute_data_packet(data_len, S2)
-
-    ic("check S2 and S2_ poll, S2 should not be mutated by pollution")
-    #print_ints(S2)
-    #print_ints(S2_poll)
-
-    # check acceptance
-    ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2_poll),
-        inner_product_bytes(field,S2_poll,S2_poll)
-       )
-
-    accept = (
-        inner_product_bytes(field,S1,S1) == 0
-        and inner_product_bytes(field,S1,S2_poll) == 0
-        and inner_product_bytes(field,S2_poll,S2_poll) == 0
-    )
-
-    ic.enable()
-    if accept :
-
-        accepted_packets.add(tuple(S2_poll))
-
-        ic()
-        ic(list(S1))
-        ic(list(S2_poll))
-
-        ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2_poll),
-        inner_product_bytes(field,S2_poll,S2_poll)
-       )
-
-        
-    ic.disable()
-
-
-    return accept
-
-'''
-def test_gen(generation:list[bytearray]) -> bool:
-
-    accept = (
-        inner_product_bytes(field,S1,S1) == 0
-        and inner_product_bytes(field,S1,S2_poll) == 0
-        and inner_product_bytes(field,S2_poll,S2_poll) == 0
-    )
-'''
-
-
-def monte_carlo_test():
-    accepts = []
-
-    ic(NUM_TRIALS, DATA_FIELDS, GEN_SIZE)
-    for trial in range(NUM_TRIALS):
-        generation = generate_symbols_random(DATA_FIELDS,GEN_SIZE)
-        tagged_gen = generate_all_tags(generation)
-        accepts.append(test_orth_fixed(tagged_gen))
-
-    ic.enable()
-    prob = statistics.mean(accepts)
-    std = statistics.stdev(accepts) / (NUM_TRIALS ** 0.5) if len(accepts) > 1 else 0
-
-    total_accepted = accepts.count(1)
-    ic(total_accepted)
-    #ic(accepts)
-    ic(prob,std)
-
-    ic.disable()
-    print(f"Acceptance probability: {prob:.6f} ± {std:.6f} over {NUM_TRIALS} trials")
-
-    return prob, std
 
 
 def calculate_prob_data_pollution(gen_size, data_len):
@@ -191,7 +77,7 @@ if __name__ == "__main__":
     #ic.enable()
     #ic(len(accepted_packets), accepted_packets)
     #ic(calculate_prob_data_pollution(GEN_SIZE, DATA_FIELDS))
-    ic(monte_carlo_test())
+    #ic(monte_carlo_test())
     
     
     

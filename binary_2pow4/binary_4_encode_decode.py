@@ -3,19 +3,7 @@ import pyerasure
 import pyerasure.finite_field
 from icecream import ic
 
-def inner_product_bytes(field, x: bytes, y: bytes) -> int:
-    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^8) using PyErasure vector ops."""
-    assert len(x) == len(y)
-    acc = 0
-    tmp = bytearray(1)
-
-    for a, b in zip(x, y):
-        tmp[0] = a
-        field.vector_multiply_into(tmp, b)  # tmp[0] = a·b
-        acc = field.add(acc, tmp[0])        # acc += a·b
-
-    return acc
-
+from binary_2pow4.operations_bin4 import inner_product_bytes
 
 def main():
     # Field GF(2^4)
