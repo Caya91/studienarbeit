@@ -3,10 +3,10 @@ import pyerasure
 import pyerasure.finite_field
 import random
 from icecream import ic
-from operations_bin4.operations_bin4 import inner_product_bytes, pollute_packet, pollute_data_packet, pollute_tags_packet
+from operations_bin4 import inner_product_bytes, pollute_packet, pollute_data_packet, pollute_tags_packet
 
-from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
-from operations_bin4.operations_bin4 import print_ints
+from operations_bin4 import MIN_INT, MAX_INT
+from operations_bin4 import print_ints
 
 from orthogonal_tag_creator import OrthogonalTagGenerator
 from enum import Enum
@@ -20,10 +20,9 @@ class Pollution(Enum):
 pollution = True
 poll_enum: Pollution = Pollution.DATA
 
-print_packets = True   # Print accepted packets yes or no
+print_packets = False   # Print accepted packets yes or no
 
 NUM_TRIALS = 1000
-
 
 
 def static_data():

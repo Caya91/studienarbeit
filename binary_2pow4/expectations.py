@@ -6,13 +6,16 @@ from icecream import ic
 from operations_bin4 import inner_product_bytes, print_ints
 from operations_bin4 import MIN_INT, MAX_INT
 from operations_bin4 import pollute_packet, pollute_data_packet, pollute_tags_packet
+from generate_symbols import generate_symbols_random, generate_all_tags, test_orth_fixed, test_orth_generation
 
 
 field = pyerasure.finite_field.Binary4()
 
 
-DATA_FIELDS = 3
-NUM_TRIALS = 100000
+DATA_FIELDS = 5
+GEN_SIZE = 5
+
+NUM_TRIALS = 10000
 
 accepted_packets = set()
 
@@ -112,8 +115,11 @@ def test_gen(generation:list[bytearray]) -> bool:
 def monte_carlo_test():
     accepts = []
 
+    ic(NUM_TRIALS, DATA_FIELDS, GEN_SIZE)
     for trial in range(NUM_TRIALS):
-        accepts.append(test_orth_fixed(DATA_FIELDS))
+        generation = generate_symbols_random(DATA_FIELDS,GEN_SIZE)
+        tagged_gen = generate_all_tags(generation)
+        accepts.append(test_orth_fixed(tagged_gen))
 
     ic.enable()
     prob = statistics.mean(accepts)
@@ -127,12 +133,12 @@ def monte_carlo_test():
     ic.disable()
     print(f"Acceptance probability: {prob:.6f} ± {std:.6f} over {NUM_TRIALS} trials")
 
-    return
+    return prob, std
 
 
-def calculate_prob(gen_size, data_len):
+def calculate_prob_data_pollution(gen_size, data_len):
     '''
-    returns the probability of a single polluted packet 
+    returns the probability of a single data polluted packet 
     to be accepted
     dof : degrees of freedom
     dof = data_len - constraints
@@ -146,8 +152,7 @@ def calculate_prob(gen_size, data_len):
     # calculate the theoretical probability and compare to measured one
     
     # pro extra paket in der generation benötigen wir einen Tag
-    # Jeder Tag erfüllt einen constraint
-    tags_len = gen_size  
+    # Jeder Tag erfüllt einen constraint 
 
 
     field_size = field.max_value + 1 
@@ -155,7 +160,7 @@ def calculate_prob(gen_size, data_len):
 
     # for only data pollution mutable fields is the len(data_fields)or data_len
     # for whole packet its len(packet)
-    mutable_fields = data_len
+
 
     # for p1 its 1   <p1,p1> = 0
     # for p2 its 2   <p2,p1> = 0   and <p2,p2> = 0 
@@ -163,19 +168,18 @@ def calculate_prob(gen_size, data_len):
     # its equal to the number of packets we collect or the generation
     # that is if we only pollute one packet of the whole generation
     # so for gen = 5, should -> constraints = 5
+    ic(data_len, gen_size)
+    dof = data_len - gen_size
 
-    constraints = gen_size
-
-    dof = mutable_fields - constraints
-
-
-    prob = (field_size**dof)/ (field_size**mutable_fields )
+    ic(field_size)
+    ic(field_size**dof, field_size**data_len)
+    prob = ic((field_size**dof)/ (field_size**data_len ))
 
 
     # we need atleast as many mutable fields as constraints or pollution is
     # not possible. But that should always be the case, since we send more data
     # than tags probably
-    if mutable_fields < constraints:
+    if data_len < gen_size:
         prob = 0
 
     return prob
@@ -186,8 +190,13 @@ if __name__ == "__main__":
 
     #ic.enable()
     #ic(len(accepted_packets), accepted_packets)
-
+    #ic(calculate_prob_data_pollution(GEN_SIZE, DATA_FIELDS))
+    ic(monte_carlo_test())
     
+    
+    
+    '''
     for i in range(1,6): # generation (no 0)
         for j in range(1,7): # number of data fields
             ic(f"probability for generation of {i} and data_fields of {j}:",calculate_prob(i,j))
+    '''

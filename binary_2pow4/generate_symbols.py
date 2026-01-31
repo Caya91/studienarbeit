@@ -2,9 +2,11 @@ import pyerasure
 import pyerasure.finite_field
 import random
 from icecream import ic
-from operations_bin4.operations_bin4 import inner_product_bytes, print_ints
-from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
+from operations_bin4 import inner_product_bytes, print_ints
+from operations_bin4 import MIN_INT, MAX_INT
 from orthogonal_tag_creator import OrthogonalTagGenerator
+
+verbose = False
 
 
 field = pyerasure.finite_field.Binary4()
@@ -151,6 +153,7 @@ def test_orth_fixed(generation:list[bytearray]) -> bool:
 
 def test_orth_generation(generation:list[bytearray]) -> bool:
     failures = []
+
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
     
     '''
@@ -165,11 +168,14 @@ def test_orth_generation(generation:list[bytearray]) -> bool:
             prod = inner_product_bytes(field, packet, p)
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
-    if failures:
+    
+    if failures and verbose:
         print("\n".join(failures))
         # raise AssertionError("\n".join(failures))
     
-    print("All pairs orthogonal!")  # Success message
+    if not failures and verbose:
+        print("All pairs orthogonal!")  # Success message
+        
     if failures:
         return False
     #ic(failures)
@@ -236,8 +242,7 @@ if __name__ == "__main__":
     #test_2()
     
     ic(gen_failed_generation())
-    
-    
+
     
     
     

@@ -2,8 +2,8 @@ import pyerasure
 import pyerasure.finite_field
 import random
 from icecream import ic
-from operations_bin4.operations_bin4 import inner_product_bytes, print_ints
-from operations_bin4.operations_bin4 import MIN_INT, MAX_INT
+from operations_bin4 import inner_product_bytes, print_ints
+from operations_bin4 import MIN_INT, MAX_INT
 
 verbose = False
 
