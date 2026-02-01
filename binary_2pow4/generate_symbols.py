@@ -1,11 +1,22 @@
 import pyerasure
 import pyerasure.finite_field
 import random
+import os
 
 from icecream import ic
 from binary_2pow4.operations_bin4 import inner_product_bytes, print_ints
 from binary_2pow4.operations_bin4 import MIN_INT, MAX_INT
 from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
+
+
+
+import pathlib
+from typing import Iterable
+
+LOG_PATH = pathlib.Path(os.getenv("LOG_FOLDER"))
+LOG_FILE = LOG_PATH / "orth_failures.log"
+bad_packets: set[tuple[int, ...]] = set()
+
 
 verbose = False
 
@@ -132,8 +143,9 @@ def check_orth(generation:list[bytearray]) -> bool:
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
     
-    if failures and verbose:
-        print("\n".join(failures))
+    if failures:
+        #print("\n".join(failures))
+        log_failed_generation(generation, failures)
         # raise AssertionError("\n".join(failures))
     
     if not failures and verbose:
@@ -145,11 +157,20 @@ def check_orth(generation:list[bytearray]) -> bool:
     return True
 
 
+def log_failed_generation(generation: list[bytearray], failures: Iterable[str], log_file: pathlib.Path = LOG_FILE) -> None:
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("=== Non-orthogonal generation ===\n")
+        for line in failures:
+            f.write(line + "\n")
+        f.write("Packets:\n")
+        for idx, pkt in enumerate(generation):
+            f.write(f"  [{idx}] {list(pkt)}\n")
+        f.write("\n")
+
+
 if __name__ == "__main__":
     print("hi")
-    
-    
-    
+
     
     '''failed_gen = []
     for i in range(100):

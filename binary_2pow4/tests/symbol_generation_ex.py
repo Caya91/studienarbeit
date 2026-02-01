@@ -1,8 +1,11 @@
 import os
 
+from pyerasure import finite_field
+
 from binary_2pow4.operations_bin4 import *
 from binary_2pow4.generate_symbols import *
 
+field = pyerasure.finite_field.Binary4()
 
 
 def test_1():
@@ -19,10 +22,13 @@ def test_1():
 
 def test_2():
 
+    tag_gen = OrthogonalTagGenerator(field)
+
+
     for d_num in range(2,5):
         for q_num in range(2,5):
                 symbols = generate_symbols_random(d_num,q_num)
-                result = generate_all_tags(symbols)
+                result = tag_gen.generate_all_tags(symbols)
 
                 for symbol in symbols:
                     print_ints(symbol)

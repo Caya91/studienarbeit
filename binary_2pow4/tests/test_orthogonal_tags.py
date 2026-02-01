@@ -1,5 +1,5 @@
 from  binary_2pow4.orthogonal_tag_creator import *
-from binary_2pow4.operations_bin4 import MIN_INT, MAX_INT
+from binary_2pow4.operations_bin4 import MIN_INT, MAX_INT, print_ints
 
 
 def test_orthogonalgenerator():
