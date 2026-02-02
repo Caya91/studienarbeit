@@ -115,6 +115,66 @@ class OrthogonalTagGenerator:
 
         return new_symbols
 
+    def generate_all_tags_with_swap(self, generation: list[bytearray]) -> list[bytearray]:
+        '''
+        Like generate_all_tags, but whenever a packet would get self-tag == 0,
+        swap it with a random later packet that has not been processed yet (if any).
+        '''
+        gen_size = len(generation)
+        data_len = len(generation[0]) - gen_size
+
+        # Work on a local copy of the generation so we can reorder safely
+        work_gen = [g.copy() for g in generation]
+        new_symbols: list[bytearray] = []
+
+        for count in range(gen_size):
+            # If this is not the last packet, and we detect self-tag 0, try swapping
+            # Pick current symbol
+            symbol = work_gen[count]
+            new_symbol = symbol.copy()
+
+            # First, generate all cross-tags to already processed packets
+            for tag_nr in range(count):
+                corresponding_packet = new_symbols[tag_nr]
+                tag = self.generate_tag_cross(
+                    corresponding_packet[data_len + tag_nr],
+                    inner_product_bytes(field, new_symbol, corresponding_packet),
+                )
+                new_symbol[data_len + tag_nr] = tag
+
+            # Now compute self-tag
+            self_tag = self.generate_tag(inner_product_bytes(field, new_symbol, new_symbol))
+
+            # If self-tag is 0 and there are remaining unused packets, swap with a random one
+            if self_tag == 0 and count < gen_size - 1:
+                # choose a random index from the remaining packets [count+1, gen_size)
+                swap_idx = random.randrange(count + 1, gen_size)
+                # swap packets in work_gen
+                work_gen[count], work_gen[swap_idx] = work_gen[swap_idx], work_gen[count]
+
+                # re-start this iteration with the swapped-in packet
+                symbol = work_gen[count]
+                new_symbol = symbol.copy()
+
+                # re-generate cross-tags for already processed packets
+                for tag_nr in range(count):
+                    corresponding_packet = new_symbols[tag_nr]
+                    tag = self.generate_tag_cross(
+                        corresponding_packet[data_len + tag_nr],
+                        inner_product_bytes(field, new_symbol, corresponding_packet),
+                    )
+                    new_symbol[data_len + tag_nr] = tag
+
+                # recompute self-tag (hope it is non-zero now)
+                self_tag = self.generate_tag(inner_product_bytes(field, new_symbol, new_symbol))
+
+            # write (possibly still 0) self-tag and store packet
+            new_symbol[data_len + count] = self_tag
+            new_symbols.append(new_symbol)
+
+        return new_symbols
+
+
 
 ## TESTING
 

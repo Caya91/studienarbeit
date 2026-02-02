@@ -1,6 +1,8 @@
 from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator, field
 
-from binary_2pow4.generate_symbols import generate_symbols_random, check_orth
+from binary_2pow4.generate_symbols import generate_symbols_random, check_orth, LOG_FILE
+
+from binary_2pow4.log_utils import clear_logs
 
 from icecream import ic
 import statistics
@@ -14,9 +16,13 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 
     ic(num_trials, data_fields, gen_size)
+    open(LOG_FILE, "w").close()
     for trial in range(num_trials):
         generation = generate_symbols_random(data_fields,gen_size)
         tagged_gen = tag_gen.generate_all_tags(generation)
+
+        # clear logfile
+        
         accepts.append(check_orth(tagged_gen))
 
     ic.enable()
@@ -26,7 +32,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     total_accepted = accepts.count(1)
     ic(total_accepted)
     #ic(accepts)
-    ic(prob,std)
+    ic(prob,std, 1-prob)
 
     ic.disable()
     print(f"Acceptance probability: {prob:.6f} ± {std:.6f} over {num_trials} trials")
@@ -35,4 +41,5 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 
 if __name__ == "__main__":
-        ic(monte_carlo_test(10000, 3,3))
+    clear_logs()
+    ic(monte_carlo_test(10000, 3,8))
