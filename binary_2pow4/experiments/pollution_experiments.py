@@ -4,9 +4,11 @@ import random
 import statistics
 
 from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
-from binary_2pow4.operations_bin4 import inner_product_bytes, print_ints, MIN_INT, MAX_INT
 
-from binary_2pow4.pollution import Pollution, pollute_data_packet, pollute_tags_packet, pollute_full_packet
+from binary_2pow4.operations_bin4 import inner_product_bytes_bin4, print_ints
+from binary_2pow4.config import field, MIN_INT, MAX_INT
+
+from binary_2pow4.pollution import Pollution, pollute_data_packet_bin4, pollute_tags_packet_bin4, pollute_full_packet_bin4
 
 
 # TODO:  diese durch Funktionsargumente austauschen
@@ -16,7 +18,6 @@ poll_enum: Pollution = Pollution.DATA
 print_packets = False   # Print accepted packets yes or no
 
 NUM_TRIALS = 1000
-
 
 
 
@@ -37,19 +38,19 @@ def static_data():
     #generate the necessary tags t1 and t2 for both packets
     tag_gen = OrthogonalTagGenerator(field)
 
-    tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1,S1)) # generate self orthogonal tag
+    tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1,S1)) # generate self orthogonal tag
     tag12 = 0                       # first packe is only self orthogonal
 
     S1_orth = S1 +  bytearray([tag11,tag12])
     ic(S1_orth, S1 ,tag11 , ic(bytearray([tag11,tag12])))
 
-    assert inner_product_bytes(field,S1_orth, S1_orth) == 0
+    assert inner_product_bytes_bin4(S1_orth, S1_orth) == 0
 
     S2_padded = S2 + bytearray(2)
     ic(S2_padded)
 
-    d = ic(inner_product_bytes(field, S1_orth, S2_padded),S1_orth, S2_padded)
-    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes(field, S1_orth, S2_padded))  # orthogonal to
+    d = ic(inner_product_bytes_bin4( S1_orth, S2_padded),S1_orth, S2_padded)
+    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes_bin4( S1_orth, S2_padded))  # orthogonal to
     tag22 = 0   
     ic(tag21,tag22)
     S2_orth = S2 + bytearray([tag21,tag22])
@@ -60,7 +61,7 @@ def static_data():
     # bytearray([1]) ->  x01
 
     #testing orthogonality of packets
-    ic(inner_product_bytes(field, S1_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S2_orth))
 
 
 
@@ -124,9 +125,9 @@ def static_data():
         # insert our polluted packet here for packet 2 atm. will be changed down the line
         if i == 1 and pollution:
             match poll_enum:
-                case Pollution.ALL: symbol = pollute_full_packet(symbol)
-                case Pollution.DATA : symbol = pollute_data_packet(data_len, symbol)
-                case Pollution.TAG : symbol = pollute_tags_packet(data_len, symbol)
+                case Pollution.ALL: symbol = pollute_full_packet_bin4(symbol)
+                case Pollution.DATA : symbol = pollute_data_packet_bin4(data_len, symbol)
+                case Pollution.TAG : symbol = pollute_tags_packet_bin4(data_len, symbol)
                 case _: print("no matching Pollution", poll_enum)
 
 
@@ -161,16 +162,16 @@ def static_data():
     #ic(received_packets)
     #ic(P1,P2)
 
-    ic(inner_product_bytes(field,P1,P1))
-    ic(inner_product_bytes(field,P1,P2))
-    ic(inner_product_bytes(field,P2,P2))
+    ic(inner_product_bytes_bin4(P1,P1))
+    ic(inner_product_bytes_bin4(P1,P2))
+    ic(inner_product_bytes_bin4(P2,P2))
 
 # TODO: this implementation is wrong and only works with 1's as data for XORING
 # because we only use the first of 8 bits in the byte and addition is just XOring that
     accept = (
-        inner_product_bytes(field,P1,P1) == 0 and
-        inner_product_bytes(field,P1,P2) == 0 and
-        inner_product_bytes(field,P2,P2) == 0
+        inner_product_bytes_bin4(P1,P1) == 0 and
+        inner_product_bytes_bin4(P1,P2) == 0 and
+        inner_product_bytes_bin4(P2,P2) == 0
     )
 
     ic.enable()
@@ -205,21 +206,21 @@ def random_data():
     #generate the necessary tags t1 and t2 for both packets
     tag_gen = OrthogonalTagGenerator(field)
 
-    tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1,S1)) # generate self orthogonal tag
+    tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1,S1)) # generate self orthogonal tag
     tag12 = 0                       # first packe is only self orthogonal
 
     S1_orth = S1 +  bytearray([tag11,tag12])
     ic(S1_orth, S1 ,tag11 , ic(bytearray([tag11,tag12])))
 
-    assert inner_product_bytes(field,S1_orth, S1_orth) == 0
+    assert inner_product_bytes_bin4(S1_orth, S1_orth) == 0
 
     S2_padded = S2 + bytearray(2)
     ic(S2_padded)
 
-    d = ic(inner_product_bytes(field, S1_orth, S2_padded))
+    d = ic(inner_product_bytes_bin4( S1_orth, S2_padded))
     tag21 = tag_gen.generate_tag_cross(tag11, d)  # orthogonal to S1_orth
     S2_padded[data_len] = tag21
-    tag22 = tag_gen.generate_tag(d= inner_product_bytes(field,S2_padded, S2_padded))
+    tag22 = tag_gen.generate_tag(d= inner_product_bytes_bin4(S2_padded, S2_padded))
     
     S2_padded[data_len+1] = tag22
 
@@ -232,7 +233,7 @@ def random_data():
     # bytearray([1]) ->  x01
 
     #testing orthogonality of packets
-    ic(inner_product_bytes(field, S1_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S2_orth))
 
 
 
@@ -296,9 +297,9 @@ def random_data():
         # insert our polluted packet here for packet 2 atm. will be changed down the line
         if i == 1 and pollution:
             match poll_enum:
-                case Pollution.ALL: symbol = pollute_full_packet(symbol)
-                case Pollution.DATA : symbol = pollute_data_packet(data_len, symbol)
-                case Pollution.TAG : symbol = pollute_tags_packet(data_len, symbol)
+                case Pollution.ALL: symbol = pollute_full_packet_bin4(symbol)
+                case Pollution.DATA : symbol = pollute_data_packet_bin4(data_len, symbol)
+                case Pollution.TAG : symbol = pollute_tags_packet_bin4(data_len, symbol)
                 case _: print("no matching Pollution", poll_enum)
 
 
@@ -333,16 +334,16 @@ def random_data():
     #ic(received_packets)
     #ic(P1,P2)
 
-    ic(inner_product_bytes(field,P1,P1))
-    ic(inner_product_bytes(field,P1,P2))
-    ic(inner_product_bytes(field,P2,P2))
+    ic(inner_product_bytes_bin4(P1,P1))
+    ic(inner_product_bytes_bin4(P1,P2))
+    ic(inner_product_bytes_bin4(P2,P2))
 
     # accept if all inner products are 0
 
     accept = (
-        inner_product_bytes(field,P1,P1) == 0 and
-        inner_product_bytes(field,P1,P2) == 0 and
-        inner_product_bytes(field,P2,P2) == 0
+        inner_product_bytes_bin4(P1,P1) == 0 and
+        inner_product_bytes_bin4(P1,P2) == 0 and
+        inner_product_bytes_bin4(P2,P2) == 0
     )
 
 
@@ -381,9 +382,9 @@ def random_data():
             print("Received packets: ", i)
             print_ints(received_packets[i])
 
-        ic(inner_product_bytes(field,P1,P1),
-        inner_product_bytes(field,P1,P2),
-        inner_product_bytes(field,P2,P2))
+        ic(inner_product_bytes_bin4(P1,P1),
+        inner_product_bytes_bin4(P1,P2),
+        inner_product_bytes_bin4(P2,P2))
 
 
 

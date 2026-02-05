@@ -21,3 +21,5 @@ src
 *logs
 *.log
 .env
+
+implement_other_fields.txt

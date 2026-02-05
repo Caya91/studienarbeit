@@ -1,6 +1,7 @@
-from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator, field
+from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
+from binary_2pow4.config import field
 
-from binary_2pow4.generate_symbols import generate_symbols_random, check_orth, LOG_FILE
+from binary_2pow4.generate_symbols import generate_symbols_random_bin4, check_orth_bin4, LOG_FILE
 
 from binary_2pow4.log_utils import clear_logs
 
@@ -18,12 +19,12 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     ic(num_trials, data_fields, gen_size)
     open(LOG_FILE, "w").close()
     for trial in range(num_trials):
-        generation = generate_symbols_random(data_fields,gen_size)
+        generation = generate_symbols_random_bin4(data_fields,gen_size)
         tagged_gen = tag_gen.generate_all_tags(generation)
 
         # clear logfile
         
-        accepts.append(check_orth(tagged_gen))
+        accepts.append(check_orth_bin4(tagged_gen))
 
     ic.enable()
     prob = statistics.mean(accepts)

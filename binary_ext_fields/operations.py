@@ -1,15 +1,20 @@
 import pyerasure
 import pyerasure.finite_field
-
-from binary_2pow4.config import field, MIN_INT, MAX_INT
-from binary_ext_fields.operations import inner_product_bytes as _inner_product_bytes, print_ints as _print_ints
-
 from icecream import ic
 
 
+def inner_product_bytes(field:pyerasure.finite_field, x: bytes, y: bytes) -> int:
+    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^4) using PyErasure vector ops."""
+    assert len(x) == len(y)
+    acc = 0
+    tmp = bytearray(1)
 
-def inner_product_bytes_bin4( x: bytes, y: bytes) -> int:
-    return _inner_product_bytes(field,x=x,y=y)
+    for a, b in zip(x, y):
+        tmp[0] = a
+        field.vector_multiply_into(tmp, b)  # tmp[0] = a·b
+        acc = field.add(acc, tmp[0])        # acc += a·b
+
+    return acc
 
 def pretty_bytearray(ba, name="ba"):
     ints = ', '.join(map(str, ba))
@@ -17,21 +22,17 @@ def pretty_bytearray(ba, name="ba"):
     bins = ', '.join(f'{x:04b}' for x in ba)
     print(f"{name}:\n  ints: [{ints}]\n  hex:  {hexs}\n  bin:  [{bins}]")
 
-print_ints = _print_ints
-
-'''
 def print_ints(ba, name="ba"):
     print(f"{name}: length: {len(ba)} [{', '.join(map(str, ba))}]")
-'''
 
-'''
+
 def test_inner_product():
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[5],[5])) # 5*5 = 2
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[3],[3])) # 3*3 = 5
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[0],[0])) # 0*0 = 0
 
     ic(inner_product_bytes(pyerasure.finite_field.Binary4(),[17],[17])) # should be an assertion error from pyerasure
-'''
+
 
 
 if __name__ == "__main__":

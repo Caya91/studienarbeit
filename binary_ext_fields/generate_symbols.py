@@ -3,16 +3,8 @@ import pyerasure.finite_field
 import random
 import os
 
-from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth
-
-from binary_2pow4.config import MIN_INT, MAX_INT, field
-
 from icecream import ic
-from binary_2pow4.operations_bin4 import inner_product_bytes_bin4, print_ints
-
-from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
-
-
+from binary_ext_fields.operations import inner_product_bytes, print_ints
 
 import pathlib
 from typing import Iterable
@@ -24,16 +16,29 @@ bad_packets: set[tuple[int, ...]] = set()
 
 verbose = False
 
-tag_gen = OrthogonalTagGenerator(field)
 
 
 
+def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:int) -> list:
+    assert data_fields > 0
+    assert gen_size > 0
+        
+    
+    symbols = []
 
-def generate_symbols_random_bin4(data_fields:int, gen_size:int) -> list:
-    return generate_symbols_random(MIN_INT,MAX_INT, data_fields=data_fields,gen_size=gen_size)
-   
+    for packet in range(gen_size):
+        symbol = bytearray([random.randint(min_int, max_int) for _ in range(data_fields)] + [0 for _ in range(gen_size)])
+        symbols.append(symbol)
 
-def check_orth_fixed(generation:list[bytearray]) -> bool:
+    #ic(len(symbols),symbols)
+    '''
+    for symbol in symbols:
+        print_ints(symbol)
+    '''
+    return symbols
+
+
+def check_orth_fixed(field, generation:list[bytearray]) -> bool:
     '''
     in diesem Test versuche ich den die Ausnahme aus dem orthogonalitätstest herauszufiltern
     TODO: das letzte Paket braucht diese Regel nicht
@@ -71,7 +76,7 @@ def check_orth_fixed(generation:list[bytearray]) -> bool:
 
     for i, packet in enumerate(new_gen):
         for j, p in enumerate(new_gen):
-            prod = inner_product_bytes_bin4(field, packet, p)
+            prod = inner_product_bytes(field, packet, p)
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
     if failures:
@@ -85,8 +90,68 @@ def check_orth_fixed(generation:list[bytearray]) -> bool:
     return True
 
 
-def check_orth_bin4(generation:list[bytearray]) -> bool:
-    return check_orth(field, generation=generation)
+def check_orth(field, generation:list[bytearray]) -> bool:
+    failures = []
+
+    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
+    
+    '''
+    ic()
+    ic(generation)
+    for p in generation:
+        print_ints(p)
+    ''' 
+
+    for i, packet in enumerate(generation):
+        for j, p in enumerate(generation):
+            prod = inner_product_bytes(field, packet, p)
+            if prod != 0:
+                failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
+    
+    if failures:
+        #print("\n".join(failures))
+        log_failed_generation(generation, failures)
+        # raise AssertionError("\n".join(failures))
+    
+    if not failures and verbose:
+        print("All pairs orthogonal!")  # Success message
+        
+    if failures:
+        return False
+    #ic(failures)
+    return True
+
+'''
+def generate_examples(data_len:int):
+
+    tag_gen = OrthogonalTagGenerator(field)
+
+    data = [random.randint(MIN_INT, MAX_INT) for _ in range(data_len)]
+
+    S1= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
+    S2= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
+    
+    t11 = tag_gen.generate_tag(inner_product_bytes(field, S1,S1))
+
+    S1[data_len] = t11
+
+    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes(field,S1,S2))
+
+    S2[data_len] = t21
+
+    t22 = tag_gen.generate_tag(inner_product_bytes(field,S2,S2))
+
+    S2[data_len+1] = t22
+    print_ints(S1)
+    print_ints(S2)
+
+    ic(
+        inner_product_bytes(field,S1,S1),
+        inner_product_bytes(field,S1,S2),
+        inner_product_bytes(field,S2,S2)
+       )
+    '''
+
 
 
 def log_failed_generation(generation: list[bytearray], failures: Iterable[str], log_file: pathlib.Path = LOG_FILE) -> None:
@@ -125,33 +190,3 @@ if __name__ == "__main__":
     ic(test_orth_generation(result))
     '''
 
-'''
-def generate_examples(data_len:int):
-
-    tag_gen = OrthogonalTagGenerator(field)
-
-    data = [random.randint(MIN_INT, MAX_INT) for _ in range(data_len)]
-
-    S1= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
-    S2= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
-    
-    t11 = tag_gen.generate_tag(inner_product_bytes(field, S1,S1))
-
-    S1[data_len] = t11
-
-    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes(field,S1,S2))
-
-    S2[data_len] = t21
-
-    t22 = tag_gen.generate_tag(inner_product_bytes(field,S2,S2))
-
-    S2[data_len+1] = t22
-    print_ints(S1)
-    print_ints(S2)
-
-    ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2),
-        inner_product_bytes(field,S2,S2)
-       )
-'''

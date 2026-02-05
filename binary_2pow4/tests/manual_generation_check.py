@@ -1,12 +1,9 @@
 from binary_2pow4.debug_inspect import log_generation_detail, LOG_FILE
 
-# this fiel is for checking generations manually so we can make check the failed packets generation by generation.
+# this fiel is for checking generations manually so we can make check the failed packets in a generation 
 
 from examples.failed_generation_examples import generation
 
-
-  # if you kept a set
-# or load/reconstruct bad generations from a file
 
 S1 = bytearray([5, 15, 10, 0, 0, 0, 0, 0])
 S2 = bytearray([6, 2,  2,  9, 15, 0, 0, 0])
