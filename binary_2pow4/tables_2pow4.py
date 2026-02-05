@@ -12,6 +12,22 @@ ic("polynomial for 2^4= ", bin(field._prime))
 
 # check if binary of ints are the same representation in pyerasure Binary4
 
+def gf_square(field, x: int) -> int:
+    tmp = bytearray(1)
+    tmp[0] = x
+    field.vector_multiply_into(tmp, x)
+    return tmp[0]
+
+def multiply_helper(field, x:int, y:int) -> int:
+    assert x <= field.max_value
+    assert y <= field.max_value
+
+    tmp = bytearray(1)
+    tmp[0] = x
+    field.vector_multiply_into(tmp, y)
+    return tmp[0]
+
+
 def gf16_add(a,b):
     return a^b
 

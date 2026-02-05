@@ -1,43 +1,47 @@
 import os
 
 from pyerasure import finite_field
+from icecream import ic
 
-from binary_2pow4.operations_bin4 import *
-from binary_2pow4.generate_symbols import *
 
-field = pyerasure.finite_field.Binary4()
+from binary_2pow4.generate_symbols import generate_symbols_random_bin4, check_orth_bin4, check_orth_fixed
+
+from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
+
+from binary_2pow4.config import field
 
 
 def test_1():
-    symbols = generate_symbols_random(3,3)
+    symbols = generate_symbols_random_bin4(3,3)
 
     S1, S2, S3 = symbols
 
     ic(S1, S2, S3)
 
-    symbols = generate_symbols_random(4,2)
-    symbols = generate_symbols_random(4,5)
-    symbols = generate_symbols_random(2,7)
+    symbols = generate_symbols_random_bin4(4,2)
+    symbols = generate_symbols_random_bin4(4,5)
+    symbols = generate_symbols_random_bin4(2,7)
     return
 
 def test_2():
-
     tag_gen = OrthogonalTagGenerator(field)
 
 
-    for d_num in range(2,5):
-        for q_num in range(2,5):
-                symbols = generate_symbols_random(d_num,q_num)
+    for d_num in range(3,5):
+        for q_num in range(3,5):
+
+                symbols = generate_symbols_random_bin4(d_num,q_num)
+
                 result = tag_gen.generate_all_tags(symbols)
 
+                '''
                 for symbol in symbols:
                     print_ints(symbol)
 
                 for packet in result:
                     print_ints(packet)
-
-                ic(check_orth(result))
-
+                '''
+                #ic(check_orth_bin4(result))
 
     return 
 
@@ -58,13 +62,13 @@ def gen_failed_generation():
 
     ic(gen, len(gen))
 
-    return check_orth_fixed(gen)
-    return check_orth(gen)
+    #return check_orth_fixed(gen)
+    return check_orth_bin4(gen)
 
 
 if __name__ == "__main__":
      
      print("hi")
-     #test_1()
-     #test_2()
-     #gen_failed_generation()
+     ic(test_1())
+     ic(test_2())
+     ic(gen_failed_generation())

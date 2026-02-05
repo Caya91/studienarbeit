@@ -6,6 +6,7 @@ from binary_ext_fields.operations import inner_product_bytes
 
 verbose = False
 
+
 class OrthogonalTagGenerator:
     def __init__(self, field:pyerasure.finite_field):
         self.field = field
@@ -55,9 +56,9 @@ class OrthogonalTagGenerator:
         assert t1 <= self.field.max_value
 
         # falls der Tag des anderen Packets 0 ist -> wähle einen Tag random aus
-        ic.disable()
-        if verbose:
-            ic.enable()
+        #ic.disable()
+        #if verbose:
+        #    ic.enable()
             
         
         if t1 == 0:
@@ -77,8 +78,9 @@ class OrthogonalTagGenerator:
     def generate_all_tags(self, generation:list[bytearray]):
         # TODO: implement a flag and function that switches the order of packets when there is one that is has self ortho tag = 0 
         # or make a new function for that
-
-
+        
+        #ic.enable()
+        #ic()
         gen_size = len(generation)
         data_len = len(generation[0]) - gen_size
 
@@ -90,7 +92,7 @@ class OrthogonalTagGenerator:
 
         for count, symbol in enumerate(generation):
             #ic("OUTER LOOP", i, count, symbol)
-
+            #ic()
             i = data_len + 1
 
             new_symbol = symbol.copy()
@@ -105,11 +107,13 @@ class OrthogonalTagGenerator:
 
                 corresponding_packet = new_symbols[tag_nr]  # tag_nr is also the corrseponding symbol in the generation, so we take innerproduct with that packet
 
+
                 tag = self.generate_tag_cross(corresponding_packet[data_len + tag_nr ],inner_product_bytes(self.field,new_symbol, corresponding_packet))
-
+                #ic()
                 new_symbol[data_len + tag_nr] = tag
+                #ic(new_symbols)
 
-
+        #ic(new_symbol)
         return new_symbols
 
     def generate_all_tags_with_swap(self, generation: list[bytearray]) -> list[bytearray]:
@@ -192,12 +196,19 @@ def multiply_helper(field, x:int, y:int) -> int:
 
 if __name__ == "__main__":
     print("Orthogonal Tag Creator ")
-
+    '''
     tag_gen1 = OrthogonalTagGenerator(pyerasure.finite_field.Binary4())
     tag_gen2 = OrthogonalTagGenerator(pyerasure.finite_field.Binary8())
 
     ic(tag_gen1.square_to_root)
     ic(tag_gen2.square_to_root)
+    '''
+    tag_gen = OrthogonalTagGenerator(pyerasure.finite_field.Binary4(), )
+    ic.enable()
+    ic(tag_gen.generate_tag_cross(7,10))
+
+    ic(tag_gen.generate_tag_cross(7,10))
+
     #test_orthogonalgenerator()
     #test_cross_generation()
     #test_case_2()

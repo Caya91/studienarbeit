@@ -1,6 +1,11 @@
-from  binary_2pow4.orthogonal_tag_creator import *
-from binary_2pow4.operations_bin4 import MIN_INT, MAX_INT, print_ints
+import random
 
+from icecream import ic
+from  binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator
+
+from binary_2pow4.tables_2pow4 import gf_square, multiply_helper
+from binary_2pow4.operations_bin4 import print_ints, inner_product_bytes_bin4
+from binary_2pow4.config import field, MIN_INT, MAX_INT
 
 def test_orthogonalgenerator():
     generator = OrthogonalTagGenerator(field)
@@ -45,23 +50,23 @@ def test_case_1():
     data_len = len(S1)
     tag_gen = OrthogonalTagGenerator(field)
 
-    tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1,S1)) # generate self orthogonal tag
+    tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1,S1)) # generate self orthogonal tag
     tag12 = 0                       # first packet is only self orthogonal
 
     S1_orth = S1 +  bytearray([tag11,tag12])
 
     ic(S1_orth, S1 ,tag11 , ic(bytearray([tag11,tag12])))
 
-    assert inner_product_bytes(field,S1_orth, S1_orth) == 0
+    assert inner_product_bytes_bin4(S1_orth, S1_orth) == 0
 
     S2_padded = S2 + bytearray(2)
     ic(S2_padded)
     
-    d = ic(inner_product_bytes(field, S1_orth, S2_padded),S1_orth, S2_padded)
-    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes(field, S1_orth, S2_padded))  # orthogonal to S1 
+    d = ic(inner_product_bytes_bin4( S1_orth, S2_padded),S1_orth, S2_padded)
+    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes_bin4( S1_orth, S2_padded))  # orthogonal to S1 
     S2_padded[1] = tag21
     ic("S2_padded after adding the tag21", S2_padded, tag21)
-    tag22 = tag_gen.generate_tag(d= inner_product_bytes(field,S2_padded, S2_padded))
+    tag22 = tag_gen.generate_tag(d= inner_product_bytes_bin4(S2_padded, S2_padded))
     ic(tag22)
 
 
@@ -75,9 +80,9 @@ def test_case_1():
 
     #testing orthogonality of packets
     ic(S1_orth, S2_orth)
-    ic(inner_product_bytes(field, S1_orth, S1_orth))
-    ic(inner_product_bytes(field, S1_orth, S2_orth))
-    ic(inner_product_bytes(field, S2_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S1_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S2_orth, S2_orth))
 
     return
 
@@ -102,28 +107,28 @@ def test_case_2():
     ic(S1[:data_len])
 
 
-    #tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1[:data_len],S1[:data_len])) # generate self orthogonal tag
-    tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1,S1)) # generate self orthogonal tag
+    #tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1[:data_len],S1[:data_len])) # generate self orthogonal tag
+    tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1,S1)) # generate self orthogonal tag
     
     tag12 = 0                       # first packet is only self orthogonal
 
     S1_orth = S1 +  bytearray([tag11,tag12])
 
     ic(S1_orth, S1 ,tag11 , ic(bytearray([tag11,tag12])))
-    ic(inner_product_bytes(field,S1_orth, S1_orth))
-    assert inner_product_bytes(field,S1_orth, S1_orth) == 0
+    ic(inner_product_bytes_bin4(S1_orth, S1_orth))
+    assert inner_product_bytes_bin4(S1_orth, S1_orth) == 0
 
 
     S2_padded = S2 + bytearray(2)
     ic(S2_padded)
     
-    d = ic(inner_product_bytes(field, S1_orth, S2_padded),S1_orth, S2_padded)
+    d = ic(inner_product_bytes_bin4( S1_orth, S2_padded),S1_orth, S2_padded)
 
-    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes(field, S1_orth, S2_padded))  # orthogonal to S1 
+    tag21 = tag_gen.generate_tag_cross(tag11, d= inner_product_bytes_bin4( S1_orth, S2_padded))  # orthogonal to S1 
     
     S2_padded[data_len] = tag21
     ic("S2_padded after adding the tag21", S2_padded, tag21)
-    tag22 = tag_gen.generate_tag(d= inner_product_bytes(field,S2_padded, S2_padded))
+    tag22 = tag_gen.generate_tag(d= inner_product_bytes_bin4(S2_padded, S2_padded))
     ic(tag22)
 
 
@@ -138,9 +143,9 @@ def test_case_2():
     #testing orthogonality of packets
     print_ints(S1_orth)
     print_ints(S2_orth)
-    ic(inner_product_bytes(field, S1_orth, S1_orth))
-    ic(inner_product_bytes(field, S1_orth, S2_orth))
-    ic(inner_product_bytes(field, S2_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S1_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S2_orth, S2_orth))
 
     return
 
@@ -155,10 +160,10 @@ def test_failed_packets():
     
     print_ints(S1)
     print_ints(S2)
-    ic(inner_product_bytes(field, S1, S2))
+    ic(inner_product_bytes_bin4( S1, S2))
 
     # how can this case happen?
-    tag11 = tag_gen.generate_tag(d=inner_product_bytes(field, S1[:data_len],S1[:data_len])) # generate self orthogonal tag
+    tag11 = tag_gen.generate_tag(d=inner_product_bytes_bin4( S1[:data_len],S1[:data_len])) # generate self orthogonal tag
     tag12 = 0                       # first packet is only self orthogonal
 
     S1[2] = tag11
@@ -167,22 +172,22 @@ def test_failed_packets():
     S1_orth = S1.copy()
 
     ic(S1_orth, S1 ,tag11 , bytearray([tag11,tag12]))
-    ic(inner_product_bytes(field,S1_orth, S1_orth))
-    assert inner_product_bytes(field,S1_orth, S1_orth) == 0
+    ic(inner_product_bytes_bin4(S1_orth, S1_orth))
+    assert inner_product_bytes_bin4(S1_orth, S1_orth) == 0
 
     S2_padded = S2.copy()
     ic(S2_padded)
     
     ic(S1_orth, S2_padded)
 
-    d = ic(inner_product_bytes(field, S1_orth, S2_padded))
+    d = ic(inner_product_bytes_bin4( S1_orth, S2_padded))
 
     tag21 = tag_gen.generate_tag_cross(tag11, d)  # orthogonal to S1
 
     
     S2_padded[data_len] = tag21
     ic("S2_padded after adding the tag21", S2_padded, tag21)
-    tag22 = tag_gen.generate_tag(d= inner_product_bytes(field,S2_padded, S2_padded))
+    tag22 = tag_gen.generate_tag(d= inner_product_bytes_bin4(S2_padded, S2_padded))
     ic(tag22)
 
 
@@ -198,9 +203,9 @@ def test_failed_packets():
     #testing orthogonality of packets
     print_ints(S1_orth)
     print_ints(S2_orth)
-    ic(inner_product_bytes(field, S1_orth, S1_orth))
-    ic(inner_product_bytes(field, S1_orth, S2_orth))
-    ic(inner_product_bytes(field, S2_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S1_orth))
+    ic(inner_product_bytes_bin4( S1_orth, S2_orth))
+    ic(inner_product_bytes_bin4( S2_orth, S2_orth))
 
 
 
@@ -220,16 +225,16 @@ def failed_test_case():
     the probability of this occurring will get less with higher field size
     '''
 
-    ic(inner_product_bytes(field,bytearray([8]), bytearray([10])))
+    ic(inner_product_bytes_bin4(bytearray([8]), bytearray([10])))
 
     S1 = bytearray([8, 8, 0, 0])
     S2 = bytearray([12, 0, 14, 2])
 
-    ic(inner_product_bytes(field,S1,S1))
-    ic(inner_product_bytes(field,S1,S2))
-    ic(inner_product_bytes(field,S2,S2))
-    ic(inner_product_bytes(field,S1[:1], S2[:1]))
-    ic(inner_product_bytes(field,S1[:2],S2[:2]))
+    ic(inner_product_bytes_bin4(S1,S1))
+    ic(inner_product_bytes_bin4(S1,S2))
+    ic(inner_product_bytes_bin4(S2,S2))
+    ic(inner_product_bytes_bin4(S1[:1], S2[:1]))
+    ic(inner_product_bytes_bin4(S1[:2],S2[:2]))
 
     return
 
@@ -243,27 +248,29 @@ def generate_examples(data_len:int):
     S1= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
     S2= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
     
-    t11 = tag_gen.generate_tag(inner_product_bytes(field, S1,S1))
+    t11 = tag_gen.generate_tag(inner_product_bytes_bin4( S1,S1))
 
     S1[data_len] = t11
 
-    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes(field,S1,S2))
+    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes_bin4(S1,S2))
 
     S2[data_len] = t21
 
-    t22 = tag_gen.generate_tag(inner_product_bytes(field,S2,S2))
+    t22 = tag_gen.generate_tag(inner_product_bytes_bin4(S2,S2))
 
     S2[data_len+1] = t22
     print_ints(S1)
     print_ints(S2)
 
     ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2),
-        inner_product_bytes(field,S2,S2)
+        inner_product_bytes_bin4(S1,S1),
+        inner_product_bytes_bin4(S1,S2),
+        inner_product_bytes_bin4(S2,S2)
        )
 
 
 if __name__ == "__main__":
 
-    test_case_1()
+    test_orthogonalgenerator()
+    #test_case_1()
+    #test_case_2()

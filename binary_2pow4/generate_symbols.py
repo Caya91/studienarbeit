@@ -71,7 +71,7 @@ def check_orth_fixed(generation:list[bytearray]) -> bool:
 
     for i, packet in enumerate(new_gen):
         for j, p in enumerate(new_gen):
-            prod = inner_product_bytes_bin4(field, packet, p)
+            prod = inner_product_bytes_bin4(packet, p)
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
     if failures:
