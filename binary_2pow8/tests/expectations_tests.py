@@ -1,15 +1,16 @@
 import statistics
 from icecream import ic
 
-from binary_2pow4.pollution import Pollution, pollute_data_packet, pollute_tags_packet, pollute_full_packet
+from binary_2pow8.pollution import Pollution, pollute_data_packet_bin8, pollute_tags_packet_bin8, pollute_full_packet_bin8
 
-from binary_2pow4.generate_symbols import check_orth_bin4, check_orth_fixed, generate_symbols_random_bin4 
+from binary_2pow8.generate_symbols import check_orth_bin8, check_orth_fixed, generate_symbols_random_bin8 
 
 
-from binary_2pow4.operations_bin4 import print_ints, inner_product_bytes_bin4
-from binary_2pow4.config import field, MIN_INT, MAX_INT
+from binary_2pow8.operations_bin8 import print_ints, inner_product_bytes_bin8
 
-from binary_2pow4.orthogonal_tag_creator import * 
+from binary_2pow8.config import field, MIN_INT, MAX_INT
+
+from binary_2pow8.orthogonal_tag_creator import * 
 
 #DATA_FIELDS = 5
 #GEN_SIZE = 5
@@ -39,15 +40,15 @@ def test_prob(data_len:int):
     assert len(S1) > 0
 
     ic(
-        inner_product_bytes_bin4(S1,S1),
-        inner_product_bytes_bin4(S1,S2),
-        inner_product_bytes_bin4(S2,S2)
+        inner_product_bytes_bin8(S1,S1),
+        inner_product_bytes_bin8(S1,S2),
+        inner_product_bytes_bin8(S2,S2)
        )
 
     #add random data pollution here
 
     #print_ints(S2)
-    S2_poll = pollute_data_packet(data_len, S2)
+    S2_poll = pollute_data_packet_bin8(data_len, S2)
 
     ic("check S2 and S2_ poll, S2 should not be mutated by pollution")
     #print_ints(S2)
@@ -55,15 +56,15 @@ def test_prob(data_len:int):
 
     # check acceptance
     ic(
-        inner_product_bytes_bin4(S1,S1),
-        inner_product_bytes_bin4(S1,S2_poll),
-        inner_product_bytes_bin4(S2_poll,S2_poll)
+        inner_product_bytes_bin8(S1,S1),
+        inner_product_bytes_bin8(S1,S2_poll),
+        inner_product_bytes_bin8(S2_poll,S2_poll)
        )
 
     accept = (
-        inner_product_bytes_bin4(S1,S1) == 0
-        and inner_product_bytes_bin4(S1,S2_poll) == 0
-        and inner_product_bytes_bin4(S2_poll,S2_poll) == 0
+        inner_product_bytes_bin8(S1,S1) == 0
+        and inner_product_bytes_bin8(S1,S2_poll) == 0
+        and inner_product_bytes_bin8(S2_poll,S2_poll) == 0
     )
 
     ic.enable()
@@ -76,9 +77,9 @@ def test_prob(data_len:int):
         ic(list(S2_poll))
 
         ic(
-        inner_product_bytes_bin4(S1,S1),
-        inner_product_bytes_bin4(S1,S2_poll),
-        inner_product_bytes_bin4(S2_poll,S2_poll)
+        inner_product_bytes_bin8(S1,S1),
+        inner_product_bytes_bin8(S1,S2_poll),
+        inner_product_bytes_bin8(S2_poll,S2_poll)
        )
 
         
@@ -91,9 +92,9 @@ def test_prob(data_len:int):
 def test_gen(generation:list[bytearray]) -> bool:
 
     accept = (
-        inner_product_bytes_bin4(S1,S1) == 0
-        and inner_product_bytes_bin4(S1,S2_poll) == 0
-        and inner_product_bytes_bin4(S2_poll,S2_poll) == 0
+        inner_product_bytes_bin8(S1,S1) == 0
+        and inner_product_bytes_bin8(S1,S2_poll) == 0
+        and inner_product_bytes_bin8(S2_poll,S2_poll) == 0
     )
 '''
 
@@ -106,9 +107,9 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
     ic(num_trials, data_fields, gen_size)
     for trial in range(num_trials):
-        generation = generate_symbols_random_bin4(data_fields,gen_size)
+        generation = generate_symbols_random_bin8(data_fields,gen_size)
         tagged_gen = tag_gen.generate_all_tags(generation)
-        accepts.append(check_orth_bin4(tagged_gen))
+        accepts.append(check_orth_bin8(tagged_gen))
 
     ic.enable()
     prob = statistics.mean(accepts)

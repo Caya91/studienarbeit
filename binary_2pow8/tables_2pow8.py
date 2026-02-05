@@ -1,7 +1,7 @@
 import pyerasure.finite_field
 from icecream import ic
 
-from binary_2pow4.config import field
+from binary_2pow8.config import field
 
 ic("polynomial for 2^4= ", bin(field._prime))
 
@@ -28,34 +28,34 @@ def multiply_helper(field, x:int, y:int) -> int:
     return tmp[0]
 
 
-def gf16_add(a,b):
+def gf255_add(a,b):
     return a^b
 
-def gf16_add_table():
-    n = 16
+def gf255_add_table():
+    n = field.max_value + 1
     table = []
     for a in range(n):
         row = []
         for b in range(n):
-            row.append(gf16_add(a, b))
+            row.append(gf255_add(a, b))
         table.append(row)
     ic(table)
     return table
 
-def gf16_add_table_bin():
-    n = 16
+def gf255_add_table_bin():
+    n = field.max_value + 1
     table = []
     for a in range(n):
         row = []
         for b in range(n):
-            row.append(bin(gf16_add(a, b)))
+            row.append(bin(gf255_add(a, b)))
         table.append(row)
     ic(table)
     return table
 
 
-def gf16_mul_table():
-    n = 16
+def gf255_mul_table():
+    n = field.max_value + 1
     table = []
     for a in range(n):
         row = []
@@ -66,8 +66,8 @@ def gf16_mul_table():
         table.append(row)
     return table
 
-def gf16_mul_table_bin():
-    n = 16
+def gf255_mul_table_bin():
+    n = field.max_value + 1
     table = []
     for a in range(n):
         row = []
@@ -130,8 +130,8 @@ if __name__ == "__main__":
 
     '''
 
-    mul_table = gf16_mul_table()
-    mul_table_bin = gf16_mul_table_bin()
+    mul_table = gf255_mul_table()
+    mul_table_bin = gf255_mul_table_bin()
 
     print_gf2m_table(mul_table, title="multiplication table")
     print_gf2m_table_bin(mul_table, title= "multiplication table binary")

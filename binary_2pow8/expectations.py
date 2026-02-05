@@ -4,7 +4,7 @@ import random
 import statistics
 from icecream import ic
 
-from binary_2pow4.config import field
+from binary_2pow8.config import field
 
 
 def write_to_file(text):
@@ -76,7 +76,6 @@ if __name__ == "__main__":
     ic(calculate_prob_data_pollution(3, 4))
     #ic.enable()
     #ic(len(accepted_packets), accepted_packets)
-    #ic(calculate_prob_data_pollution(GEN_SIZE, DATA_FIELDS))
     #ic(monte_carlo_test())
     
     

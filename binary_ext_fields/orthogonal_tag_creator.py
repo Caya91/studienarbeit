@@ -32,7 +32,6 @@ class OrthogonalTagGenerator:
 
     
     def generate_tag(self, d: int) ->  int:
-
         assert d <= self.field.max_value
 
         t2 = self.square_to_root.get(d, None)
@@ -179,20 +178,7 @@ class OrthogonalTagGenerator:
 
 ## TESTING
 
-def gf_square(field, x: int) -> int:
-    tmp = bytearray(1)
-    tmp[0] = x
-    field.vector_multiply_into(tmp, x)
-    return tmp[0]
 
-def multiply_helper(field, x:int, y:int) -> int:
-    assert x <= field.max_value
-    assert y <= field.max_value
-
-    tmp = bytearray(1)
-    tmp[0] = x
-    field.vector_multiply_into(tmp, y)
-    return tmp[0]
 
 if __name__ == "__main__":
     print("Orthogonal Tag Creator ")
