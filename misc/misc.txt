@@ -1,0 +1,7 @@
+### Boilerplate to manually get the root of the project
+import os, sys
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
+root = os.getenv("PYTHONPATH")
+sys.path.append(root)
+
