@@ -28,12 +28,12 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     tag_gen_bin8 = OTG_bin8(field_bin8)
 
     ic(num_trials, data_fields, gen_size)
-    # open(LOG_FILE, "w").close()
+
     logs_dir = pathlib.Path("logs")
     logs_dir.mkdir(exist_ok=True)
 
 
-        # --- NEW: set up structured log dirs ---
+
     script_name = Path(__file__).stem
     run_dir = get_run_log_dir(
         script_name,
@@ -60,8 +60,11 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
         generation2 = generate_symbols_random_bin8(data_fields,gen_size)
         tagged_gen2 = tag_gen_bin8.generate_all_tags(generation2)
         
-        accepts_bin4.append(check_orth_bin4(tagged_gen1))
-        accepts_bin8.append(check_orth_bin8(tagged_gen2))
+        bin4_failures_file = bin4_dir / "orth_failures.log"
+        accepts_bin4.append(check_orth_bin4(tagged_gen1, log_dir=bin4_failures_file))
+
+        bin8_failures_file = bin8_dir / "orth_failures.log"
+        accepts_bin8.append(check_orth_bin8(tagged_gen2, log_dir=bin8_failures_file))
 
 
         save_generation_txt(bin4_gen_txt, generation1, trial, label="generation")
@@ -89,13 +92,13 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     #ic(accepts)
     ic(prob2,std2, 1-prob2)
 
-    # --- NEW: summary per field ---
+    #summaries
     with (bin4_dir / "summary.txt").open("w", encoding="utf-8") as f:
         f.write(f"Bin4: prob={prob1:.6f}, std={std1:.6f}, accepted={total_accepted_bin4}/{num_trials}\n")
 
     with (bin8_dir / "summary.txt").open("w", encoding="utf-8") as f:
         f.write(f"Bin8: prob={prob2:.6f}, std={std2:.6f}, accepted={total_accepted_bin8}/{num_trials}\n")
-    # ------------------------------
+
 
     print(f"Logs written to: {run_dir}")
 
@@ -110,7 +113,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 if __name__ == "__main__":
     clear_logs()
-    ic(monte_carlo_test(1000, 3,8))
+    ic(monte_carlo_test(2000, 3,8))
 
 
 '''

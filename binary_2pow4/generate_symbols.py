@@ -2,7 +2,7 @@ import pyerasure
 import pyerasure.finite_field
 import random
 import os
-
+from pathlib import Path
 from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth
 
 from binary_2pow4.config import MIN_INT, MAX_INT, field
@@ -84,9 +84,9 @@ def check_orth_fixed(generation:list[bytearray]) -> bool:
 
     return True
 
+def check_orth_bin4(generation:list[bytearray], log_dir: Path | None = None) -> bool:
+    return check_orth(field, generation=generation, log_dir=log_dir)
 
-def check_orth_bin4(generation:list[bytearray]) -> bool:
-    return check_orth(field, generation=generation)
 
 
 def log_failed_generation(generation: list[bytearray], failures: Iterable[str], log_file: pathlib.Path = LOG_FILE) -> None:

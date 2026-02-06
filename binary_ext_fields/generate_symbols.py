@@ -2,7 +2,7 @@ import pyerasure
 import pyerasure.finite_field
 import random
 import os
-
+from pathlib import Path
 from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes, print_ints
 
@@ -18,8 +18,6 @@ bad_packets: set[tuple[int, ...]] = set()
 
 
 verbose = False
-
-
 
 
 def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:int) -> list:
@@ -53,7 +51,6 @@ def check_orth_fixed(field, generation:list[bytearray]) -> bool:
     failures = []
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
     
-    # auskommentiert für notebook use
     '''
     ic()
     ic(generation)
@@ -86,14 +83,14 @@ def check_orth_fixed(field, generation:list[bytearray]) -> bool:
         raise AssertionError("\n".join(failures))
     
     
-    # print("All pairs orthogonal!")  # Success message
+    # print("All pairs orthogonal!") 
     
     ic(failures)
 
     return True
 
 
-def check_orth(field, generation:list[bytearray]) -> bool:
+def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) -> bool:
     failures = []
 
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
@@ -112,16 +109,12 @@ def check_orth(field, generation:list[bytearray]) -> bool:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
     
     if failures:
-        #print("\n".join(failures))
-        log_failed_generation(generation, failures)
-        # raise AssertionError("\n".join(failures))
-    
-    if not failures and verbose:
-        print("All pairs orthogonal!")  # Success message
-        
-    if failures:
+        if log_dir: # logging to passed directory
+            log_failed_generation(generation, failures, log_dir)
+        else: 
+            pass
         return False
-    #ic(failures)
+    
     return True
 
 '''
