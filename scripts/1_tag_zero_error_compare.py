@@ -4,6 +4,8 @@ from binary_2pow4.config import field as field_bin4
 from binary_2pow4.generate_symbols import generate_symbols_random_bin4, check_orth_bin4, LOG_FILE
 
 from binary_ext_fields.log_utils import clear_logs
+
+from utils.logging import get_run_log_dir, get_field_subdir, save_generation_txt
 import pyerasure.finite_field
 from binary_2pow8.orthogonal_tag_creator import OrthogonalTagGenerator as OTG_bin8
 from binary_2pow8.config import field as field_bin8
@@ -11,6 +13,7 @@ from binary_2pow8.config import field as field_bin8
 from binary_2pow8.generate_symbols import generate_symbols_random_bin8, check_orth_bin8, LOG_FILE
 
 import pathlib
+from pathlib import Path
 
 from icecream import ic
 import statistics
@@ -29,6 +32,27 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     logs_dir = pathlib.Path("logs")
     logs_dir.mkdir(exist_ok=True)
 
+
+        # --- NEW: set up structured log dirs ---
+    script_name = Path(__file__).stem
+    run_dir = get_run_log_dir(
+        script_name,
+        trials=num_trials,
+        data_fields=data_fields,
+        gen_size=gen_size,
+    )
+    bin4_dir = get_field_subdir(run_dir, "bin4")
+    bin8_dir = get_field_subdir(run_dir, "bin8")
+
+    bin4_gen_txt = bin4_dir / "all_generations.txt"
+    bin4_tagged_txt = bin4_dir / "all_tagged_generations.txt"
+    bin8_gen_txt = bin8_dir / "all_generations.txt"
+    bin8_tagged_txt = bin8_dir / "all_tagged_generations.txt"
+
+    for txt_file in [bin4_gen_txt, bin4_tagged_txt, bin8_gen_txt, bin8_tagged_txt]:
+        txt_file.write_text(f"# ALL TRIALS for {txt_file.name}\n")
+
+
     for trial in range(num_trials):
         generation1 = generate_symbols_random_bin4(data_fields,gen_size)
         tagged_gen1 = tag_gen_bin4.generate_all_tags(generation1)
@@ -38,6 +62,14 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
         
         accepts_bin4.append(check_orth_bin4(tagged_gen1))
         accepts_bin8.append(check_orth_bin8(tagged_gen2))
+
+
+        save_generation_txt(bin4_gen_txt, generation1, trial, label="generation")
+        save_generation_txt(bin4_tagged_txt, tagged_gen1, trial, label="tagged")
+        
+        save_generation_txt(bin8_gen_txt, generation2, trial, label="generation")
+        save_generation_txt(bin8_tagged_txt, tagged_gen2, trial, label="tagged")
+
 
 
     ic.enable()
@@ -57,6 +89,15 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     #ic(accepts)
     ic(prob2,std2, 1-prob2)
 
+    # --- NEW: summary per field ---
+    with (bin4_dir / "summary.txt").open("w", encoding="utf-8") as f:
+        f.write(f"Bin4: prob={prob1:.6f}, std={std1:.6f}, accepted={total_accepted_bin4}/{num_trials}\n")
+
+    with (bin8_dir / "summary.txt").open("w", encoding="utf-8") as f:
+        f.write(f"Bin8: prob={prob2:.6f}, std={std2:.6f}, accepted={total_accepted_bin8}/{num_trials}\n")
+    # ------------------------------
+
+    print(f"Logs written to: {run_dir}")
 
 
     ic.disable()
@@ -69,9 +110,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 if __name__ == "__main__":
     clear_logs()
-    ic(monte_carlo_test(10000, 3,8))
-
-
+    ic(monte_carlo_test(1000, 3,8))
 
 
 '''
