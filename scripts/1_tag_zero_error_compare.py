@@ -54,6 +54,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 
     for trial in range(num_trials):
+        if trial % 1000 == 0: print("progess loop counter:", trial)
         generation1 = generate_symbols_random_bin4(data_fields,gen_size)
         tagged_gen1 = tag_gen_bin4.generate_all_tags(generation1)
 
@@ -66,6 +67,8 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
         bin8_failures_file = bin8_dir / "orth_failures.log"
         accepts_bin8.append(check_orth_bin8(tagged_gen2, log_dir=bin8_failures_file))
 
+        bin8_failures_file = bin8_dir / "orth_failures.log"
+        accepts_bin8.append(check_orth_bin8(tagged_gen2, log_dir=bin8_failures_file))
 
         save_generation_txt(bin4_gen_txt, generation1, trial, label="generation")
         save_generation_txt(bin4_tagged_txt, tagged_gen1, trial, label="tagged")
@@ -113,7 +116,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 if __name__ == "__main__":
     clear_logs()
-    ic(monte_carlo_test(2000, 3,8))
+    ic(monte_carlo_test(10000, 3,20))
 
 
 '''
