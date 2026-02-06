@@ -10,26 +10,11 @@ from binary_2pow8.config import field as field_bin8
 
 from binary_2pow8.generate_symbols import generate_symbols_random_bin8, check_orth_bin8, LOG_FILE
 
-
+import pathlib
 
 from icecream import ic
 import statistics
 
-def gen_bin(field:pyerasure.finite_field, data_fields:int, gen_size:int):
-
-    match field:
-        case pyerasure.finite_field.Binary4:
-            generation = generate_symbols_random_bin4(data_fields,gen_size)
-            tagged_gen = tag_gen.generate_all_tags(generation)
-            print("Bin4")
-            return generation
-        case pyerasure.finite_field.Binary8:
-
-            print("Bin8")
-        
-
-
-    return generation
 
 def monte_carlo_test(num_trials, data_fields, gen_size):
     accepts_bin4 = []
@@ -40,14 +25,16 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     tag_gen_bin8 = OTG_bin8(field_bin8)
 
     ic(num_trials, data_fields, gen_size)
-    open(LOG_FILE, "w").close()
+    # open(LOG_FILE, "w").close()
+    logs_dir = pathlib.Path("logs")
+    logs_dir.mkdir(exist_ok=True)
 
     for trial in range(num_trials):
         generation1 = generate_symbols_random_bin4(data_fields,gen_size)
         tagged_gen1 = tag_gen_bin4.generate_all_tags(generation1)
 
         generation2 = generate_symbols_random_bin8(data_fields,gen_size)
-        tagged_gen2 = tag_gen_bin8.generate_all_tags(generation1)
+        tagged_gen2 = tag_gen_bin8.generate_all_tags(generation2)
         
         accepts_bin4.append(check_orth_bin4(tagged_gen1))
         accepts_bin8.append(check_orth_bin8(tagged_gen2))
@@ -75,7 +62,7 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
     ic.disable()
     print(f"Acceptance probability Bin4: {prob1:.6f} ± {std1:.6f} over {num_trials} trials")
 
-    print(f"Acceptance probability Bin8: {prob1:.6f} ± {std1:.6f} over {num_trials} trials")
+    print(f"Acceptance probability Bin8: {prob2:.6f} ± {std2:.6f} over {num_trials} trials")
 
     return prob1, std1, prob2, std2
 
@@ -83,3 +70,25 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 if __name__ == "__main__":
     clear_logs()
     ic(monte_carlo_test(10000, 3,8))
+
+
+
+
+'''
+def gen_bin(field:pyerasure.finite_field, data_fields:int, gen_size:int):
+
+    match field:
+        case pyerasure.finite_field.Binary4:
+            generation = generate_symbols_random_bin4(data_fields,gen_size)
+            tagged_gen = tag_gen.generate_all_tags(generation)
+            print("Bin4")
+            return generation
+        case pyerasure.finite_field.Binary8:
+
+            print("Bin8")
+        
+
+
+    return generation
+
+'''

@@ -9,6 +9,9 @@ from binary_ext_fields.operations import inner_product_bytes, print_ints
 import pathlib
 from typing import Iterable
 
+logs_dir = pathlib.Path("logs")
+logs_dir.mkdir(exist_ok=True)  
+
 LOG_PATH = pathlib.Path(os.getenv("LOG_FOLDER"))
 LOG_FILE = LOG_PATH / "orth_failures.log"
 bad_packets: set[tuple[int, ...]] = set()
