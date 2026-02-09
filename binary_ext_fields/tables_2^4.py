@@ -26,16 +26,6 @@ are correct
 def gf_add(a,b):
     return a^b
 
-def gf_add_table(n:int):
-    table = []
-    for a in range(n):
-        row = []
-        for b in range(n):
-            row.append(gf_add(a, b))
-        table.append(row)
-    ic(table)
-    return table
-
 def gf_add_table_bin():
     n = 16
     table = []

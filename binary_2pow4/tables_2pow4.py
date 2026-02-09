@@ -39,7 +39,7 @@ def gf16_add_table():
         for b in range(n):
             row.append(gf16_add(a, b))
         table.append(row)
-    ic(table)
+    #ic(table)
     return table
 
 def gf16_add_table_bin():
@@ -50,7 +50,7 @@ def gf16_add_table_bin():
         for b in range(n):
             row.append(bin(gf16_add(a, b)))
         table.append(row)
-    ic(table)
+    #ic(table)
     return table
 
 
@@ -119,22 +119,80 @@ def print_gf2m_table(table, m=4, title=""):
         print(line)
     print()
 
+
+def write_gf2m_table(table, path: str, m=4, title=""):
+    """Write numeric table to a text file."""
+    n = 2**m
+    width = m
+
+    with open(path, "w", encoding="utf-8") as f:
+        if title:
+            f.write(title + "\n")
+
+        # Header row
+        header = " " * (width + 1)
+        for x in range(n):
+            header += f"{x:0{width}} "
+        f.write(header + "\n")
+
+        # Rows
+        for i, row in enumerate(table):
+            line = f"{i:0{width}} "
+            for val in row:
+                line += f"{val:0{width}} "
+            f.write(line + "\n")
+        f.write("\n")
+
+
+def write_gf2m_table_bin(table, path: str, m=4, title=""):
+    """Write binary table to a text file."""
+    n = 2**m
+    width = m
+
+    with open(path, "w", encoding="utf-8") as f:
+        if title:
+            f.write(title + "\n")
+
+        header = " " * (width + 1)
+        for x in range(n):
+            header += f"{x:0{width}b} "
+        f.write(header + "\n")
+
+        for i, row in enumerate(table):
+            line = f"{i:0{width}b} "
+            for val in row:
+                # here 'val' is int; if table already stores strings, drop the :b
+                line += f"{val:0{width}b} "
+            f.write(line + "\n")
+        f.write("\n")
+
+
 if __name__ == "__main__":
 
-    '''   
+    
     add_table = gf16_add_table()
     add_table_bin = gf16_add_table_bin()
 
     print_gf2m_table(add_table, title="addition table")
     print_gf2m_table_bin(add_table, title="addition table binary")
 
-    '''
-
+    
     mul_table = gf16_mul_table()
     mul_table_bin = gf16_mul_table_bin()
 
     print_gf2m_table(mul_table, title="multiplication table")
     print_gf2m_table_bin(mul_table, title= "multiplication table binary")
+
+    write_gf2m_table(mul_table,  "logs/gf16_mul_numeric.txt", m=4,
+                     title="GF(2^4) multiplication table (numeric)")
+    write_gf2m_table_bin(mul_table, "logs/gf16_mul_binary.txt", m=4,
+                         title="GF(2^4) multiplication table (binary)")
+    
+    write_gf2m_table(add_table, "logs/gf16_add_numeric.txt", m=4,
+                 title="GF(2^4) addition table (numeric)")
+    write_gf2m_table_bin(add_table, "logs/gf16_add_binary.txt", m=4,
+                     title="GF(2^4) addition table (binary)")
+
 
     for i, row in enumerate(mul_table):
         for j,element in enumerate(row):

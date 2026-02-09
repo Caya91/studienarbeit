@@ -24,15 +24,18 @@ def gf4_mul(a, b):
             a ^= RED_POLY
     return res & 0b11
 
+def gf4_scalar_mul_packet(alpha, p):
+    """Multiply every symbol in the packet by scalar alpha in GF(2^2)."""
+    return [gf4_mul(alpha, x) for x in p]
+
+
 
 def gf4_add_packet(p1, p2):
     """Element-wise addition in GF(2^2) for two equal-length packets."""
     assert len(p1) == len(p2)
     return [gf4_add(a, b) for a, b in zip(p1, p2)]
 
-def gf4_scalar_mul_packet(alpha, p):
-    """Multiply every symbol in the packet by scalar alpha in GF(2^2)."""
-    return [gf4_mul(alpha, x) for x in p]
+
 
 def gf4_inner_product(p1, p2):
     """Standard inner product in GF(2^2)."""

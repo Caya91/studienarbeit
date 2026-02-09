@@ -119,17 +119,9 @@ def print_gf2m_table(table, m=4, title=""):
         print(line)
     print()
 
-if __name__ == "__main__":
 
-    '''   
-    add_table = gf16_add_table()
-    add_table_bin = gf16_add_table_bin()
-
-    print_gf2m_table(add_table, title="addition table")
-    print_gf2m_table_bin(add_table, title="addition table binary")
-
-    '''
-
+def test_mul_table():
+    
     mul_table = gf255_mul_table()
     mul_table_bin = gf255_mul_table_bin()
 
@@ -144,5 +136,19 @@ if __name__ == "__main__":
             # testen ob i*j auch das richtige element ergibt
 
     print("all elements are equal")
+    return True
 
 
+
+if __name__ == "__main__":
+
+    '''   
+    add_table = gf16_add_table()
+    add_table_bin = gf16_add_table_bin()
+
+    print_gf2m_table(add_table, title="addition table")
+    print_gf2m_table_bin(add_table, title="addition table binary")
+
+    '''
+
+    ic(field._prime)

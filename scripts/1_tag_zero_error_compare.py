@@ -115,9 +115,8 @@ def monte_carlo_test(num_trials, data_fields, gen_size):
 
 
 if __name__ == "__main__":
-    clear_logs()
-    ic(monte_carlo_test(10000, 3,20))
-
+    #clear_logs()
+    ic(monte_carlo_test(10000, 4,12))
 
 '''
 def gen_bin(field:pyerasure.finite_field, data_fields:int, gen_size:int):

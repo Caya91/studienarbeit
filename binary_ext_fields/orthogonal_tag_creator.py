@@ -1,14 +1,17 @@
 import pyerasure
 import pyerasure.finite_field
 import random
+from typing import Any
 from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes
+from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES_GF2M
+
 
 verbose = False
 
 
 class OrthogonalTagGenerator:
-    def __init__(self, field:pyerasure.finite_field):
+    def __init__(self, field:Any):
         self.field = field
         self.square_to_root = {}  # key: square  ; value: root
         self.mul_table = []
@@ -189,11 +192,29 @@ if __name__ == "__main__":
     ic(tag_gen1.square_to_root)
     ic(tag_gen2.square_to_root)
     '''
-    tag_gen = OrthogonalTagGenerator(pyerasure.finite_field.Binary4(), )
+
+
+    '''
+        tag_gen = OrthogonalTagGenerator(pyerasure.finite_field.Binary4(), )
+        ic.enable()
+        ic(tag_gen.generate_tag_cross(7,10))
+
+        ic(tag_gen.generate_tag_cross(7,10))
+    '''
+
+    m = 4
+    prime = PRIMES_GF2M.get(m)
+
+    add_table, mul_table = build_tables_gf2m(m, prime)
+
+    custom_field = TableField(add_table=add_table, mul_table=mul_table, prime=prime)
+
+    tag_gen = OrthogonalTagGenerator(custom_field)
     ic.enable()
     ic(tag_gen.generate_tag_cross(7,10))
 
     ic(tag_gen.generate_tag_cross(7,10))
+    ic(tag_gen.square_to_root)
 
     #test_orthogonalgenerator()
     #test_cross_generation()
