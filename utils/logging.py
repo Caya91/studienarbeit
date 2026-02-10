@@ -21,6 +21,12 @@ def get_field_subdir(run_dir: Path, field: str) -> Path:
     field_dir.mkdir(exist_ok=True, parents=True)
     return field_dir
 
+
+def get_playground_dir(playground_folder: str) -> Path:
+    """"generate a folder in <root>/logs/*  to log palyground data"""
+    return LOG_DIR / playground_folder
+
+
 def clear_run_logs(run_dir: Path) -> None:
     """Delete files/subdirs in run dir (keep structure)."""
     for item in run_dir.iterdir():

@@ -178,6 +178,50 @@ class OrthogonalTagGenerator:
         return new_symbols
 
 
+    def print_square_to_root_table(self, filename: str):
+        """Print the square-to-root dictionary as a formatted table.
+        
+        Similar to add_table, mul_table in finite field table builders.
+        
+        Args:
+            filename: If provided, save to this text file instead of printing.
+        """
+        maxv = self.field.max_value
+        lines = []
+        for sq in range(maxv + 1):
+            root = self.square_to_root.get(sq, "-")
+            line = f"{sq:6} | {root}"
+            lines.append(line)
+        
+        if filename:
+            with open(filename, 'w') as f:
+                f.write("Square to Root Table (GF(2^m)):\n")
+                f.write("Square | Root\n")
+                f.write("-" * 20 + "\n")
+                f.write("\n".join(lines) + "\n")
+            print(f"Table saved to {filename}")
+
+    def print_mul_table(self, filename: str):
+        """Print the multiplication table as a formatted table.
+        
+        Args:
+            filename: If provided, save to this text file instead of printing.
+        """
+        maxv = self.field.max_value
+        header = "   " + " ".join(f"{i:3}" for i in range(maxv + 1))
+        lines = [header]
+        
+        for i in range(maxv + 1):
+            row_str = f"{i:2} " + " ".join(f"{self.mul_table[i][j]:3}" for j in range(maxv + 1))
+            lines.append(row_str)
+        
+        if filename:
+            with open(filename, 'w') as f:
+                f.write("Multiplication Table (GF(2^m)):\n")
+                f.write("\n".join(lines) + "\n")
+            print(f"Table saved to {filename}")
+
+
 
 ## TESTING
 
@@ -202,19 +246,7 @@ if __name__ == "__main__":
         ic(tag_gen.generate_tag_cross(7,10))
     '''
 
-    m = 4
-    prime = PRIMES_GF2M.get(m)
-
-    add_table, mul_table = build_tables_gf2m(m, prime)
-
-    custom_field = TableField(add_table=add_table, mul_table=mul_table, prime=prime)
-
-    tag_gen = OrthogonalTagGenerator(custom_field)
-    ic.enable()
-    ic(tag_gen.generate_tag_cross(7,10))
-
-    ic(tag_gen.generate_tag_cross(7,10))
-    ic(tag_gen.square_to_root)
+    print("OTC")
 
     #test_orthogonalgenerator()
     #test_cross_generation()

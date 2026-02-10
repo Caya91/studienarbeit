@@ -3,7 +3,12 @@ from pprint import pprint
 
 
 PRIMES_GF2M = {
+    2: 0b111, # x^2 + x + 1
+    3: 0b1011, # x^3 + x + 1
     4: 0b10011,     # x^4 + x + 1
+    5: 0b100101, # x^5 + x^2 + 1
+    6: 0b1000001, # x^6 + x + 1 (alt: 0b1100011 for x^6 + x^4 + x^3 + x + 1)
+    7: 0b10000011, # x^7 + x + 1 (alt: 0b11000011 for x^7 + x^6 + x + 1)
     8: 0b1_0001_1101,  # AES polynomial x^8 + x^4 + x^3 + x + 1
 }
 

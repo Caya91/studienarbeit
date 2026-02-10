@@ -9,7 +9,8 @@ class Pollution(Enum):
     DATA = 1
     TAG = 2
 
-
+# TODO: min_int is usually 0, so could be left out of all operations
+# TODO: max_int could be derived from used field, 
 # TODO: implement coefficient pollution
 
 def pollute_full_packet(packet:bytearray, min_int:int, max_int:int) -> bytearray:
