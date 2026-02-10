@@ -51,3 +51,22 @@ def save_generation_txt(path: Path, generation: list[bytearray],
                 f.write(f" ... [{len(ba)-max_symbols} more]")
             f.write("\n")
 
+def print_table(field, table,  filename: str):
+        """Print the table as a formatted table.
+        
+        Args:
+            filename: save to this text file instead of printing.
+        """
+        maxv = field.max_value
+        header = "   " + " ".join(f"{i:3}" for i in range(maxv + 1))
+        lines = [header]
+        
+        for i in range(maxv + 1):
+            row_str = f"{i:2} " + " ".join(f"{table[i][j]:3}" for j in range(maxv + 1))
+            lines.append(row_str)
+        
+        if filename:
+            with open(filename, 'w') as f:
+                f.write("Multiplication Table (GF(2^m)):\n")
+                f.write("\n".join(lines) + "\n")
+            print(f"Table saved to {filename}")

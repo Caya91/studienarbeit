@@ -221,8 +221,6 @@ class OrthogonalTagGenerator:
                 f.write("\n".join(lines) + "\n")
             print(f"Table saved to {filename}")
 
-
-
 ## TESTING
 
 
