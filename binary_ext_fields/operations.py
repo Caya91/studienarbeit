@@ -1,10 +1,12 @@
 import pyerasure
 import pyerasure.finite_field
 from icecream import ic
+from typing import Any
 
 
-def inner_product_bytes(field:pyerasure.finite_field, x: bytes, y: bytes) -> int:
-    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^4) using PyErasure vector ops."""
+
+def inner_product_bytes(field: Any, x: bytes, y: bytes) -> int:
+    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^m) using PyErasure vector ops."""
     assert len(x) == len(y)
     acc = 0
     tmp = bytearray(1)

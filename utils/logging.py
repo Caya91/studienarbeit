@@ -52,10 +52,10 @@ def save_generation_txt(path: Path, generation: list[bytearray],
             f.write("\n")
 
 def print_table(field, table,  filename: str):
-        """Print the table as a formatted table.
+        """Print the add/mul table of a field as a formatted table.
         
         Args:
-            filename: save to this text file instead of printing.
+            filename: save to this text file .
         """
         maxv = field.max_value
         header = "   " + " ".join(f"{i:3}" for i in range(maxv + 1))
