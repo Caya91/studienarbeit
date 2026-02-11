@@ -7,7 +7,9 @@ PRIMES_GF2M = {
     3: 0b1011, # x^3 + x + 1
     4: 0b10011,     # x^4 + x + 1
     5: 0b100101, # x^5 + x^2 + 1
-    6: 0b1000001, # x^6 + x + 1 (alt: 0b1100011 for x^6 + x^4 + x^3 + x + 1)
+    6: 0b1000011 , # x^6 + x + 1 (alt: 0b1100011 for x^6 + x^4 + x^3 + x + 1)
+    
+    #6: 0b1000001, # x^6 + x + 1 (alt: 0b1100011 for x^6 + x^4 + x^3 + x + 1)
     7: 0b10000011, # x^7 + x + 1 (alt: 0b11000011 for x^7 + x^6 + x + 1)
     8: 0b1_0001_1101,  # AES polynomial x^8 + x^4 + x^3 + x + 1
 }
@@ -20,6 +22,8 @@ class TableField:
         self._add = add_table
         self._mul = mul_table
         self.max_value = len(add_table) - 1
+        self.prime = prime
+        self.name = self._make_name()
 
     def add(self, a: int, b: int) -> int:
         return self._add[a][b]
@@ -31,8 +35,26 @@ class TableField:
         for i, v in enumerate(vec):
             vec[i] = self.mul(v, scalar)
 
+    def get_key_from_value(self):
+        """Find first key that maps to target_value."""
+        for key, value in PRIMES_GF2M.items():
+            if value == self.prime:
+                return key
+        return None # Not found
+    
+    def _make_name(self):
+        pow_int = 0
+        for key, value in PRIMES_GF2M.items():
+            if value == self.prime:
+                pow_int = key
+                return f"GF_2pow{pow_int}"
+        return None # None found
+
+        
+
 
 def make_prime_field(p: int) -> TableField:
+    '''not used yet'''
     add_table = [[(a + b) % p for b in range(p)] for a in range(p)]
     mul_table = [[(a * b) % p for b in range(p)] for a in range(p)]
     return TableField(add_table, mul_table)
@@ -138,8 +160,13 @@ if __name__ == "__main__":
         f.write("M = {}\n".format(m))
         f.write("POLY = 0b{:b}\n\n".format(poly))
 
+
         f.write("ADD_TABLE = \n")
         pprint(ADD_GF16, stream=f, width=120)
         f.write("\n\nMUL_TABLE = \n")
         pprint(MUL_GF16, stream=f, width=120)
         f.write("\n")
+
+    table_field = TableField(ADD_GF16, MUL_GF16, poly)
+
+    ic(table_field.name)

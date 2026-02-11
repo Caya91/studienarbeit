@@ -5,7 +5,9 @@ from binary_2pow4.generate_symbols import generate_symbols_random_bin4, check_or
 
 from binary_ext_fields.log_utils import clear_logs
 
-from utils.logging import get_run_log_dir, get_field_subdir, save_generation_txt
+from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt
+from utils.plot_utils import plot_acceptance_rates_comparison
+
 import pyerasure.finite_field
 from binary_2pow8.orthogonal_tag_creator import OrthogonalTagGenerator as OTG_bin8
 from binary_2pow8.config import field as field_bin8
