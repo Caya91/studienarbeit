@@ -1,0 +1,15 @@
+
+Stand 11.02.2026
+
+Done:
+using my own finite field implementation, dont need pyerase for the field anymore 
+generating plots with error rates for different field sizes
+monte carlo simulation of error rates for all fields
+
+TODO: 
+compare error rates, when swapping
+
+implementing rref
+implementing ACR
+implementing combined recovery
+pollution security check for different fields
