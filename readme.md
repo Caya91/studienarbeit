@@ -16,3 +16,10 @@ For using the .env variable in root folder automatically:
 }
 
 that should be enough to automatically use the .env so that folder like tests and experiments can import other files
+
+
+
+### Notes
+
+vector_multiply_into   mutates the given vector
+- use copy of the vector to not alter the generations 

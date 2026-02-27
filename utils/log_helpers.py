@@ -51,7 +51,7 @@ def save_generation_txt(path: Path, generation: list[bytearray],
                 f.write(f" ... [{len(ba)-max_symbols} more]")
             f.write("\n")
 
-def print_table(field, table,  filename: str):
+def print_table(field, table,  filename: str = None):
         """Print the add/mul table of a field as a formatted table.
         
         Args:
@@ -70,3 +70,10 @@ def print_table(field, table,  filename: str):
                 f.write("Multiplication Table (GF(2^m)):\n")
                 f.write("\n".join(lines) + "\n")
             print(f"Table saved to {filename}")
+
+
+def print_generation(
+    generation: list[bytearray]    
+) -> None:
+    for idx, pkt in enumerate(generation):
+        print(f'Packet[{idx}]: {list(pkt)}\n')

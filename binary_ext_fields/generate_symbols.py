@@ -7,7 +7,7 @@ from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes, print_ints
 
 import pathlib
-from typing import Iterable
+from typing import Iterable, Any
 
 logs_dir = pathlib.Path("logs")
 logs_dir.mkdir(exist_ok=True)  
@@ -37,6 +37,27 @@ def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:i
         print_ints(symbol)
     '''
     return symbols
+
+
+def recode(field: Any, generation:list[bytearray], count: int) -> list[bytearray]:
+    '''returns <count> random recoded packets of our generation'''
+#TODO: this recodes 2 random packets after multiplying them by a scalar, for real RLNC we need more
+
+    min_value = 1
+    max_value = field.max_value
+
+    pckts = []
+    for i in range(count):
+        pkt1 = random.choice(generation).copy()
+        pkt2 = random.choice(generation).copy()
+
+        field.vector_multiply_into(pkt1, random.randint(min_value, max_value))
+
+        result = field.vector_multiply_add_into(pkt1,pkt2,random.randint(min_value, max_value))
+
+        pckts.append(result)
+
+    return pckts
 
 
 def check_orth_fixed(field, generation:list[bytearray]) -> bool:

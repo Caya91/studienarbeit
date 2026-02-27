@@ -1,34 +1,24 @@
-from binary_2pow4.orthogonal_tag_creator import OrthogonalTagGenerator as OTG_bin4
-from binary_2pow4.config import field as field_bin4
-
-from binary_2pow4.generate_symbols import generate_symbols_random_bin4, check_orth_bin4, LOG_FILE
-
 from binary_ext_fields.log_utils import clear_logs
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC_custom
 
 from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES_GF2M
-from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth
+from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth, recode
 
 
-from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt
+from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation
 from utils.plot_utils import plot_acceptance_rates_comparison, get_playground_dir
-
-import pyerasure.finite_field
-from binary_2pow8.orthogonal_tag_creator import OrthogonalTagGenerator as OTG_bin8
-from binary_2pow8.config import field as field_bin8
-
-from binary_2pow8.generate_symbols import generate_symbols_random_bin8, check_orth_bin8, LOG_FILE
 
 import pathlib
 from pathlib import Path
 
 from icecream import ic
 import statistics
-
+import random
 
 fields = list(range(2,9))
 
-def monte_carlo_single_field(num_trials, data_fields, gen_size, field:TableField):
+
+def monte_carlo_recoding_test(num_trials, data_fields, gen_size, field:TableField):
     '''
     
     Returns:
@@ -65,14 +55,28 @@ def monte_carlo_single_field(num_trials, data_fields, gen_size, field:TableField
             if trial % 1000 == 0: print("progess loop counter:", trial)
 
             generation = generate_symbols_random(0,field.max_value,data_fields,gen_size)
-            tagged_gen = tag_gen.generate_all_tags(generation)
 
-            
+            gen_w_coefficients = []
+            for i, pkt in enumerate(generation):
+                coefficients = bytearray(gen_size)
+                coefficients[i] = 1
+        
+                gen_w_coefficients.append(coefficients.copy() + pkt.copy())
+
+
+
+            tagged_gen = tag_gen.generate_all_tags(gen_w_coefficients)
+
+
+            recoded_gen = recode(field, tagged_gen,len(tagged_gen))
+
+
+
             bin_failures_file = bin_dir / "orth_failures.log"
-            accepts.append(check_orth(field, tagged_gen, log_dir=bin_failures_file))
+            accepts.append(check_orth(field, recoded_gen, log_dir=bin_failures_file))
 
             save_generation_txt(bin_gen_txt, generation, trial, label="generation")
-            save_generation_txt(bin_tagged_txt, tagged_gen, trial, label="tagged")
+            save_generation_txt(bin_tagged_txt, recoded_gen, trial, label="tagged")
             
 
     prob = statistics.mean(accepts)
@@ -83,9 +87,58 @@ def monte_carlo_single_field(num_trials, data_fields, gen_size, field:TableField
 
     return (prob, std, total_accepted, num_trials)
 
+def recoding_test1():
+    clear_logs()
+    dir = get_playground_dir("recoding_pl.txt")
+
+    accepts = False
+    while not accepts:
+
+        data_fields = 3
+        gen_size = 5
+        field = 5
+
+        prime = PRIMES_GF2M.get(field)
+        add_table, mul_table = build_tables_gf2m(field,prime)
+        table_field = TableField(add_table, mul_table, prime)
+        tag_gen = OTC_custom(table_field)
+
+        generation = generate_symbols_random(0,table_field.max_value,data_fields,gen_size)
+
+        # new matrix with Identity matrix in the front
+
+        gen_w_coefficients = []
+        generation_size = len(generation)
+
+        coefficients = bytearray(generation_size)
+
+
+        for i, pkt in enumerate(generation):
+            coefficients = bytearray(generation_size)
+            coefficients[i] = 1
+    
+            gen_w_coefficients.append(coefficients.copy() + pkt.copy())
+
+
+        tagged_gen = tag_gen.generate_all_tags(gen_w_coefficients)
+
+        accepts = (check_orth(table_field, tagged_gen, dir)) # loop until a generation doesnt have the 0 tag error
+
+    # test recode function
+    recoded_packets = recode(table_field, tagged_gen, 5)
+
+    print_generation(recoded_packets)
+    print_generation(tagged_gen)
+
+    return check_orth(table_field, recoded_packets)
+
 
 if __name__ == "__main__":
-    #clear_logs()
+
+    print(recoding_test1())
+
+
+ #clear_logs()
     #ic(monte_carlo_test(10000, 4,12))
     
 
@@ -102,7 +155,7 @@ if __name__ == "__main__":
     ic(primes, table_fields)
 
 
-    num_trials = 1000
+    num_trials = 100
     data_fields = 7
     gen_size = 7
 
@@ -112,7 +165,7 @@ if __name__ == "__main__":
 
         print(f"===== Field Nr. {i }  {field.name} ========")
         #ic( monte_carlo_single_field(num_trials, data_fields, gen_size, field))
-        monte_carlo_result_tuple = monte_carlo_single_field(num_trials, data_fields, gen_size, field)
+        monte_carlo_result_tuple = monte_carlo_recoding_test(num_trials, data_fields, gen_size, field)
         '''
             Args:
         field_results: Dict mapping to (accept_prob, std_dev, accepted_count, total_trials)
@@ -122,22 +175,3 @@ if __name__ == "__main__":
     
     #ic(tuples_for_plotting)
     plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error"))
-
-'''
-def gen_bin(field:pyerasure.finite_field, data_fields:int, gen_size:int):
-
-    match field:
-        case pyerasure.finite_field.Binary4:
-            generation = generate_symbols_random_bin4(data_fields,gen_size)
-            tagged_gen = tag_gen.generate_all_tags(generation)
-            print("Bin4")
-            return generation
-        case pyerasure.finite_field.Binary8:
-
-            print("Bin8")
-        
-
-
-    return generation
-
-'''

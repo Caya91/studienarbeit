@@ -9,6 +9,7 @@ debug.*
 __pycache__/
 *.py[cod]
 *$py.class
+/playground
 
 structure.txt
 

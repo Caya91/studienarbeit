@@ -6,10 +6,25 @@ using my own finite field implementation, dont need pyerase for the field anymor
 generating plots with error rates for different field sizes
 monte carlo simulation of error rates for all fields
 
+27.02: simple recoding done, orthogonality stays intact 
+
+
 TODO: 
+monte carlo test with recoding
+
+implement swap / other means of preventing the 0 error tag
+
 compare error rates, when swapping
 
 implementing rref
-implementing ACR
-implementing combined recovery
+implementing ARC
+-> implementing combined recovery
+
+
 pollution security check for different fields
+
+Later:
+
+optimize performance 
+
+

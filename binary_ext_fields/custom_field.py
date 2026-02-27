@@ -26,14 +26,44 @@ class TableField:
         self.name = self._make_name()
 
     def add(self, a: int, b: int) -> int:
+        #TODO:  mit XOR ausrechen statt lookup
         return self._add[a][b]
 
     def mul(self, a: int, b: int) -> int:
         return self._mul[a][b]
 
     def vector_multiply_into(self, vec: bytearray | list[int], scalar: int) -> None:
+        """
+        CAREFUL - MUTATES THE VECTOR : vec
+        result = vector * scalar 
+        """
         for i, v in enumerate(vec):
             vec[i] = self.mul(v, scalar)
+
+
+    def vector_multiply_add_into(self, x: bytearray, y: bytes, c: int):
+        """
+        Multiply the vector y with the constant c and then add the result
+        to vector x.
+        """
+
+        assert len(x) == len(y)
+        assert c <= self.max_value
+
+        y_copy = y.copy()
+        self.vector_multiply_into(y_copy, c)
+
+        tmp = bytearray(1)
+
+        result = []
+        for a, b in zip(x, y_copy):
+            tmp = self.add(a, b)        # acc += a·b
+            result.append(tmp)
+
+        assert len(result) == len(x)
+        print(result)
+        return bytearray(result)
+
 
     def get_key_from_value(self):
         """Find first key that maps to target_value."""
