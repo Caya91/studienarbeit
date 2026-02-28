@@ -40,6 +40,23 @@ class TableField:
         for i, v in enumerate(vec):
             vec[i] = self.mul(v, scalar)
 
+    def get_mul_inverse(self, value:int) -> int:
+        ''' return the inverse of the given value 
+        '''
+        for i, row in enumerate(self._mul):
+            #ic(i,row, row[value])
+            if row[value] == 1:
+                return i
+            
+    def get_mul_to_target(self, base:int, target:int) -> int:
+        '''returns the scalar that results in
+        >>> base * scalar = target
+        '''
+        for i, row in enumerate(self._mul):
+            #ic(i,row, row[value])
+            if row[base] == target:
+                return i
+
 
     def vector_multiply_add_into(self, x: bytearray, y: bytes, c: int):
         """
@@ -184,19 +201,36 @@ if __name__ == "__main__":
     ADD_GF16, MUL_GF16 = build_tables_gf2m(m, poly)
 
     ic(ADD_GF16, MUL_GF16)
-
-    with open("logs/gf16_tables.txt", "w", encoding="utf-8") as f:
-        f.write("# Auto-generated GF(2^{}) tables\n".format(m))
-        f.write("M = {}\n".format(m))
-        f.write("POLY = 0b{:b}\n\n".format(poly))
-
-
-        f.write("ADD_TABLE = \n")
-        pprint(ADD_GF16, stream=f, width=120)
-        f.write("\n\nMUL_TABLE = \n")
-        pprint(MUL_GF16, stream=f, width=120)
-        f.write("\n")
-
     table_field = TableField(ADD_GF16, MUL_GF16, poly)
 
-    ic(table_field.name)
+
+
+    # Sanity Test to get scalar to reach target
+    target1 = 5
+    target2 = 1
+    target3 = 7
+
+    scalar1 = table_field.get_mul_to_target(3,target1)
+    scalar2 = table_field.get_mul_to_target(1,target2)
+    scalar3 = table_field.get_mul_to_target(9,target3)
+
+    ic(scalar1,scalar2, scalar3)
+
+
+
+    '''    TESTING INVERSE
+    table_field = TableField(ADD_GF16, MUL_GF16, poly)
+    print("INVERSE")
+    inv1 = table_field.get_mul_inverse(3)
+    inv2 = table_field.get_mul_inverse(1)
+    inverses = []
+    for i in range(1,15):
+        inv = table_field.get_mul_inverse(i)
+        inverses.append(inv)
+        print(f'Inverse of {i} = {inv} ')
+
+    for i, e in enumerate(inverses):
+        print(f'Inverse of {i} = {e} ')
+
+    ic(inverses)
+    '''
