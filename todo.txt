@@ -28,6 +28,11 @@ Later:
 
 
 optimize performance 
+
+    use functools to cache answer, for example for inverse, square root   etc
+
+    if code is sparse, can maybe save some time with rref implement
+    
     Python's built-in ctypes module
     Cython: Write Python-like code 
     CPython Extensions: Pure C API 
