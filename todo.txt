@@ -37,3 +37,12 @@ optimize performance
     Cython: Write Python-like code 
     CPython Extensions: Pure C API 
 
+
+    We can swap two numbers without requiring a temporary variable by using the XOR operator (^). 
+    It works because applying XOR twice with the same value brings back the original number.
+        a = 5
+        b = 10
+        ​
+        a = a ^ b
+        b = a ^ b
+        a = a ^ b

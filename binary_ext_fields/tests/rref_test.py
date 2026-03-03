@@ -1,9 +1,30 @@
+'''
+       
+Test Idea:
+
+start from rref form for a Matrix
+
+one function recodes in the choosen field
+other function recodes with regular algebra
+
+find rref from both matrices -> compare result
+
+use regular rref from some library and test the same Matrix against that library, 
+
+'''
+
+
 import galois
 #from galois import PolyLike
 import numpy as np
 from binary_ext_fields.custom_field import TableField, PRIMES_GF2M, build_tables_gf2m
+from binary_ext_fields.rref import full_cleanup_rref, to_byte_matrix,calculate_rref, invert_pivot_rows
+
+from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation
 
 from icecream import ic
+from sympy import Matrix
+
 
 
 '''
@@ -25,8 +46,123 @@ def galois_rref(packets, field_order: int, data_len: int):
 
 '''
 
-if __name__ == "__main__":
 
+matrix_A = [
+    [1, 4, 7, 2, 5, 3, 6, 1, 2, 7],
+    [3, 6, 2, 7, 1, 4, 5, 2, 3, 6],
+    [5, 1, 4, 3, 6, 2, 7, 3, 4, 1],
+    [7, 3, 6, 1, 2, 5, 4, 4, 5, 2],
+    [2, 5, 1, 4, 3, 6, 1, 5, 6, 3],
+    [4, 7, 3, 6, 7, 1, 2, 6, 7, 4],
+    [6, 2, 5, 5, 4, 7, 3, 7, 1, 5],
+    [1, 4, 7, 2, 5, 3, 6, 1, 2, 7],
+    [3, 6, 2, 7, 1, 4, 5, 2, 3, 6],
+    [5, 1, 4, 3, 6, 2, 7, 3, 4, 1],
+    ]
+
+matrix_B = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+]
+
+matrix_partial_one = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+]
+
+
+matrix_partial_two = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 2, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 3, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 4, 1, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 5, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 6, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 7, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 2, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 3, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 4],
+]
+
+def cleanup_test_1():
+    
+    cleaned_rref = full_cleanup_rref(matrix_partial_one)
+    print_generation(cleaned_rref)
+
+    cleaned_rref = full_cleanup_rref(matrix_partial_two)
+    print_generation(cleaned_rref)
+    ic(cleaned_rref)
+    return True
+
+
+def assertion_fail_test(Matrix):
+    field_int = 3
+    prime = PRIMES_GF2M.get(field_int)
+    add_table, mul_table = build_tables_gf2m(field_int, prime)
+    
+    #using global variable for now
+    rref_field = TableField(add_table,mul_table,prime)
+
+
+    matrix_A = to_byte_matrix(Matrix)      # TODO: how to check and throw error when a matrix isnt full rank?
+
+    print("Test should fail with assertion error after this statement")
+
+    try:
+        calculate_rref(matrix_A, rref_field)
+    except AssertionError as e:
+        # assertion was triggered as expected
+        assert "pivot" in str(e) or "rank" in str(e)
+        return True # Test passed
+    else:
+        # if we get here, the assertion did NOT trigger, which is a test failure
+        raise AssertionError("Expected AssertionError for rank-deficient matrix")
+    return False
+
+def full_rref_test(Matrix: list[list[int]]):
+    
+    field_int = 3
+    prime = PRIMES_GF2M.get(field_int)
+    add_table, mul_table = build_tables_gf2m(field_int, prime)
+    
+    #using global variable for now
+    rref_field = TableField(add_table,mul_table,prime)
+
+    matrix_B = to_byte_matrix(Matrix)
+
+    rref_2, cleaned_rref_2 = calculate_rref(matrix_B, rref_field)
+    final_rref = invert_pivot_rows(cleaned_rref_2, rref_field)
+    ic(rref_2, cleaned_rref_2, final_rref)
+    
+    return True
+
+
+
+def reference_rref_test():
+    M = Matrix([[1, 2], [3, 4]])
+
+    return M.rref()  # Returns (rref_matrix, pivot_columns)
+
+
+def galois_stuff():
+    '''dont know if this test will be relevant any, check again later'''
+    
     m = 4
     prime = PRIMES_GF2M.get(m)
     ic(prime)
@@ -72,6 +208,19 @@ if __name__ == "__main__":
     rank = np.count_nonzero(np.any(left_block != 0, axis=1))
     ic("Rank:", rank)  # 2
     ic("Pivots:", np.argmax(left_block != 0, axis=1))  # Rough pivot cols
+
+
+
+
+if __name__ == "__main__":
+
+    test_1 = assertion_fail_test(matrix_A)
+
+    test_2 = full_rref_test(matrix_B)
+
+    ic(test_1, test_2)
+
+
 
     '''
 

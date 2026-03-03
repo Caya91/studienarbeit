@@ -62,6 +62,8 @@ class TableField:
         """
         Multiply the vector y with the constant c and then add the result
         to vector x.
+        SHOULDNT MUTATE
+        #TODO: test if mutates
         """
 
         assert len(x) == len(y)
@@ -78,7 +80,7 @@ class TableField:
             result.append(tmp)
 
         assert len(result) == len(x)
-        print(result)
+        #print(result)
         return bytearray(result)
 
 
