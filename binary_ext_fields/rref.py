@@ -11,6 +11,8 @@ from typing import Any
 
 from icecream import ic
 
+# TODO:  test rref for all different field sizes
+
 
 def _find_pivot(Matrix: list[list[int]], column= 0 )-> tuple[int,int, int]:
 

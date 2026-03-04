@@ -8,15 +8,18 @@ monte carlo simulation of error rates for all fields
 
 27.02: simple recoding done, orthogonality stays intact 
 28.02: started rref implementation, added base functions like inverse that will be necessary
+03.03 rref implemented
+
 
 TODO: 
+make repo easily portable / executable on other machines
+
 monte carlo test with recoding
 
 implement swap / other means of preventing the 0 error tag
 
 compare error rates, when swapping
 
-implementing rref
 implementing ARC
 -> implementing combined recovery
 
@@ -24,7 +27,6 @@ implementing ARC
 pollution security check for different fields
 
 Later:
-
 
 
 optimize performance 
