@@ -188,6 +188,13 @@ def gf_add_table(n:int):
     ic(table)
     return table
 
+def create_field(field_m:int, ) -> TableField:
+    ''' field_size is  2^m, returns correspoonding Tablefield
+    '''
+    poly = PRIMES_GF2M[field_m]
+    ADD_GF16, MUL_GF16 = build_tables_gf2m(field_m, poly)
+
+    return TableField(ADD_GF16, MUL_GF16, poly)
 
 if __name__ == "__main__":
     '''

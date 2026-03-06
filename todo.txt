@@ -9,10 +9,11 @@ monte carlo simulation of error rates for all fields
 27.02: simple recoding done, orthogonality stays intact 
 28.02: started rref implementation, added base functions like inverse that will be necessary
 03.03 rref implemented
+04.03 repo is portable, but needs pyerasure to be installed
+04.03 started implementing arc
 
 
 TODO: 
-make repo easily portable / executable on other machines
 
 monte carlo test with recoding
 
@@ -20,7 +21,12 @@ implement swap / other means of preventing the 0 error tag
 
 compare error rates, when swapping
 
-implementing ARC
+implementing ARC  
+-> preselecting incoming packets    Done
+-> probably rref now and checking the packet columns now
+-> return positions of possible recoverys 
+
+
 -> implementing combined recovery
 
 

@@ -68,6 +68,9 @@ def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField):
             field.vector_multiply_into(new_row, inverse)
             final_rref.append(new_row)
 
+    if len(final_rref) == 0: # falls keien reihe invertiert wird, ist die liste leer, dann returnen wir das Original
+        return cleaned_matrix.copy()
+
     return final_rref
 
 # TODO: decide where this function goes,  this should guaruantee, that all matrices are bytearrays, for consistency before working with it
@@ -96,7 +99,17 @@ def _cleanup_rref(partial_rref: list[list[int]], column: int, field:TableField) 
 
     #ic(rref_copy)
     return rref_copy
-        
+
+
+def _partial_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
+    pivot_tuple = _find_pivot(Matrix)
+    partial_rref = _subtract_pivot_from_matrix(*pivot_tuple,Matrix,field)
+
+    for i in range(1,len(Matrix)): # skip first element of the loop
+        pivot_tuple = _find_pivot(partial_rref,i)
+        partial_rref = _subtract_pivot_from_matrix(*pivot_tuple, partial_rref, field)
+
+    return partial_rref
 
 
 def calculate_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
