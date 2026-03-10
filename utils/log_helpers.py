@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 import pickle
+from icecream import ic
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # Repo root
 LOG_DIR = BASE_DIR / "logs"
@@ -25,6 +26,23 @@ def get_field_subdir(run_dir: Path, field: str) -> Path:
 def get_playground_dir(playground_folder: str) -> Path:
     """"generate a folder in <root>/logs/*  to log palyground data"""
     return LOG_DIR / playground_folder
+
+
+def to_byte_matrix(M):
+    '''converts a matrix of ints to a bytearray for consistency'''
+    return [bytearray(row) for row in M]
+
+
+def to_int_matrx(M)-> list[list[int]]:
+    '''converts the bytearray matrix to ints'''
+    ic(M)
+    new_matrix = []
+    for row in M:
+        new_row = []
+        for e in row:
+            new_row.append(int(e))
+        new_matrix.append(new_row)
+    return new_matrix
 
 
 def clear_run_logs(run_dir: Path) -> None:

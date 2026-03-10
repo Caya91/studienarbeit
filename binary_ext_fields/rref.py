@@ -1,7 +1,9 @@
 from binary_ext_fields.log_utils import clear_logs
+from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation, to_int_matrx
+
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC_custom
 
-from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES_GF2M
+from binary_ext_fields.custom_field import TableField, create_field
 from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth
 
 
@@ -12,10 +14,86 @@ from typing import Any
 from icecream import ic
 
 # TODO:  test rref for all different field sizes
+matrix_B = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7]
 
+]
+
+matrix_C = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7]
+
+]
+
+
+matrix_D = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7]
+
+]
+
+
+matrix_bitflip = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 2, 7, 1, 0 ,2, 3, 5, 4,2 ,1]
+
+]
 
 def _find_pivot(Matrix: list[list[int]], column= 0 )-> tuple[int,int, int]:
-
+    """
+    Use in for loop, while incrementing :column
+    
+    :param Matrix: Description
+    :type Matrix: list[list[int]]
+    :param column: Description
+    :return: Description
+    :rtype: tuple[int, int, int]
+    """
     for i, row in enumerate(Matrix):
         if i < column: continue
         if row[column] > 0:
@@ -56,10 +134,18 @@ def _subtract_pivot_from_matrix(pivot_row: int, pivot_column:int, pivot_value: i
     return Matrix_copy
 
 
-def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField):
+def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField, gen_size:int):
+    ''' its assumed that the matrix is of full rankt until the row: Matrix[generation size]
+    THis will MUTATE the original matrix, if that results in Problem, that can be changed
+    '''
     
     final_rref = []
     for i, row in enumerate(cleaned_matrix):
+        if i >= gen_size: 
+            final_rref.append(row.copy())
+            continue
+             # when the pivot rows are handled we can break the loop
+
         pivot_element = row[i]
         assert pivot_element != 0  # if pivot element == 0   this should break
         if pivot_element != 1:
@@ -78,11 +164,12 @@ def to_byte_matrix(M):
     '''converts a matrix of ints to a bytearray for consistency'''
     return [bytearray(row) for row in M]
 
+
 def _cleanup_rref(partial_rref: list[list[int]], column: int, field:TableField) -> list[list[int]]:
     '''clean the partial rref from the bottom up
     SHOULDNT MUTATE ORIGINAL
     '''
-    #ic(column)
+    ic(column)
     cleanup_row = partial_rref[column].copy() # take row corresponding to the column
     pivot_element = cleanup_row[column] # save base element
     rref_copy = partial_rref.copy()
@@ -112,48 +199,75 @@ def _partial_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
     return partial_rref
 
 
-def calculate_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
+def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
 
     pivot_tuple = _find_pivot(Matrix)
     partial_rref = _subtract_pivot_from_matrix(*pivot_tuple,Matrix,field)
-
-    for i in range(1,len(Matrix)): # skip first element of the loop
+    for i in range(1,gen_size): # skip first element of the loop
         pivot_tuple = _find_pivot(partial_rref,i)
         partial_rref = _subtract_pivot_from_matrix(*pivot_tuple, partial_rref, field)
 
 
     #rank check:
-    for i, row in enumerate(partial_rref):
-        assert row[i] != 0 ,   "pivot element is zero: matrix not full rank"
+    for i in range(gen_size):
+        assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
     
-    cleaned_rref = full_cleanup_rref(partial_rref, field)
+    cleaned_rref = full_cleanup_rref(partial_rref, field, gen_size)
 
     return partial_rref , cleaned_rref
 
 
-def full_cleanup_rref(partial_rref: list[list[int]], field:TableField) -> list[list[int]]:
+def full_cleanup_rref(partial_rref: list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
     '''cleans up the whole partial rref
     uses _cleanup_rref()
     '''
     #ic(len(partial_rref) -1, partial_rref)
 
-    #rank check again .... just to be sure
-    for i, row in enumerate(partial_rref):
-        assert row[i] != 0 ,   "pivot element is zero: matrix not full rank"
+    #rank check again .... just to be sure # TODO: maybe make a function for this check
+    for i in range(gen_size):
+        assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
 
-
-    cleanup_rref = _cleanup_rref(partial_rref,len(partial_rref) -1, field)
+    ic("cleanup aufruf:", partial_rref, gen_size -1 )
+    cleanup_rref = _cleanup_rref(partial_rref,gen_size -1, field)
+    ic(gen_size -1)
     #ic(partial_rref)
-    for i in range(len(partial_rref) -1 , -1, -1):  # starting from last packet until packet [0]
-        #ic(i)
+
+    # here cleanup for the first rows
+    for i in range(gen_size -1 , -1, -1):  # starting from last packet until packet [0]
+        ic(i)
         cleanup_rref = _cleanup_rref(cleanup_rref, i, field)
-        #ic(cleanup_rref)
+        ic(cleanup_rref)
     
     return cleanup_rref
 
 
 
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     print("rref")
+    
+    field = create_field(3)
+    gen_size = 10
+    rref, stuff = calculate_rref(matrix_B,field , gen_size)
+
+    rref_int = to_int_matrx(rref)
+    print_generation(rref_int)
+    
+
+    rref_1, stuff1 = calculate_rref(matrix_C, field, gen_size)
+    rref_1_int = to_int_matrx(stuff1)
+    print_generation(rref_1_int)
+
+    rref_2, stuff2 = calculate_rref(matrix_D, field, gen_size)
+    rref_2_int = to_int_matrx(stuff2)
+    inverted_rref2 = invert_pivot_rows(rref_2_int,field, gen_size)
+    print_generation(rref_2_int)
+    print_generation(inverted_rref2)
+
+    
+    filler, rref_faulty = calculate_rref(matrix_bitflip, field, gen_size)
+    rref_faulty_int = to_int_matrx(rref_faulty)
+    inverted_faulty = invert_pivot_rows(rref_faulty_int,field, gen_size)
+    print_generation(rref_faulty_int)
+    print_generation(inverted_faulty)

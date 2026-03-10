@@ -11,6 +11,7 @@ monte carlo simulation of error rates for all fields
 03.03 rref implemented
 04.03 repo is portable, but needs pyerasure to be installed
 04.03 started implementing arc
+06.03 metting with hosein/akif -> should implement arc and swapping, then evaluate error prob with that
 
 
 TODO: 

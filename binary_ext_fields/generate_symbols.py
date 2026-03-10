@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes, print_ints
+from binary_ext_fields.custom_field import TableField, create_field
 
 import pathlib
 from typing import Iterable, Any
@@ -39,25 +40,64 @@ def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:i
     return symbols
 
 
-def recode(field: Any, generation:list[bytearray], count: int) -> list[bytearray]:
-    '''returns <count> random recoded packets of our generation'''
-#TODO: this recodes 2 random packets after multiplying them by a scalar, for real RLNC we need more
+def generate_coefficient_row(field: TableField, gen_size:int) -> bytearray:
+    assert gen_size > 0
+    min_int = 0
+    max_int = field.max_value
+            
+    return bytearray([random.randint(min_int, max_int) for _ in range(gen_size)])
 
-    min_value = 1
-    max_value = field.max_value
 
-    pckts = []
+def generate_coefficient_matrix(field: TableField, gen_size:int, count:int) -> list[bytearray]:
+    coefficient_matrix = []
     for i in range(count):
-        pkt1 = random.choice(generation).copy()
-        pkt2 = random.choice(generation).copy()
+        coefficient_matrix.append(generate_coefficient_row(field, gen_size))
+    return coefficient_matrix
 
-        field.vector_multiply_into(pkt1, random.randint(min_value, max_value))
 
-        result = field.vector_multiply_add_into(pkt1,pkt2,random.randint(min_value, max_value))
+def recode(field: Any, generation:list[bytearray], count=1) -> bytearray:
+    '''returns <count> random recoded packets of our generation
+    this is just 2 randomly combined packets, not real RLNC yet'''
+#TODO: this recodes 2 random packets after multiplying them by a scalar, for real RLNC we need more
+    if count == 1:
 
-        pckts.append(result)
+        min_value = 1
+        max_value = field.max_value
 
-    return pckts
+        pckts = []
+        for i in range(count):
+            pkt1 = random.choice(generation).copy()
+            pkt2 = random.choice(generation).copy()
+
+            field.vector_multiply_into(pkt1, random.randint(min_value, max_value))
+
+            result = field.vector_multiply_add_into(pkt1,pkt2,random.randint(min_value, max_value))
+            ic(result)
+        return result
+    else:
+        return SyntaxError
+    
+def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
+    '''takes the original symbols as an argument, and return recoded packets'''
+    assert count > 0
+    
+    coefficient_matrix = []
+    if count == 1:
+        coefficient_matrix = list[generate_coefficient_row(field, gen_size)]
+    elif count >= 2:
+        coefficient_matrix =  generate_coefficient_matrix(field, gen_size, count)
+
+
+    rlnc_matrix = []
+    for i in range(count):
+        new_packet = [0 for _ in range(gen_size)]
+        for j, packet in enumerate(generation):
+            coefficient = coefficient_matrix[i][j]
+            ic(i,j,new_packet, packet, coefficient)
+            new_packet = field.vector_multiply_add_into(new_packet, packet, coefficient)
+        rlnc_matrix.append(coefficient_matrix[i] + new_packet)
+
+    return rlnc_matrix
 
 
 def check_orth_fixed(field, generation:list[bytearray]) -> bool:
@@ -185,7 +225,26 @@ def log_failed_generation(generation: list[bytearray], failures: Iterable[str], 
 if __name__ == "__main__":
     print("hi")
 
-    
+    field = create_field(3)
+    coefficient_matrix = generate_coefficient_matrix(field, 3, 3)
+    ic(coefficient_matrix)
+
+    generation = [
+        [1,0,0],
+        [0,1,0],
+        [0,0,1]
+    ]
+
+    gen_size = 3
+
+
+    rlnc_matrix = recode_rlnc(field,generation, gen_size,5 )
+    ic(rlnc_matrix)
+
+
+    ic(check_orth(field, rlnc_matrix))
+
+
     '''failed_gen = []
     for i in range(100):
         gen = generate_symbols_random(3,5)

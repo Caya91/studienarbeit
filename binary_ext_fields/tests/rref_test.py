@@ -17,10 +17,10 @@ use regular rref from some library and test the same Matrix against that library
 import galois
 #from galois import PolyLike
 import numpy as np
-from binary_ext_fields.custom_field import TableField, PRIMES_GF2M, build_tables_gf2m
+from binary_ext_fields.custom_field import TableField, PRIMES_GF2M, build_tables_gf2m, create_field
 from binary_ext_fields.rref import full_cleanup_rref, to_byte_matrix,calculate_rref, invert_pivot_rows
 
-from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation
+from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation, to_int_matrx
 
 from icecream import ic
 from sympy import Matrix
@@ -100,6 +100,62 @@ matrix_partial_two = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 4],
 ]
 
+matrix_C = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7]
+
+]
+
+
+matrix_D = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7]
+
+]
+
+
+matrix_bitflip = [
+    [7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 7, 1, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 7, 1, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 7, 1, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 7, 1, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 7, 1, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 7, 1, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 1, 0 ,2, 3, 5, 4,2 ,1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 2, 7, 1, 0 ,2, 3, 5, 4,2 ,1]
+
+]
+
+
 def cleanup_test_1():
     
     cleaned_rref = full_cleanup_rref(matrix_partial_one)
@@ -119,13 +175,13 @@ def assertion_fail_test(Matrix):
     #using global variable for now
     rref_field = TableField(add_table,mul_table,prime)
 
-
+    gen_size = len(Matrix) 
     matrix_A = to_byte_matrix(Matrix)      # TODO: how to check and throw error when a matrix isnt full rank?
 
     print("Test should fail with assertion error after this statement")
 
     try:
-        calculate_rref(matrix_A, rref_field)
+        calculate_rref(matrix_A, rref_field, gen_size)
     except AssertionError as e:
         # assertion was triggered as expected
         assert "pivot" in str(e) or "rank" in str(e)
@@ -145,9 +201,9 @@ def full_rref_test(Matrix: list[list[int]]):
     rref_field = TableField(add_table,mul_table,prime)
 
     matrix_B = to_byte_matrix(Matrix)
-
-    rref_2, cleaned_rref_2 = calculate_rref(matrix_B, rref_field)
-    final_rref = invert_pivot_rows(cleaned_rref_2, rref_field)
+    # TODO: tests müssen wahrscheinlich hier nochmal angepasst werden
+    rref_2, cleaned_rref_2 = calculate_rref(matrix_B, rref_field, len(matrix_B))
+    final_rref = invert_pivot_rows(cleaned_rref_2, rref_field, len(matrix_B))
     ic(rref_2, cleaned_rref_2, final_rref)
     
     return True
@@ -210,7 +266,34 @@ def galois_stuff():
     ic("Pivots:", np.argmax(left_block != 0, axis=1))  # Rough pivot cols
 
 
+def test_different_matrices(field:TableField):
 
+    field = create_field(3)
+    gen_size = 10
+    rref, stuff = calculate_rref(matrix_B,field , gen_size)
+
+    rref_int = to_int_matrx(rref)
+    print_generation(rref_int)
+    
+
+    rref_1, stuff1 = calculate_rref(matrix_C, field, gen_size)
+    rref_1_int = to_int_matrx(stuff1)
+    print_generation(rref_1_int)
+
+    rref_2, stuff2 = calculate_rref(matrix_D, field, gen_size)
+    rref_2_int = to_int_matrx(stuff2)
+    inverted_rref2 = invert_pivot_rows(rref_2_int,field, gen_size)
+    print_generation(rref_2_int)
+    print_generation(inverted_rref2)
+
+    
+    filler, rref_faulty = calculate_rref(matrix_bitflip, field, gen_size)
+    rref_faulty_int = to_int_matrx(rref_faulty)
+    inverted_faulty = invert_pivot_rows(rref_faulty_int,field, gen_size)
+    print_generation(rref_faulty_int)
+    print_generation(inverted_faulty)
+
+    return True
 
 if __name__ == "__main__":
 
@@ -218,7 +301,11 @@ if __name__ == "__main__":
 
     test_2 = full_rref_test(matrix_B)
 
-    ic(test_1, test_2)
+    field = create_field(3)
+    test_4 = test_different_matrices(field)
+
+    ic(test_1, test_2, test_4)
+
 
 
 

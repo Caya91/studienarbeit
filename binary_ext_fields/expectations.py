@@ -68,6 +68,11 @@ def calculate_prob_data_pollution(field:pyerasure.finite_field, gen_size, data_l
     return prob
 
 
+def acceptance_probability_tag_error( field_size:int, gen_size:int):
+    sigma = ic(1 - (1/field_size))
+    
+    return sigma ** gen_size
+
 if __name__ == "__main__":
     #monte_carlo_test()
 
@@ -75,6 +80,11 @@ if __name__ == "__main__":
     #ic(len(accepted_packets), accepted_packets)
     #ic(calculate_prob_data_pollution(GEN_SIZE, DATA_FIELDS))
     #ic(monte_carlo_test())
+    
+    
+    ic(acceptance_probability_tag_error(256, 7))
+    
+    '''
     field_4 = pyerasure.finite_field.Binary4()
     field_8 = pyerasure.finite_field.Binary8()
 
@@ -84,10 +94,4 @@ if __name__ == "__main__":
     
     ic(calculate_prob_data_pollution(field_8, 2, 10))
     ic(calculate_prob_data_pollution(field_8, 4, 10))
-    
-    
-    '''
-    for i in range(1,6): # generation (no 0)
-        for j in range(1,7): # number of data fields
-            ic(f"probability for generation of {i} and data_fields of {j}:",calculate_prob(i,j))
     '''

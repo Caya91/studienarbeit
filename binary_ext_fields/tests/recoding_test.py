@@ -1,7 +1,7 @@
 from binary_ext_fields.log_utils import clear_logs
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC_custom
 
-from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES_GF2M
+from binary_ext_fields.custom_field import TableField, create_field, build_tables_gf2m, PRIMES_GF2M
 from binary_ext_fields.generate_symbols import generate_symbols_random, check_orth, recode
 
 
@@ -135,13 +135,24 @@ def recoding_test1():
 
 if __name__ == "__main__":
 
-    print(recoding_test1())
+    #print(recoding_test1())
 
 
  #clear_logs()
     #ic(monte_carlo_test(10000, 4,12))
     
 
+
+    field = create_field(3)
+    generation = [
+          [1,2,3],
+          [1,2,2],
+          ]
+    new_packet = recode(field, generation )
+    ic(new_packet)
+
+
+    '''
     primes = []
     table_fields = []
     for f in fields:
@@ -166,12 +177,12 @@ if __name__ == "__main__":
         print(f"===== Field Nr. {i }  {field.name} ========")
         #ic( monte_carlo_single_field(num_trials, data_fields, gen_size, field))
         monte_carlo_result_tuple = monte_carlo_recoding_test(num_trials, data_fields, gen_size, field)
-        '''
+        
             Args:
         field_results: Dict mapping to (accept_prob, std_dev, accepted_count, total_trials)
                       e.g., {"GF(2^4)": (0.977, 0.001, 9770, 10000)}
-        '''
+        
         tuples_for_plotting.update({field.name: monte_carlo_result_tuple})
     
     #ic(tuples_for_plotting)
-    plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error"))
+    plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error"))'''

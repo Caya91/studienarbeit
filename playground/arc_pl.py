@@ -1,14 +1,12 @@
 """
 k packets are necessary for decoing the matrix
 
-we take k+1  and decode the original symbols
-with that we guess the other packet
+UPDATE: we will use a matrix of however many packets -> will make the rref and the first rows
+until full rank, then will cleanup the remaining packets to zero.
 
-we are checking for each column
-columns that dont chekc out get marked as potentially wrong
+the zero rows should be 0 in the data, otherwise: potential error search location
 
-the wrong columns of our packets become our search spaces for recovery
-
+the potential error column and the hmac tag together will give error locations
 
 ideas:
 
