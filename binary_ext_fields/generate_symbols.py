@@ -125,57 +125,6 @@ def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen
     return rlnc_matrix
 
 
-def check_orth_fixed(field, generation:list[bytearray]) -> bool:
-    '''
-    in diesem Test versuche ich den die Ausnahme aus dem orthogonalitätstest herauszufiltern
-    TODO: das letzte Paket braucht diese Regel nicht
-    '''
-
-    gen_size = len(generation)
-    data_len = len(generation[0]) - gen_size
-
-    failures = []
-    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
-    
-    '''
-    ic()
-    ic(generation)
-    for p in generation:
-        print_ints(p)
-    '''
-    # filter the 0 self orthogonal packets
-
-    new_gen = []
-    for i in range(gen_size):
-        #ic(generation[i][data_len + i], i , data_len + i,gen_size)
-        if i == (gen_size - 1): # last packet doesnt need this check
-            new_gen.append(generation[i])
-            continue
-        if not generation[i][data_len + i] == 0:
-            new_gen.append(generation[i])
-
-    '''
-    print("NEW Generation")
-    for p in new_gen:
-        print_ints(p)   
-    '''
-
-    for i, packet in enumerate(new_gen):
-        for j, p in enumerate(new_gen):
-            prod = inner_product_bytes(field, packet, p)
-            if prod != 0:
-                failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
-    if failures:
-        raise AssertionError("\n".join(failures))
-    
-    
-    # print("All pairs orthogonal!") 
-    
-    ic(failures)
-
-    return True
-
-
 def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) -> bool:
     failures = []
     successes = []
