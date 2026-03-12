@@ -6,6 +6,10 @@ from pathlib import Path
 from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes, print_ints
 from binary_ext_fields.custom_field import TableField, create_field
+from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC
+
+from utils.log_helpers import get_playground_dir, get_run_log_dir
+
 
 import pathlib
 from typing import Iterable, Any
@@ -38,6 +42,30 @@ def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:i
         print_ints(symbol)
     '''
     return symbols
+
+
+def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:int) -> list:
+    '''This function generates Symbols until all the self tags are non-zero
+    '''
+    
+    assert data_fields > 0
+    assert gen_size > 0
+        
+    min_int = 0
+    max_int = field.max_value
+    symbols = []
+
+    accepts = False
+
+    otc = OTC(field)
+
+    while not accepts:
+        symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
+        tagged_symbols = otc.generate_all_tags(symbols)
+        accepts = check_orth(field, tagged_symbols) 
+
+    return tagged_symbols
+
 
 
 def generate_coefficient_row(field: TableField, gen_size:int) -> bytearray:
@@ -126,6 +154,7 @@ def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen
 
 
 def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) -> bool:
+    ''' returns True if all packets in the generation are orthogonal to each other'''
     failures = []
     successes = []
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
@@ -141,6 +170,9 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
         print_ints(p)
     ''' 
 
+#TODO: Skip last element of the double for loop (i=j=len(gen)) without if statement
+#idea -  slicing the generation going untio gen[::-1] or soemthing
+#then checking the last packet seperately
     for i, packet in enumerate(generation):
         for j, p in enumerate(generation):
             prod = inner_product_bytes(field, packet, p)
@@ -149,7 +181,7 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
             else:
                 successes.append(f"Orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
 
-    
+
     if failures:
         if log_dir: # logging to passed directory
             log_failed_generation(generation, failures, log_dir)
@@ -294,10 +326,23 @@ def test_remove_coefficients_bytearray():
     return True
 
 
+def test_generating_nonzero(field_int:int, data_fields:int, gen_size:int):
+    field = create_field(field_int)
+    tagged_symbols = generate_symbols_until_nonzero(field,data_fields,gen_size )
+    return check_orth(field,tagged_symbols)
+
+
 if __name__ == "__main__":
     print("hi")
 
-    
+
+    ic( 
+        test_generating_nonzero(2,3,3),
+        test_generating_nonzero(3,4,4),
+        test_generating_nonzero(4,4,4),
+        test_generating_nonzero(5,5,5)
+       )
+
     '''failed_gen = []
     for i in range(100):
         gen = generate_symbols_random(3,5)
