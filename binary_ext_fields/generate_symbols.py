@@ -78,7 +78,8 @@ def recode(field: Any, generation:list[bytearray], count=1) -> bytearray:
         return SyntaxError
     
 def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
-    '''takes the original symbols as an argument, and return recoded packets'''
+    '''takes the original symbols as an argument, and return recoded packets
+    ORIGINAL MATRIX DOESNT HAVE COEFFICIENTS YET, MUST '''
     assert count > 0
     
     coefficient_matrix = []
@@ -90,12 +91,36 @@ def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, coun
 
     rlnc_matrix = []
     for i in range(count):
-        new_packet = [0 for _ in range(gen_size)]
+        new_packet = [0 for _ in range(len(generation[0]))]
         for j, packet in enumerate(generation):
             coefficient = coefficient_matrix[i][j]
             ic(i,j,new_packet, packet, coefficient)
             new_packet = field.vector_multiply_add_into(new_packet, packet, coefficient)
         rlnc_matrix.append(coefficient_matrix[i] + new_packet)
+
+    return rlnc_matrix
+
+
+def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
+    '''takes the original symbols as an argument, and return recoded packets
+    USE THIS if the original Matrix already has coefficients infront of the packet '''
+    assert count > 0
+    
+    coefficient_matrix = []
+    if count == 1:
+        coefficient_matrix = list[generate_coefficient_row(field, gen_size)]
+    elif count >= 2:
+        coefficient_matrix =  generate_coefficient_matrix(field, gen_size, count)
+
+
+    rlnc_matrix = []
+    for i in range(count):
+        new_packet = [0 for _ in range(len(generation[0]))]
+        for j, packet in enumerate(generation):
+            coefficient = coefficient_matrix[i][j]
+            ic(i,j,new_packet, packet, coefficient)
+            new_packet = field.vector_multiply_add_into(new_packet, packet, coefficient)
+        rlnc_matrix.append(new_packet) # THE  ONLY  difference lies, here, could also be put in the original function probably
 
     return rlnc_matrix
 
@@ -153,10 +178,14 @@ def check_orth_fixed(field, generation:list[bytearray]) -> bool:
 
 def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) -> bool:
     failures = []
-
+    successes = []
     # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
-    
     '''
+    extra_check = False
+    if log_dir == Path("D:\projects\studienarbeit\logs\error_logthat.txt"):
+        ic("THIS is the culprit", generation)
+        extra_check = True
+    
     ic()
     ic(generation)
     for p in generation:
@@ -168,16 +197,35 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
             prod = inner_product_bytes(field, packet, p)
             if prod != 0:
                 failures.append(f"Non-orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
+            else:
+                successes.append(f"Orthogonal: packet[{i}] • packet[{j}] = {prod} (expected 0)")
+
     
     if failures:
         if log_dir: # logging to passed directory
             log_failed_generation(generation, failures, log_dir)
-        else: 
-            pass
         return False
+    else:
+        if log_dir: # logging to passed directory
+            log_orthogonal_generation(generation, successes, log_dir)
+        return True
     
     return True
 
+
+def check_orth_skip_coeffs(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int, log_dir: Path | None = None) -> bool:
+    '''this is a wrapper to check orthogonality between all packets of a generateion
+    but is skipping the coefficients'''
+    generation_no_coefficients = skip_coefficients(field, generation_with_coefficients, gen_size)
+    return check_orth(field, generation_no_coefficients, log_dir)
+
+
+def skip_coefficients(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int) -> list[bytearray]:
+    generation_no_coefficients = []
+    for packet in generation_with_coefficients:
+        packet = packet[gen_size::]
+        generation_no_coefficients.append(packet.copy())
+    return generation_no_coefficients.copy()
 '''
 def generate_examples(data_len:int):
 
@@ -222,9 +270,18 @@ def log_failed_generation(generation: list[bytearray], failures: Iterable[str], 
         f.write("\n")
 
 
-if __name__ == "__main__":
-    print("hi")
+def log_orthogonal_generation(generation: list[bytearray], successes: Iterable[str], log_file: pathlib.Path = LOG_FILE) -> None:
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("=== Orthogonal generation ===\n")
+        for line in successes:
+            f.write(line + "\n")
+        f.write("Packets:\n")
+        for idx, pkt in enumerate(generation):
+            f.write(f"  [{idx}] {list(pkt)}\n")
+        f.write("\n")
 
+
+def test_generate_coefficient_matrix():
     field = create_field(3)
     coefficient_matrix = generate_coefficient_matrix(field, 3, 3)
     ic(coefficient_matrix)
@@ -243,8 +300,55 @@ if __name__ == "__main__":
 
 
     ic(check_orth(field, rlnc_matrix))
+    return True
 
 
+def test_remove_coefficients():
+    
+    matrix_with_coefficients = [
+        [1,0,0,1,2,3],
+        [0,1,0,1,2,3],
+        [0,0,1,1,2,3]
+    ]
+
+
+    field = create_field(3)
+    gen_size = 3
+
+
+    matrix_no_coefficients = check_orth_skip_coeffs(field, matrix_with_coefficients,3)
+    ic(matrix_no_coefficients)
+
+    return True
+
+
+def test_remove_coefficients_bytearray():
+
+    matrix_with_coefficients = [
+        [1,0,0,1,2,3],
+        [0,1,0,1,2,3],
+        [0,0,1,1,2,3]
+    ]
+
+    matrix_bytearray = []
+    for packet in matrix_with_coefficients:
+        matrix_bytearray.append(bytearray(packet))
+
+    ic(matrix_bytearray)
+
+    field = create_field(3)
+    gen_size = 3
+
+    matrix_no_coefficients_byteaaray = check_orth_skip_coeffs(field, matrix_bytearray,3)
+    ic(matrix_no_coefficients_byteaaray)
+
+    return True
+
+
+if __name__ == "__main__":
+    print("hi")
+
+    
     '''failed_gen = []
     for i in range(100):
         gen = generate_symbols_random(3,5)

@@ -25,6 +25,8 @@ compare error rates, when swapping
 implementing ARC  
 -> preselecting incoming packets    Done
 -> probably rref now and checking the packet columns now
+-> orthogonality check for for rlnc without coefficients, seems to not work
+
 -> return positions of possible recoverys 
 
 

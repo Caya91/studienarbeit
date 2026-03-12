@@ -210,6 +210,7 @@ def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> li
 
     #rank check:
     for i in range(gen_size):
+        ic(f"RANK CHECK ROW/Column{i} , Gen_size{gen_size}")
         assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
     
     cleaned_rref = full_cleanup_rref(partial_rref, field, gen_size)

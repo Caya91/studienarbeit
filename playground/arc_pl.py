@@ -91,8 +91,8 @@ if __name__ == "__main__":
     ic(acr_prepare_matrix_random(long_matrix,3))
     '''
 
-    acr_prepare_matrix_full_random(start_matrix,3)
-    acr_prepare_matrix_full_random(long_matrix,3)
+    ic(acr_prepare_matrix_full_random(start_matrix,3))
+    ic(acr_prepare_matrix_full_random(long_matrix,3))
 
 
 
