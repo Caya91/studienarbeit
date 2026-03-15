@@ -14,7 +14,13 @@ monte carlo simulation of error rates for all fields
 06.03 metting with hosein/akif -> should implement arc and swapping, then evaluate error prob with that
 
 
+ - arc implement
+ - swapping implement
+13.93 implemented bit shifting
+
 TODO: 
+
+procedural coding decoding, on different nodes
 
 monte carlo test with recoding
 
@@ -57,3 +63,11 @@ optimize performance
         a = a ^ b
         b = a ^ b
         a = a ^ b
+
+progressive / on the ly elimination with konsistency check
+
+    adding packets stepwise
+    check every new packet
+    if a packet becomes zero -> no new information
+    if not zero -> new base packet
+    if more base packets than necessary -> there is an error

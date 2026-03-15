@@ -7,11 +7,18 @@ from binary_ext_fields.operations import inner_product_bytes
 from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES_GF2M
 
 
+from utils.log_helpers import log_packet, get_playground_dir, _interal_log_packet, write_to_file
+
+ic.configureOutput(outputFunction=write_to_file)
+
+
+
 verbose = False
 
+dir =  get_playground_dir("generate_with_bitshift.txt")
 
 class OrthogonalTagGenerator:
-    def __init__(self, field:Any):
+    def __init__(self, field:TableField):
         self.field = field
         self.square_to_root = {}  # key: square  ; value: root
         self.mul_table = []
@@ -177,6 +184,102 @@ class OrthogonalTagGenerator:
 
         return new_symbols
 
+
+    def generate_all_tags_bitshift(self, generation: list[bytearray], bitshift:int = 1 ) -> list[bytearray]:
+            '''
+            bitshift determines how many fields can be altered, when shifting bits( 1 means only the first field, 2 means first 2 fields etc)
+            Like generate_all_tags, but whenever a packet would get self-tag == 0,
+            swap it with a random later packet that has not been processed yet (if any).
+            '''
+            
+            def _shift_firstbit(packet:list[int] | bytearray, i:int) ->  list[int]| bytearray:
+                '''shifts first bit of the packet, and sets the bitshift column to 1'''
+                assert packet[0] == 0 # if we want to bitshift, the last element of the packet must  be 0
+                assert len(packet) == data_len + gen_size + 1  # if we bitshift, the packets need to be 1 element longer
+                packet[i] = self.field.add(packet[i], 1)
+                packet[0] = i
+                return packet
+
+            def _shift_bits(packet:list[int] | bytearray, i:int) ->  list[int]| bytearray:
+                '''shifts all bits until i and sets the bitshift column to 1'''
+                assert packet[0] == 0 # if we want to bitshift, the last element of the packet must  be 0
+                assert len(packet) == data_len + gen_size + 1  # if we bitshift, the packets need to be 1 element longer
+                for column in range(i):
+                    packet[column+ 1] = self.field.add(packet[column + 1], 1)
+                    packet[0] = i
+                return packet
+            
+            DISPATCH = {
+                "first": _shift_firstbit,
+                "all": _shift_bits,
+            }
+
+            helper_func:function = DISPATCH["first"]
+            assert bitshift > 0
+            if bitshift > 1:
+                helper_func = DISPATCH["all"]
+            ic("this is the helper function", helper_func)
+
+            gen_size = len(generation)
+            data_len = len(generation[0]) - gen_size -1  # -1 FOR Extra bitshift column
+
+            # Work on a local copy of the generation so we can reorder safely
+            work_gen = [g.copy() for g in generation]
+            new_symbols: list[bytearray] = []
+
+            ic("NEW GENERATION")
+            ic(work_gen)
+
+            for count in range(gen_size):
+                # If this is not the last packet, and we detect self-tag 0, try swapping
+                # Pick current symbol
+                symbol = work_gen[count]
+                new_symbol = symbol.copy()  
+                # First, generate all cross-tags to already processed packets
+                # what happnes at tag 0?
+                self_tag = 0
+                bitshift = 1
+
+                loop_counter = 0
+                while self_tag == 0:
+                    loop_counter += 1
+                    # copy our current symbol
+                    for tag_nr in range(count):
+                        
+                        corresponding_packet = new_symbols[tag_nr]
+                        tag = self.generate_tag_cross(
+                            corresponding_packet[data_len + tag_nr + bitshift ],
+                            inner_product_bytes(self.field, new_symbol, corresponding_packet),
+                        )
+                        ic()
+                        new_symbol[data_len + tag_nr + bitshift] = tag
+                        ic(tag_nr, tag, corresponding_packet,new_symbol )
+
+                    # Now compute self-tag
+                    self_tag = self.generate_tag(inner_product_bytes(self.field, new_symbol, new_symbol))
+                    
+                    if self_tag == 0:
+
+                        ic(self_tag, loop_counter)
+                        ic("Packet before bitshift", symbol)
+                        new_symbol = helper_func(symbol.copy(), loop_counter)   # using the designated helper function
+                        ic("Packet after bitshift", new_symbol)
+                        
+                        if loop_counter > bitshift:   # when there is more necessary bitshifts than we allow, break
+                            ic("ERROR: sellf tag is still zero after bitshifts", )
+                            break     # TODO: there should be an value error here, 
+                                      #but for testing the sucessrate, we let it stay for now
+
+                            raise ValueError
+
+
+
+                ic("Packet before adding self Tag", new_symbol)
+                new_symbol[data_len + count + bitshift] = self_tag
+                ic("Packet After adding self Tag", new_symbol)
+                new_symbols.append(new_symbol)
+
+            return new_symbols
 
     def print_square_to_root_table(self, filename: str):
         """Print the square-to-root dictionary as a formatted table.

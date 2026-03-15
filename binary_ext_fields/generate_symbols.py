@@ -67,6 +67,61 @@ def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:in
     return tagged_symbols
 
 
+def generate_symbols_with_swap(field:TableField,data_fields:int, gen_size:int) -> list:
+    '''This function generates Symbols until all the self tags are non-zero
+    '''
+    
+    assert data_fields > 0
+    assert gen_size > 0
+        
+    min_int = 0
+    max_int = field.max_value
+    symbols = []
+
+    accepts = False
+
+    otc = OTC(field)
+
+    while not accepts:
+        symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
+        tagged_symbols = otc.generate_all_tags(symbols)
+        accepts = check_orth(field, tagged_symbols) 
+
+    return tagged_symbols
+
+
+def generate_symbols_bitshift(field: TableField, data_fields:int, gen_size:int) -> list:
+    '''generates random symbols with 1 column as an additional tag column used for signaling bitshifts
+    it will be 0 if no error occurs or 1 if the zero tag error occurs, to then XOR the data with 1
+    that should be simple enough, to recover later on
+    
+    returns a generation -> PACKETS ARE 1 ELEMENT LONGER'''
+
+    assert data_fields > 0
+    assert gen_size > 0
+        
+    min_int = 0
+    max_int = field.max_value
+
+
+    symbols = []
+
+    for packet in range(gen_size):
+        symbol = bytearray( [0] + [random.randint(min_int, max_int) for _ in range(data_fields)] + [0 for _ in range(gen_size)])
+        symbols.append(symbol)
+
+    #ic(len(symbols),symbols)
+    '''
+    for symbol in symbols:
+        print_ints(symbol)
+    '''
+    return symbols
+
+
+
+
+
+
 
 def generate_coefficient_row(field: TableField, gen_size:int) -> bytearray:
     assert gen_size > 0
@@ -83,7 +138,7 @@ def generate_coefficient_matrix(field: TableField, gen_size:int, count:int) -> l
     return coefficient_matrix
 
 
-def recode(field: Any, generation:list[bytearray], count=1) -> bytearray:
+def recode(field: TableField, generation:list[bytearray], count=1) -> bytearray:
     '''returns <count> random recoded packets of our generation
     this is just 2 randomly combined packets, not real RLNC yet'''
 #TODO: this recodes 2 random packets after multiplying them by a scalar, for real RLNC we need more
@@ -107,7 +162,7 @@ def recode(field: Any, generation:list[bytearray], count=1) -> bytearray:
     
 def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
     '''takes the original symbols as an argument, and return recoded packets
-    ORIGINAL MATRIX DOESNT HAVE COEFFICIENTS YET, MUST '''
+    ORIGINAL MATRIX DOESNT HAVE COEFFICIENTS YET, THIS WILL ADD THE COEFFICIENT MATRIX '''
     assert count > 0
     
     coefficient_matrix = []
@@ -131,7 +186,7 @@ def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, coun
 
 def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
     '''takes the original symbols as an argument, and return recoded packets
-    USE THIS if the original Matrix already has coefficients infront of the packet '''
+    USE THIS if the original Matrix ALREADY HAS COEFFICIENTS infront of the packet '''
     assert count > 0
     
     coefficient_matrix = []
@@ -157,18 +212,6 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
     ''' returns True if all packets in the generation are orthogonal to each other'''
     failures = []
     successes = []
-    # TODO: Die Ausnahme wenn der eine Tag null ist muss hinzugefügt werden um richtig zu testen, weil machnmal pakete nicht orthogonal werden können wenn der korrespondierende tag 0 ist
-    '''
-    extra_check = False
-    if log_dir == Path("D:\projects\studienarbeit\logs\error_logthat.txt"):
-        ic("THIS is the culprit", generation)
-        extra_check = True
-    
-    ic()
-    ic(generation)
-    for p in generation:
-        print_ints(p)
-    ''' 
 
 #TODO: Skip last element of the double for loop (i=j=len(gen)) without if statement
 #idea -  slicing the generation going untio gen[::-1] or soemthing
@@ -207,37 +250,6 @@ def skip_coefficients(field:TableField, generation_with_coefficients: list[bytea
         packet = packet[gen_size::]
         generation_no_coefficients.append(packet.copy())
     return generation_no_coefficients.copy()
-'''
-def generate_examples(data_len:int):
-
-    tag_gen = OrthogonalTagGenerator(field)
-
-    data = [random.randint(MIN_INT, MAX_INT) for _ in range(data_len)]
-
-    S1= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
-    S2= bytearray([random.randint(MIN_INT, MAX_INT) for _ in range(data_len)] + [0,0])
-    
-    t11 = tag_gen.generate_tag(inner_product_bytes(field, S1,S1))
-
-    S1[data_len] = t11
-
-    t21 = tag_gen.generate_tag_cross(t11, inner_product_bytes(field,S1,S2))
-
-    S2[data_len] = t21
-
-    t22 = tag_gen.generate_tag(inner_product_bytes(field,S2,S2))
-
-    S2[data_len+1] = t22
-    print_ints(S1)
-    print_ints(S2)
-
-    ic(
-        inner_product_bytes(field,S1,S1),
-        inner_product_bytes(field,S1,S2),
-        inner_product_bytes(field,S2,S2)
-       )
-    '''
-
 
 
 def log_failed_generation(generation: list[bytearray], failures: Iterable[str], log_file: pathlib.Path = LOG_FILE) -> None:
@@ -326,22 +338,13 @@ def test_remove_coefficients_bytearray():
     return True
 
 
-def test_generating_nonzero(field_int:int, data_fields:int, gen_size:int):
-    field = create_field(field_int)
-    tagged_symbols = generate_symbols_until_nonzero(field,data_fields,gen_size )
-    return check_orth(field,tagged_symbols)
+
 
 
 if __name__ == "__main__":
     print("hi")
 
 
-    ic( 
-        test_generating_nonzero(2,3,3),
-        test_generating_nonzero(3,4,4),
-        test_generating_nonzero(4,4,4),
-        test_generating_nonzero(5,5,5)
-       )
 
     '''failed_gen = []
     for i in range(100):

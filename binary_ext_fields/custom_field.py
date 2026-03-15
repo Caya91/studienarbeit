@@ -26,7 +26,7 @@ class TableField:
         self.name = self._make_name()
 
     def add(self, a: int, b: int) -> int:
-        #TODO:  mit XOR ausrechen statt lookup
+        #TODO:  maybe mit XOR ausrechen statt lookup
         return self._add[a][b]
 
     def mul(self, a: int, b: int) -> int:

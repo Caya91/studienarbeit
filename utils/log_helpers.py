@@ -3,9 +3,14 @@ from datetime import datetime
 import pickle
 from icecream import ic
 
+from binary_ext_fields.custom_field import TableField, create_field
+from binary_ext_fields.operations import inner_product_bytes
+
 BASE_DIR = Path(__file__).resolve().parent.parent  # Repo root
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True, parents=True)
+
+
 
 def get_run_log_dir(script_name: str, **run_params) -> Path:
     """Returns unique run dir: logs/<script>/<timestamp>_<params>/"""
@@ -95,3 +100,101 @@ def print_generation(
 ) -> None:
     for idx, pkt in enumerate(generation):
         print(f'Packet[{idx}]: {list(pkt)}\n')
+
+
+def log_packet(label: str, packet: list[bytearray], f) -> None:
+    f.write(f"{label} (len={len(packet)}): {packet}\n")
+
+def _interal_log_packet(label: str, packet: list[bytearray], log_file:Path) -> None:
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write(f"{label} (len={len(packet)}): {packet}\n")
+
+
+def write_to_file(text):
+    # append each ic() call as a new line
+    with open(LOG_DIR  / "ic.txt", "a", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+
+def log_inner_product_detail(
+    field: TableField,
+    p1: bytes | bytearray,
+    p2: bytes | bytearray,
+    label1: str = "P1",
+    label2: str = "P2",
+    log_file: Path = None,
+) -> None:
+    assert len(p1) == len(p2), "Packets must have same length"
+
+    if log_file == None:
+        print(f"=== Detailed inner product ===")
+        print(f"{label1} (len={len(p1)}): {p1}")
+        print(f"{label2} (len={len(p2)}): {p2}")
+
+        tmp = bytearray(1)
+        acc = 0
+
+        print("Index | a | b | a*b | acc")
+        print("------+---+---+-----+-----")
+
+        for idx, (a, b) in enumerate(zip(p1, p2)):
+            tmp[0] = a
+            field.vector_multiply_into(tmp, b)
+            prod = tmp[0]
+            acc = field.add(acc, prod)
+            print(f"{idx:5d} | {a:2d} | {b:2d} | {prod:3d} | {acc:3d}")
+
+        final = inner_product_bytes(field, p1, p2)
+        print(f"Final inner_product_bytes = {final}\n")
+    else:
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write("=== Detailed inner product ===\n")
+            log_packet(label1, p1, f)
+            log_packet(label2, p2, f)
+
+            tmp = bytearray(1)
+            acc = 0
+
+            f.write("Index | a | b | a*b | acc\n")
+            f.write("------+---+---+-----+-----\n")
+
+            for idx, (a, b) in enumerate(zip(p1, p2)):
+                tmp[0] = a
+                field.vector_multiply_into(tmp, b)
+                prod = tmp[0]
+                acc = field.add(acc, prod)
+                f.write(f"{idx:5d} | {a:2d} | {b:2d} | {prod:3d} | {acc:3d}\n")
+
+            final = inner_product_bytes(field, p1, p2)
+            f.write(f"Final inner_product_bytes = {final}\n\n")
+
+
+def log_generation_detail(
+    generation: list[bytearray],
+    field:TableField,
+    log_file: Path = None,
+    log_only_nonzero: bool = False,
+) -> None:
+
+    if log_file == None:
+        print("========================================")
+        print("Detailed generation inspection")
+        for idx, pkt in enumerate(generation):
+            print(f"Packet[{idx:>3}]: {list(pkt)}")
+        print("\n")
+    else:
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write("========================================\n")
+            f.write("Detailed generation inspection\n")
+            for idx, pkt in enumerate(generation):
+                f.write(f"Packet[{idx:>3}]: {list(pkt)}\n")
+            f.write("\n")
+
+    # For each pair (i, j), call the detailed logger
+    for i, p1 in enumerate(generation):
+        for j, p2 in enumerate(generation):
+            prod = inner_product_bytes(field, p1, p2)
+            if log_only_nonzero and prod == 0:
+                continue
+            # reuse the detailed function; it will append to same file
+            log_inner_product_detail(field, p1, p2, label1=f"P[{i}]", label2=f"P[{j}]", log_file=log_file)
