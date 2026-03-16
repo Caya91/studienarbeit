@@ -135,7 +135,7 @@ def _subtract_pivot_from_matrix(pivot_row: int, pivot_column:int, pivot_value: i
 
 
 def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField, gen_size:int):
-    ''' its assumed that the matrix is of full rankt until the row: Matrix[generation size]
+    ''' its assumed that the matrix is of full rank until the row: Matrix[generation size]
     THis will MUTATE the original matrix, if that results in Problem, that can be changed
     '''
     
@@ -153,16 +153,16 @@ def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField, gen_siz
             new_row = row.copy()
             field.vector_multiply_into(new_row, inverse)
             final_rref.append(new_row)
+        else:
+            new_row = row.copy()
+            final_rref.append(new_row)           
 
     if len(final_rref) == 0: # falls keien reihe invertiert wird, ist die liste leer, dann returnen wir das Original
         return cleaned_matrix.copy()
 
-    return final_rref
+    #TODO: add a warning or error when incoming and outgoing dont ahve the same length
 
-# TODO: decide where this function goes,  this should guaruantee, that all matrices are bytearrays, for consistency before working with it
-def to_byte_matrix(M):
-    '''converts a matrix of ints to a bytearray for consistency'''
-    return [bytearray(row) for row in M]
+    return final_rref
 
 
 def _cleanup_rref(partial_rref: list[list[int]], column: int, field:TableField) -> list[list[int]]:
@@ -258,17 +258,22 @@ if __name__ == "__main__":
 
     rref_1, stuff1 = calculate_rref(matrix_C, field, gen_size)
     rref_1_int = to_int_matrx(stuff1)
+    print("RREF 1")
     print_generation(rref_1_int)
 
     rref_2, stuff2 = calculate_rref(matrix_D, field, gen_size)
     rref_2_int = to_int_matrx(stuff2)
     inverted_rref2 = invert_pivot_rows(rref_2_int,field, gen_size)
+    print("RREF 2")
     print_generation(rref_2_int)
+    print("RREF 2 Inverted")    
     print_generation(inverted_rref2)
 
     
     filler, rref_faulty = calculate_rref(matrix_bitflip, field, gen_size)
     rref_faulty_int = to_int_matrx(rref_faulty)
     inverted_faulty = invert_pivot_rows(rref_faulty_int,field, gen_size)
+    print("RREF 3")
     print_generation(rref_faulty_int)
+    print("RREF 3 Inverted")    
     print_generation(inverted_faulty)

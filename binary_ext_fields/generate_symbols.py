@@ -44,8 +44,10 @@ def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:i
     return symbols
 
 
-def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:int) -> list:
+def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:int, coefficients: bool = False) -> list:
     '''This function generates Symbols until all the self tags are non-zero
+    
+    coefficients = True -> generate with coefficient matrix
     '''
     
     assert data_fields > 0
@@ -56,13 +58,46 @@ def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:in
     symbols = []
 
     accepts = False
+    no_tag_error = False
 
     otc = OTC(field)
 
-    while not accepts:
+    while not (accepts and no_tag_error):
         symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
-        tagged_symbols = otc.generate_all_tags(symbols)
-        accepts = check_orth(field, tagged_symbols) 
+        symbols_with_coeffs = generate_identity_coefficients(field, symbols)
+        ic(symbols_with_coeffs)
+        tagged_symbols = otc.generate_all_tags(symbols_with_coeffs)
+        accepts = check_orth(field, tagged_symbols)
+        no_tag_error = check_no_tag_error(tagged_symbols)
+
+    return tagged_symbols
+
+
+def generate_with_zero_tag_error(field:TableField,data_fields:int, gen_size:int) -> list:
+    '''This function generates Symbols until all the self tags are non-zero
+    
+    coefficients = True -> generate with coefficient matrix
+    '''
+    
+    assert data_fields > 0
+    assert gen_size > 0
+        
+    min_int = 0
+    max_int = field.max_value
+    symbols = []
+
+    accepts = False
+    no_tag_error = True
+
+    otc = OTC(field)
+
+    while not (accepts and not no_tag_error):
+        symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
+        symbols_with_coeffs = generate_identity_coefficients(field, symbols)
+        ic(symbols_with_coeffs)
+        tagged_symbols = otc.generate_all_tags(symbols_with_coeffs)
+        accepts = check_orth(field, tagged_symbols)
+        no_tag_error = check_no_tag_error(tagged_symbols)
 
     return tagged_symbols
 
@@ -118,11 +153,6 @@ def generate_symbols_bitshift(field: TableField, data_fields:int, gen_size:int) 
     return symbols
 
 
-
-
-
-
-
 def generate_coefficient_row(field: TableField, gen_size:int) -> bytearray:
     assert gen_size > 0
     min_int = 0
@@ -132,10 +162,37 @@ def generate_coefficient_row(field: TableField, gen_size:int) -> bytearray:
 
 
 def generate_coefficient_matrix(field: TableField, gen_size:int, count:int) -> list[bytearray]:
+    ''' Used for coding and recoding, returns RANDOM coefficient Matrix
+    '''
     coefficient_matrix = []
     for i in range(count):
         coefficient_matrix.append(generate_coefficient_row(field, gen_size))
     return coefficient_matrix
+
+
+def generate_identity_coefficients(field: TableField, generation: list[bytearray]) -> list[bytearray]:
+    ''' returns a coefficients Matrix with all pivot elements on the diagonal = 1
+    '''
+    gen_size = len(generation)
+    
+    assert gen_size > 0
+    min_int = 0
+    max_int = field.max_value
+    coefficient_matrix = []
+    for i in range(gen_size):
+        coefficient_row = bytearray([0 for _ in range(gen_size)])
+        coefficient_row[i] = 1
+        coefficient_matrix.append(coefficient_row)
+
+    if len(coefficient_matrix) != len(generation):
+        raise ValueError
+    
+    full_matrix = []
+
+    for row1, row2 in zip (coefficient_matrix, generation):
+        new_row = row1 + row2
+        full_matrix.append(new_row)
+    return full_matrix
 
 
 def recode(field: TableField, generation:list[bytearray], count=1) -> bytearray:
@@ -236,6 +293,28 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
     
     return True
 
+
+def check_no_tag_error(generation:list[bytearray]) -> bool:
+    '''
+    checks the original generation with their coefficients, and returns true if no self tag is zero
+    atm assumes the generation already has coefficient matrix and tags,
+    DOESTN WORK WITH BITSHIFT YET
+    '''
+    gen_size = len(generation)
+    data_fields = len(generation[0]) - 2*gen_size
+    #ic(data_fields)
+
+    self_tags = []
+    for i, packet in enumerate(generation):
+        #ic(i,packet, i + data_fields,i + data_fields +  gen_size)
+        self_tags.append(packet[i + data_fields + gen_size])
+
+    if self_tags.count(0) == 0:
+        ic("no Zero tags", self_tags)
+        return True
+    else:
+        ic("yes Zero tags", self_tags)
+        return False
 
 def check_orth_skip_coeffs(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int, log_dir: Path | None = None) -> bool:
     '''this is a wrapper to check orthogonality between all packets of a generateion
@@ -338,12 +417,17 @@ def test_remove_coefficients_bytearray():
     return True
 
 
-
-
-
 if __name__ == "__main__":
     print("hi")
 
+    field_int = 3
+    field = create_field(field_int)
+    data_fields = 4
+    gen_size = 5
+
+    generation = generate_symbols_until_nonzero(field, data_fields, gen_size, coefficients=True )
+    
+    ic(generation)
 
 
     '''failed_gen = []

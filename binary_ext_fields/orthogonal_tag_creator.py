@@ -9,7 +9,7 @@ from binary_ext_fields.custom_field import TableField, build_tables_gf2m, PRIMES
 
 from utils.log_helpers import log_packet, get_playground_dir, _interal_log_packet, write_to_file
 
-ic.configureOutput(outputFunction=write_to_file)
+#ic.configureOutput(outputFunction=write_to_file)
 
 
 
@@ -124,7 +124,8 @@ class OrthogonalTagGenerator:
 
         #ic(new_symbol)
         return new_symbols
-
+    
+    
     def generate_all_tags_with_swap(self, generation: list[bytearray]) -> list[bytearray]:
         '''
         Like generate_all_tags, but whenever a packet would get self-tag == 0,

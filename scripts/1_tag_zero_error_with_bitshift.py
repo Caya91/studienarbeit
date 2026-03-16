@@ -170,4 +170,4 @@ def monte_carlo_all_fields(num_trials, data_fields, gen_size, bitshift= 1):
 if __name__ == "__main__":
     clear_logs()
 
-    monte_carlo_compare_bitshift_one_field(10000,6,6,8,6)
+    monte_carlo_compare_bitshift_one_field(100,6,6,5,4)

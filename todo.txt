@@ -20,6 +20,14 @@ monte carlo simulation of error rates for all fields
 
 TODO: 
 
+Ideas from Frau Wolf:   - one extra field, to make self orthogonal, (similair to bitshift), then test again, then increase field etc
+                        - for orthogonality, use smaller field for the orthogonality check -> we can use multiple symbols of the higher field, to solve the orthogonality , can lead to multiple possible sollutions that we can choose from, to not get zero 
+                        ( would have to think really hard on how to implement this though)  
+
+
+some part of the code breaks for very long packets, have to check what exactly and where, which packet/generation size
+
+
 procedural coding decoding, on different nodes
 
 monte carlo test with recoding

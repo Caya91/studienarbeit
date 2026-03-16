@@ -110,10 +110,19 @@ def _interal_log_packet(label: str, packet: list[bytearray], log_file:Path) -> N
         f.write(f"{label} (len={len(packet)}): {packet}\n")
 
 
-def write_to_file(text):
+def write_to_file(text, log_file:Path = None):
     # append each ic() call as a new line
-    with open(LOG_DIR  / "ic.txt", "a", encoding="utf-8") as f:
+    if not log_file:
+        log_file = LOG_DIR
+    with open(log_file  / "ic.txt", "a", encoding="utf-8") as f:
         f.write(text + "\n")
+
+def make_ic_logger(log_file:Path):
+    def write_ic_file(text):
+        with open(log_file , "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    return write_ic_file
+
 
 
 def log_inner_product_detail(
