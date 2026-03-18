@@ -8,6 +8,7 @@ from binary_ext_fields.operations import inner_product_bytes, print_ints
 from binary_ext_fields.custom_field import TableField, create_field
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC
 
+
 from utils.log_helpers import get_playground_dir, get_run_log_dir
 
 
@@ -265,7 +266,7 @@ def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen
     return rlnc_matrix
 
 
-def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) -> bool:
+def check_orth(field, generation: list[bytearray], log_dir: Path | None = None , check_packet: bytearray = None) -> bool:
     ''' returns True if all packets in the generation are orthogonal to each other'''
     failures = []
     successes = []
@@ -273,6 +274,11 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
 #TODO: Skip last element of the double for loop (i=j=len(gen)) without if statement
 #idea -  slicing the generation going untio gen[::-1] or soemthing
 #then checking the last packet seperately
+    if check_packet != None:
+        generation = generation + [check_packet]
+        ic(generation)
+    
+
     for i, packet in enumerate(generation):
         for j, p in enumerate(generation):
             prod = inner_product_bytes(field, packet, p)
@@ -292,6 +298,65 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None) 
         return True
     
     return True
+
+
+def check_orth_for_recovery(field, generation: list[bytearray], gen_size:int, log_dir: Path | None = None) -> set[int]:
+    ''' returns rows of the packets that are not fully zero in the generation, uses the full rref form of the generation'''
+    failure_rows = set()
+# skip the first rows of coefficients for now TODO: probably check ort of all packets
+# idea just look for columns that are zero for now
+    for i, packet in enumerate(generation[gen_size::]):
+        if not packet.count(0) == len(packet): # if its not all zeros, add to failure
+            failure_rows.add(i + gen_size)
+
+    return failure_rows
+
+
+def check_broken_column(field, packet: bytearray, ) -> list[int]:
+    ''' returns the non zero, column locations (searchspaces for recovery)'''
+    broken_columns = []
+    for i,e in enumerate (packet):
+        if e != 0:
+            broken_columns.append(i)
+    
+    return broken_columns
+
+def get_recovery_regions(field, generation:list[bytearray], gen_size:int,log_dir: Path | None = None ):
+    failure_rows = check_orth_for_recovery(field, generation, gen_size)
+    
+    recovery_regions = dict()
+
+    for e in failure_rows:
+        broken_columns = check_broken_column(field, generation[e])
+        recovery_regions.update({e: broken_columns})
+
+    ic(recovery_regions)
+
+    return recovery_regions
+
+
+def nr_of_error_columns(row, columns) :
+    ''' # can maybe take just 1 tuple and return the nr of errors for that
+    param:: recovery_regions -> dict of {row: [error_column1, error_column2]}
+    checks the ammount of error columns in a packet -> use this to check
+    if its worth to recover the packet
+    '''
+
+    
+    return len(columns)
+
+
+def hamming_distance():
+    '''check the hamming distance of a packet in the rref form of the generation'''
+    # add up all the elements of a packet and calculate the total hamming distance
+    # has to be relaitve to the field, like 7 in 2^3 is a distance of 1, i would guess, or maybe we use
+    # bits for that... dunno yet
+    # then add up all the hamming distances in total, not as elements of a field ( could get zero again, when adding up)
+    # to big of a difference, will be discarded as a broken packet
+
+
+
+    return
 
 
 def check_no_tag_error(generation:list[bytearray]) -> bool:
