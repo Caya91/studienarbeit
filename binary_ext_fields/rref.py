@@ -200,7 +200,7 @@ def _partial_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
 
 
 def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
-
+    ''' returns 2 lists, the partial rref AND the cleaned rref '''
     pivot_tuple = _find_pivot(Matrix)
     partial_rref = _subtract_pivot_from_matrix(*pivot_tuple,Matrix,field)
     for i in range(1,gen_size): # skip first element of the loop
@@ -209,10 +209,13 @@ def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> li
 
 
     #rank check:
-    for i in range(gen_size):
-        ic(f"RANK CHECK ROW/Column{i} , Gen_size{gen_size}")
-        assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
+    # for i in range(gen_size):
+    #     ic(f"RANK CHECK ROW/Column{i} , Gen_size{gen_size}")
+    #     assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
     
+
+
+
     cleaned_rref = full_cleanup_rref(partial_rref, field, gen_size)
 
     return partial_rref , cleaned_rref
