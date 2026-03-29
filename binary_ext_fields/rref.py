@@ -84,16 +84,29 @@ matrix_bitflip = [
 
 ]
 
-def _find_pivot(Matrix: list[list[int]], column= 0 )-> tuple[int,int, int]:
+def _find_pivot(Matrix: list[list[int]], column= 0, gen_size = None )-> tuple[int,int, int]:
     """
     Use in for loop, while incrementing :column
     
-    :param Matrix: Description
+    :param Matrix: generation
     :type Matrix: list[list[int]]
-    :param column: Description
+    :param column: index of the column
+    :param gen_size: how many packets are in the generation
+    
     :return: Description
     :rtype: tuple[int, int, int]
     """
+
+    if gen_size == None:
+        gen_size = len(Matrix)
+
+    if column >= gen_size:
+        return -1, -1, -1 
+    
+    if column >= len(Matrix[0]):   # if we try to access the column a column out of range
+        # TODO: add a proper check when and how go over the gen size of a generation
+        return -1, -1, -1 
+
     for i, row in enumerate(Matrix):
         if i < column: continue
         if row[column] > 0:
@@ -134,6 +147,36 @@ def _subtract_pivot_from_matrix(pivot_row: int, pivot_column:int, pivot_value: i
     return Matrix_copy
 
 
+def subtract_pivot_from_packet( pivot_tuples: list[tuple], Matrix: list[list[int]], packet:bytearray, field:TableField)-> list[list[int]]:
+    '''
+    this function takes the generated list of pivot elements and subtracts a new incoming packet, to see if it can be added to the partial rref
+    '''
+
+    # pivto tuples: list of : (pivot_row: int, pivot_column:int, pivot_value: int)
+    for i, tpl in enumerate(pivot_tuples):
+        pivot_row, pivot_column, pivot_value = tpl
+        ic(pivot_row, pivot_column, pivot_value , tpl)
+
+        if pivot_row == -1: continue # if the was no pivot element found, just return the Matrix as is
+
+
+        pivot_full_row = Matrix[pivot_row].copy()
+
+        if pivot_row != pivot_column:
+            # swapping the elements so pivot element is at the position [pivot_column, pivot_column]
+            Matrix[pivot_column], Matrix[pivot_row] =  Matrix[pivot_row], Matrix[pivot_column] 
+        
+
+        target = packet[pivot_column]
+
+        if target != 0:
+            scalar = field.get_mul_to_target(pivot_value, target)
+            packet = field.vector_multiply_add_into(packet, pivot_full_row, scalar)
+
+
+    return packet
+
+
 def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField, gen_size:int):
     ''' its assumed that the matrix is of full rank until the row: Matrix[generation size]
     THis will MUTATE the original matrix, if that results in Problem, that can be changed
@@ -169,16 +212,20 @@ def _cleanup_rref(partial_rref: list[list[int]], column: int, field:TableField) 
     '''clean the partial rref from the bottom up
     SHOULDNT MUTATE ORIGINAL
     '''
-    ic(column)
+    #ic(column)
+    #ic(partial_rref)
     cleanup_row = partial_rref[column].copy() # take row corresponding to the column
     pivot_element = cleanup_row[column] # save base element
     rref_copy = partial_rref.copy()
+
+    if pivot_element == 0: # if the element is zero, there is no we just skip this function call and return the original 
+        return partial_rref
 
     for i, row in enumerate(rref_copy):
         if row[column] == 0 or i == column: continue  # skip the self row and if the element is already 0
 
         #ic(field)
-        #ic(pivot_element,row[column])
+        #ic(pivot_element,row[column], cleanup_row)
         scalar = field.get_mul_to_target(pivot_element,row[column])
         #ic(row,cleanup_row,scalar)
         new_row = field.vector_multiply_add_into(row,cleanup_row,scalar)
@@ -197,6 +244,40 @@ def _partial_rref(Matrix:list[list[int]], field:TableField) -> list[list[int]]:
         partial_rref = _subtract_pivot_from_matrix(*pivot_tuple, partial_rref, field)
 
     return partial_rref
+
+
+def matrix_full_rank(Matrix:list[list[int]], gen_size:int):
+    ''' return True if enough packets arrived and Matrix is of full rank
+    -> then we can start sending out packets
+    '''
+    if len(Matrix) < gen_size: return False # Generation is not full rank, if we havent received eough packets y
+
+
+    for i, row in enumerate(Matrix):
+        ic(i,row)
+        if i >= gen_size: return True # when we reach a the packet nr that is higher than gen_size, matrix has full rank  
+        if row[i] !=0: continue # as long as the pivot elements are non-zero   The Matrix could be of full rank
+        return False # when we reach this point Matrix is not of full rank: 1.an element row[i] == 0 and it was not a packet later than gen_size (packets) 
+
+
+
+def stepwise_partial_rref(Matrix:list[bytearray], packet:bytearray, field:TableField) -> list[list[int]]:
+    '''
+    this should be use by Nodes whenever they receive a new packet, after there is already a partial rref present
+    '''
+    # TODO: add a check if matrix or gen size is the smaller/larger value here and decide on that if we add it to the rref
+
+    pivot_tuples = []
+    for i in range(len(Matrix)):    #Somehow the gensize has to come here with the heck, so we dont take too many pivot elements 
+        pivot_tuple = _find_pivot(Matrix, i)
+        pivot_tuples.append(pivot_tuple)
+    
+    packet = subtract_pivot_from_packet(pivot_tuples,Matrix, packet, field)
+
+    if packet.count(0) != 0:
+        return packet
+
+    return None
 
 
 def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
@@ -222,14 +303,17 @@ def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> li
 
 
 def full_cleanup_rref(partial_rref: list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
-    '''cleans up the whole partial rref
+    '''cleans up the whole partial rref, should be used as soon as the partial rref has full rank
     uses _cleanup_rref()
     '''
     #ic(len(partial_rref) -1, partial_rref)
 
     #rank check again .... just to be sure # TODO: maybe make a function for this check
-    for i in range(gen_size):
-        assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
+    #for i in range(gen_size):
+    #    assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
+
+    if len(partial_rref) < gen_size:
+        gen_size = len(partial_rref)
 
     ic("cleanup aufruf:", partial_rref, gen_size -1 )
     cleanup_rref = _cleanup_rref(partial_rref,gen_size -1, field)

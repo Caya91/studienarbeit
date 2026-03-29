@@ -236,8 +236,6 @@ def test_recovery():
     ic(matrix_many_errors_fixed)
 
 
-def stepwise_rref(): 
-    return
 
 
 
@@ -253,9 +251,7 @@ if __name__ == "__main__" :
     field = create_field(3)
 
 
-    stepwise_rref()
-
-
+    test_recovery()
 
     '''
     failure_rows_1 = check_orth_for_recovery(field, matrix_healthy, gen_size)

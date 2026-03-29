@@ -6,23 +6,22 @@ import asyncio
 class SourceNode:
     def __init__(self, name, interval=2):
         self.name = name
+        self.queue = asyncio.Queue()
         self.outboxes = []
         self.interval = interval
         self.generation = []
         self.rref = []    # maybe add a new class for packets, that keep a reference to the orignal packet
                         # or the position in the original
 
-    def connect(self, target_node):
-        self.outboxes.append(target_node.queue)
-    '''
-    def connect_to_receiver(self, receiver:'NetworkNode'):
-        self.outboxes.add(receiver.inbox)  # if i make this a set then probably the if statement is unnecessary
+
+    def connect_to_receiver(self, receiver):
+        self.outboxes.append(receiver.queue)
 
 
-    def connect_multiple_receivers(self, receivers: list['NetworkNode']):
+    def connect_multiple_receivers(self, receivers: list):
         for receiver in receivers:
             self.connect_to_receiver(receiver)
-
+    '''
     def connect_to_sender(self, sender:'NetworkNode'):
         sender.outboxes.add(self.inbox)
 
@@ -67,7 +66,7 @@ class RelayNode:
     def __init__(self, name, gen_size, interval=0.5):
         self.name = name
         self.queue = asyncio.Queue()
-        self.outboxes = []
+        self.outboxes = set()
         self.generation = []
         self.gen_size = gen_size
         self.interval = interval
@@ -75,8 +74,31 @@ class RelayNode:
         # This acts as a traffic light. Red by default.
         self.can_transmit = asyncio.Event()
 
-    def connect(self, target_node):
-        self.outboxes.append(target_node.queue)
+    def connect_to_receiver(self, receiver):
+        self.outboxes.add(receiver.queue)
+
+
+    def connect_multiple_receivers(self, receivers: list):
+        for receiver in receivers:
+            self.connect_to_receiver(receiver)
+    
+
+    def connect_to_sender(self, sender):
+        sender.outboxes.add(self.inbox)
+
+    def connect_multiple_senders(self, senders: list):
+        for sender in senders:
+            self.connect_to_sender(sender)
+
+    def disconnect_from_sender(self, sender):
+        if self.inbox in sender.outboxes:
+            sender.outboxes.remove(self.inbox)
+
+    def disconnect_multiple_senders(self, senders:list):
+        for sender in senders:
+            self.disconnect_from_sender(sender)
+
+
 
     async def _receiver_task(self, global_shutdown: asyncio.Event):
         """Listens for packets and builds the matrix."""
@@ -173,9 +195,9 @@ async def main():
     sink = SinkNode("Final_Sink", gen_size=gen_size)
 
     # Topology: Source -> Relay1 -> Relay2 -> Sink
-    source.connect(relay1)
-    relay1.connect(relay2)
-    relay2.connect(sink)
+    source.connect_to_receiver(relay1)
+    relay1.connect_to_receiver(relay2)
+    relay2.connect_to_receiver(sink)
 
     # Global event used to gracefully stop the simulation
     global_shutdown = asyncio.Event()
@@ -189,5 +211,35 @@ async def main():
         
     print("--- Simulation Safely Shut Down ---")
 
+
+async def nodes_2_intermediate():
+    # Require 3 packets to achieve full rank
+    gen_size = 3 
+    
+    source = SourceNode("Source", interval=2)
+    relay1 = RelayNode("Relay_1", gen_size=gen_size, interval=0.3)
+    relay2 = RelayNode("Relay_2", gen_size=gen_size, interval=0.3)
+    sink = SinkNode("Final_Sink", gen_size=gen_size)
+
+    # Topology: Source -> Relay1 -> Relay2 -> Sink
+    source.connect_to_receiver(relay1)
+    source.connect_to_receiver(relay2)
+    relay1.connect_to_receiver(sink)
+    relay2.connect_to_receiver(sink)
+
+    # Global event used to gracefully stop the simulation
+    global_shutdown = asyncio.Event()
+
+    print("--- Starting Network Coding Simulation ---")
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(source.run(global_shutdown))
+        tg.create_task(relay1.run(global_shutdown))
+        tg.create_task(relay2.run(global_shutdown))
+        tg.create_task(sink.run(global_shutdown))
+        
+    print("--- Simulation Safely Shut Down ---")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    #asyncio.run(main())
+    asyncio.run(nodes_2_intermediate())
