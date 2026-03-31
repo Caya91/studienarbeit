@@ -151,7 +151,7 @@ def subtract_pivot_from_packet( pivot_tuples: list[tuple], Matrix: list[list[int
     '''
     this function takes the generated list of pivot elements and subtracts a new incoming packet, to see if it can be added to the partial rref
     '''
-
+    ic(pivot_tuples)
     # pivto tuples: list of : (pivot_row: int, pivot_column:int, pivot_value: int)
     for i, tpl in enumerate(pivot_tuples):
         pivot_row, pivot_column, pivot_value = tpl
@@ -171,9 +171,12 @@ def subtract_pivot_from_packet( pivot_tuples: list[tuple], Matrix: list[list[int
 
         if target != 0:
             scalar = field.get_mul_to_target(pivot_value, target)
+            ic()
+            ic(scalar, packet, pivot_full_row, target)
             packet = field.vector_multiply_add_into(packet, pivot_full_row, scalar)
 
-
+    ic()
+    ic("This is the returned packet", packet)
     return packet
 
 
@@ -261,23 +264,28 @@ def matrix_full_rank(Matrix:list[list[int]], gen_size:int):
 
 
 
-def stepwise_partial_rref(Matrix:list[bytearray], packet:bytearray, field:TableField) -> list[list[int]]:
+def stepwise_partial_rref(Matrix:list[bytearray], packet:bytearray, field:TableField, gen_size:int) -> list[list[int]]:
     '''
     this should be use by Nodes whenever they receive a new packet, after there is already a partial rref present
     '''
     # TODO: add a check if matrix or gen size is the smaller/larger value here and decide on that if we add it to the rref
 
     pivot_tuples = []
-    for i in range(len(Matrix)):    #Somehow the gensize has to come here with the heck, so we dont take too many pivot elements 
-        pivot_tuple = _find_pivot(Matrix, i)
+    for i in range(len(Matrix)):    #Somehow the gensize has to come in here, so we dont take too many pivot elements 
+        pivot_tuple = _find_pivot(Matrix, i, gen_size)
         pivot_tuples.append(pivot_tuple)
     
     packet = subtract_pivot_from_packet(pivot_tuples,Matrix, packet, field)
+    ic()
+
 
     if packet.count(0) != 0:
+        ic()
+        ic("in stepwise", packet)
+        ic("this were the pivot tuples", pivot_tuples)
         return packet
 
-    return None
+    return packet
 
 
 def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
@@ -288,18 +296,23 @@ def calculate_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> li
         pivot_tuple = _find_pivot(partial_rref,i)
         partial_rref = _subtract_pivot_from_matrix(*pivot_tuple, partial_rref, field)
 
-
     #rank check:
     # for i in range(gen_size):
     #     ic(f"RANK CHECK ROW/Column{i} , Gen_size{gen_size}")
     #     assert partial_rref[i][i] != 0 ,   "pivot element is zero: matrix not full rank"
     
-
-
-
     cleaned_rref = full_cleanup_rref(partial_rref, field, gen_size)
 
     return partial_rref , cleaned_rref
+
+def calculate_only_partial_rref(Matrix:list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:
+    ''' the partial rref '''
+    pivot_tuple = _find_pivot(Matrix)
+    partial_rref = _subtract_pivot_from_matrix(*pivot_tuple,Matrix,field)
+    for i in range(1,gen_size): # skip first element of the loop
+        pivot_tuple = _find_pivot(partial_rref,i)
+        partial_rref = _subtract_pivot_from_matrix(*pivot_tuple, partial_rref, field)
+    return partial_rref
 
 
 def full_cleanup_rref(partial_rref: list[list[int]], field:TableField, gen_size:int) -> list[list[int]]:

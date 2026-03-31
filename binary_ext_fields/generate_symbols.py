@@ -244,12 +244,25 @@ def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, coun
 
 def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
     '''takes the original symbols as an argument, and return recoded packets
-    USE THIS if the original Matrix ALREADY HAS COEFFICIENTS infront of the packet '''
+    USE THIS if the original Matrix ALREADY HAS COEFFICIENTS infront of the packet 
+    if count == 1 -> returns 1 coded packet
+    if count > 1  -> returns a matrix with ocded packets
+    
+    '''
     assert count > 0
     
     coefficient_matrix = []
     if count == 1:
-        coefficient_matrix = list[generate_coefficient_row(field, gen_size)]
+        coefficient_row = list(generate_coefficient_row(field, gen_size))
+
+        new_packet = [0 for _ in range(len(generation[0]))]
+        for j, packet in enumerate(generation):
+            coefficient = coefficient_row[j]
+            #ic(j,new_packet, packet, coefficient)
+            new_packet = field.vector_multiply_add_into(new_packet, packet, coefficient)
+
+        return new_packet
+    
     elif count >= 2:
         coefficient_matrix =  generate_coefficient_matrix(field, gen_size, count)
 
@@ -259,7 +272,7 @@ def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen
         new_packet = [0 for _ in range(len(generation[0]))]
         for j, packet in enumerate(generation):
             coefficient = coefficient_matrix[i][j]
-            ic(i,j,new_packet, packet, coefficient)
+            #ic(i,j,new_packet, packet, coefficient)
             new_packet = field.vector_multiply_add_into(new_packet, packet, coefficient)
         rlnc_matrix.append(new_packet) # THE  ONLY  difference lies, here, could also be put in the original function probably
 
