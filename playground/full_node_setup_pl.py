@@ -1,10 +1,10 @@
 import asyncio
 
-from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero, recode_rlnc_without_coeffs, recode_rlnc
+from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero, recode_rlnc_without_coeffs, recode_rlnc, check_orth
 from binary_ext_fields.custom_field import create_field, TableField
-from binary_ext_fields.rref import matrix_full_rank, calculate_only_partial_rref, stepwise_partial_rref
+from binary_ext_fields.rref import matrix_full_rank, calculate_only_partial_rref, stepwise_partial_rref, full_cleanup_rref, invert_pivot_rows
 
-
+from copy import deepcopy
 from utils.log_helpers import print_generation
 
 from icecream import ic
@@ -117,21 +117,27 @@ class RelayNode:
     async def _receiver_task(self, global_shutdown: asyncio.Event):
         """Listens for packets and builds the matrix."""
         while not global_shutdown.is_set():
+            '''
+            Neue Receiver Task:   just gather some packets until we can verify they are orthogonal
+            then just resend those packets, (recoding is optional for now)
+            
+            When some packets are orth, we should keep in mind and just check new incoming packets
+            not the old ones again
+
+            need to keep log of the good and bad packets
+            
+            '''
             try:
                 packet = await asyncio.wait_for(self.queue.get(), timeout=0.4)
                 
                 self.generation.append(packet)
-                print(f"[{self.name}] Received. Rank: {len(self.generation)}/{self.gen_size}")
+                print(f"[{self.name}] Received. Nr of Packets: {len(self.generation)}")
 
-                if len(self.rref) > 0:
-                    ic("Before", self.rref)
-                    packet_for_rref = stepwise_partial_rref(self.generation, packet, self.field, self.gen_size)
-                    self.rref.append(packet_for_rref) 
-                    ic("After", self.rref)
-
-                if len(self.generation) == threshold and len(self.rref) == 0:
-                    # ic("Before", self.rref)
-                    self.rref = calculate_only_partial_rref(self.generation, self.field, self.gen_size)
+                if len(self.generation) == threshold :
+                    # ic("Before", self.rref)              
+                    if check_orth(self.field, self.generation):
+                        self.generation == deepcopy(self.rref)   # TODO: rename rref to another thing (like checked packets, orth packets etc)
+                        self.can_transmit.set() 
                     # ic("After", self.rref)
 
 
@@ -157,13 +163,19 @@ class RelayNode:
         packet_id = 0
 
         while not global_shutdown.is_set():
+            
+            
+            #ic("Checking all variables before calling recode", self.field, self.rref[::self.gen_size + 1 ], self.gen_size)
+            #recoded_packet = recode_rlnc_without_coeffs(self.field, self.rref[::self.gen_size +1 ], self.gen_size, 1)  # slice until gen.size
+            if len(self.generation) + 1  < packet_id:
+                packet_id = 0
+
+            next_packet = self.generation[packet_id]
             packet_id += 1
-            
-            ic("Checking all variables before calling recode", self.field, self.rref[::self.gen_size + 1 ], self.gen_size)
-            recoded_packet = recode_rlnc_without_coeffs(self.field, self.rref[::self.gen_size +1 ], self.gen_size, 1)  # slice until gen.size
-            
+
+
             for outbox in self.outboxes:
-                await outbox.put(recoded_packet)
+                await outbox.put(next_packet)
                 
             await asyncio.sleep(self.interval)
 
@@ -204,6 +216,7 @@ class SinkNode:
         self.gen_size = gen_size
         self.field = field 
         self.rref = []
+        #self.mode = 0
 
     async def run(self, global_shutdown: asyncio.Event):
         while not global_shutdown.is_set():
@@ -215,7 +228,10 @@ class SinkNode:
 
                 if len(self.rref) > 0:
                     ic(self.rref)
-                    packet_for_rref = stepwise_partial_rref(self.generation, packet, self.field, self.gen_size)
+                    ic("RREF is there, will decode packets stepwise")
+
+                    packet_for_rref = stepwise_partial_rref(self.rref, packet, self.field, self.gen_size)
+                    ic(f"Next appended packet to the rref: {packet_for_rref}")
                     self.rref.append(packet_for_rref) 
 
                 if len(self.generation) == threshold and len(self.rref) == 0:
@@ -223,9 +239,14 @@ class SinkNode:
                     self.rref = calculate_only_partial_rref(self.generation, self.field, self.gen_size)
                     ic(self.rref)
 
-
                 if matrix_full_rank(self.rref, self.gen_size):
                     print(f"[{self.name}] 🟢 FULL RANK! Turning on transmitter.")
+                    ic("rref BEFORE cleanup", self.rref)
+                    self.rref = full_cleanup_rref(self.rref, self.field, self.gen_size)
+                    self.rref = invert_pivot_rows(self.rref, self.field, self.gen_size)
+                    ic("rref AFTER cleanup and inversion", self.rref)
+
+
                     global_shutdown.set()
                     self.print_my_generation()                
                         
@@ -309,7 +330,7 @@ async def nodes_2_intermediate():
 
 async def stepwise_rref_test():
     # Require 3 packets to achieve full rank
-    gen_size = 3 
+    gen_size = 4 
     data_fields = 3
     field_int= 3
     field = create_field(field_int)
@@ -321,7 +342,7 @@ async def stepwise_rref_test():
     relay2 = RelayNode("Relay_2", field, gen_size=gen_size, interval=0.5)
     sink = SinkNode("Final_Sink", field,  gen_size=gen_size)
 
-    # Topology: Source -> Relay1 -> Relay2 -> Sink
+    # Topology: Source -> (Relay1 / Relay2) -> Sink
     source.connect_to_receiver(relay1)
     source.connect_to_receiver(relay2)
     relay1.connect_to_receiver(sink)
@@ -343,9 +364,6 @@ async def stepwise_rref_test():
     relay1.print_all()
     relay2.print_all()
     sink.print_all()
-
-
-
 
 
 if __name__ == "__main__":

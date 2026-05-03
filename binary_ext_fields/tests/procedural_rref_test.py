@@ -1,6 +1,7 @@
 from binary_ext_fields.custom_field import TableField, PRIMES_GF2M, build_tables_gf2m, create_field
-from binary_ext_fields.rref import full_cleanup_rref, calculate_rref, invert_pivot_rows
+from binary_ext_fields.rref import full_cleanup_rref, calculate_rref,calculate_only_partial_rref, invert_pivot_rows
 from binary_ext_fields.rref import subtract_pivot_from_packet, stepwise_partial_rref, matrix_full_rank
+from binary_ext_fields.generate_symbols import generate_symbols_random, generate_symbols_until_nonzero
 
 
 from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation, to_int_matrx, to_byte_matrix
@@ -104,27 +105,34 @@ def add_multiple_packets_then_test_rank(Matrix: list[list[int]]):
 
     field_int = 3
     field = create_field(field_int)
-    gen_size = 10
-
+    gen_size = 4
+    data_fields = 6
     byte_matrix = to_byte_matrix(Matrix)
     
-    partial_rref, cleaned_rref = calculate_rref(byte_matrix, field, gen_size)
+    partial_rref, cleaned_rref = calc(byte_matrix, field, gen_size)
     
-    next_partial = stepwise_partial_rref(partial_rref, bytearray([1, 1, 1, 1, 1, 1, 1, 1, 7, 1]), field)
+    ic("STEP0",  partial_rref)
+
+    next_packets = generate_symbols_random(0, field.max_value , data_fields, gen_size)
+    ic(next_packets)
+    next_partial = stepwise_partial_rref(partial_rref, next_packets[0], field, gen_size)
 
     partial_rref.append(next_partial)
     ic("STEP1", next_partial, partial_rref)
+    ic(len(partial_rref))
 
-    next_partial = stepwise_partial_rref(partial_rref, bytearray([1, 1, 1, 1, 1, 1, 1, 1, 7, 7]), field)
+    next_partial = stepwise_partial_rref(partial_rref, next_packets[1], field, gen_size)
 
     partial_rref.append(next_partial)
     ic("STEP2", next_partial, partial_rref)
+    ic(len(partial_rref))
 
 
-    next_partial = stepwise_partial_rref(partial_rref, bytearray([1, 1, 1, 1, 1, 1, 1, 1, 7, 7]), field)
+    next_partial = stepwise_partial_rref(partial_rref, next_packets[2], field, gen_size)
     
     partial_rref.append(next_partial)
     ic("STEP3", next_partial, partial_rref, len(partial_rref))
+    ic(len(partial_rref))
 
     if matrix_full_rank(partial_rref, gen_size):
         ic("MATRIX IS FULL RANK, can fully decode now")
@@ -135,6 +143,10 @@ def add_multiple_packets_then_test_rank(Matrix: list[list[int]]):
     else:
         ic("MATRIS IS NOT FULL RANK, WAIT WITH DECODE")
         ic(partial_rref)
+
+
+
+
 
 
 def all_procedural_tests():
