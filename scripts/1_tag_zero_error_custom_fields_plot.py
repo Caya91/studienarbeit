@@ -11,7 +11,7 @@ from binary_ext_fields.generate_symbols import generate_symbols_random, check_or
 
 
 from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt
-from utils.plot_utils import plot_acceptance_rates_comparison, get_playground_dir
+from utils.plot_utils import plot_acceptance_rates_comparison, get_playground_dir, plot_error_vs_field_size
 
 import pyerasure.finite_field
 from binary_2pow8.orthogonal_tag_creator import OrthogonalTagGenerator as OTG_bin8
@@ -83,9 +83,8 @@ def monte_carlo_single_field(num_trials, data_fields, gen_size, field:TableField
 
     return (prob, std, total_accepted, num_trials)
 
-
-if __name__ == "__main__":
-    #clear_logs()
+def fixed_gen_size_plot():
+     #clear_logs()
     #ic(monte_carlo_test(10000, 4,12))
     
 
@@ -105,6 +104,47 @@ if __name__ == "__main__":
     num_trials = 1000
     data_fields = 7
     gen_size = 7
+    k = 2
+
+    tuples_for_plotting = {}
+    for i, field in enumerate(table_fields):
+
+        print(f"===== Field Nr. {i }  {field.name} ========")
+        #ic( monte_carlo_single_field(num_trials, data_fields, gen_size, field))
+        monte_carlo_result_tuple = monte_carlo_single_field(num_trials, data_fields, gen_size, field)
+        '''
+            Args:
+        field_results: Dict mapping to (accept_prob, std_dev, accepted_count, total_trials)
+                      e.g., {"GF(2^4)": (0.977, 0.001, 9770, 10000)}
+        '''
+        tuples_for_plotting.update({field.max_value + 1: monte_carlo_result_tuple})
+    
+    #ic(tuples_for_plotting)
+    plot_error_vs_field_size(tuples_for_plotting, gen_size, k, get_playground_dir("plots_error_gen_size"))
+    #plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error_gen_size"))
+
+
+def fixed_field_size_plot(gen_size: int):
+    #clear_logs()
+    #ic(monte_carlo_test(10000, 4,12))
+    
+
+    primes = []
+    table_fields = []
+    for f in fields:
+        prime = PRIMES_GF2M.get(f)
+        primes.append(prime)
+        add_table, mul_table = build_tables_gf2m(f,prime)
+        table_field = TableField(add_table, mul_table, prime)
+        table_fields.append(table_field) 
+        ic(bin(prime), table_field.max_value)
+
+    ic(primes, table_fields)
+
+
+    num_trials = 10000
+    data_fields = 7
+
 
 
     tuples_for_plotting = {}
@@ -119,9 +159,21 @@ if __name__ == "__main__":
                       e.g., {"GF(2^4)": (0.977, 0.001, 9770, 10000)}
         '''
         tuples_for_plotting.update({field.name: monte_carlo_result_tuple})
+        tuples_for_plotting.update({field.name: monte_carlo_result_tuple})
     
+
     #ic(tuples_for_plotting)
-    plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error"))
+    plot_acceptance_rates_comparison(tuples_for_plotting, fields, gen_size, get_playground_dir(f"plots_error_fixed_field_gen_size_{gen_size}"))
+
+
+if __name__ == "__main__":
+    #clear_logs()
+    #ic(monte_carlo_test(10000, 4,12))
+    
+    #fixed_gen_size_plot()
+    for gen_size in [8, 16, 32, 64, 128]:
+        fixed_field_size_plot(gen_size)
+
 
 '''
 def gen_bin(field:pyerasure.finite_field, data_fields:int, gen_size:int):

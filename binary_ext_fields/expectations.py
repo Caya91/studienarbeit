@@ -68,6 +68,9 @@ def calculate_prob_data_pollution(field:pyerasure.finite_field, gen_size, data_l
     return prob
 
 
+#def prob_one_generation_no_error()
+
+
 def calculate_error_prob(field_size: int, gen_size: int, k: int):
     '''
     Probability that k random vectors over GF(q)^k do NOT span the full space.
@@ -88,12 +91,12 @@ def calculate_error_prob(field_size: int, gen_size: int, k: int):
     ic("Prob -> no error in generation", p)
 
     # 1 - no error: -> 1 or more errors in the generation
-    p = 1 - p
-    ic("Prob -> 1 or more packets have errors in the generation", p)
+    #p = 1 - p
+    #ic("Prob -> 1 or more packets have errors in the generation", p)
 
     # error prob with swap
-    p = (p ** (k-1) ) * ((1- 1/elements) ** (gen_size - 1))
-    ic(f"Prob -> Probability of no error in a generation with {k} swaps", p)
+    #p = (p ** (k-1) ) * ((1- 1/elements) ** (gen_size - 1))
+    #ic(f"Prob -> Probability of no error in a generation with {k} swaps", p)
 
 
     # for the k-th packet
@@ -133,13 +136,16 @@ if __name__ == "__main__":
     ic(calculate_prob_data_pollution(field_8, 4, 10))
     '''
 
-    print( calculate_error_prob(3,3,5))
-    print( calculate_error_prob(8,100,3))
+    print( calculate_error_prob(2,8,0))
+    #print( calculate_error_prob(8,100,3))
 
+    error_probs = []
     for gen_size in [8 , 16 , 32 , 64 , 128 ]:
-        print(calculate_error_prob(8, gen_size, 3))
+        #print(calculate_error_prob(8, gen_size, 3))
+        error_probs.append(f"Error Probability for gen size: {gen_size} = {calculate_error_prob(8, gen_size, 3)}")
+    for field_size in [2, 3 , 4 , 5 , 6 , 7 ]:
+        #print(calculate_error_prob(field_size, 100, 3))
+        error_probs.append(f"Error Probability for field size:{field_size} = {calculate_error_prob(field_size, 100, 3)}")   
 
-    for field_size in [3 , 4 , 5 , 6 , 7 ]:
-        print(calculate_error_prob(field_size, 100, 3))
-
+    ic(error_probs)
 

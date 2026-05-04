@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from typing import Dict, Tuple
 from pathlib import Path
+from binary_ext_fields.expectations import calculate_error_prob
+
 
 from utils.log_helpers import get_playground_dir
 
@@ -95,9 +97,23 @@ def plot_error_rates_bar(
     return
 
 
+def p_success_analytical(M: int, k: int, f: int) -> float:
+    """
+    Probability that all k correction swaps succeed.
+    M: generation size
+    k: number of swaps
+    f: field size (e.g. 16, 256)
+    """
+    p_one_swap_succeeds = (1 - (1/f)) ** (M - 1)
+    return p_one_swap_succeeds ** k
+
+
 def plot_acceptance_rates_comparison(
     field_results: Dict[str, Tuple[float, float, int, int]],
+    fields: list[int],
+    gen_size: int,
     output_path: Path = None
+
 ):
     """
     Side-by-side comparison: acceptance rate vs error rate.
@@ -112,6 +128,13 @@ def plot_acceptance_rates_comparison(
     """
     field_names = list(field_results.keys())
     accept_probs = [val[0] for val in field_results.values()]
+
+    analytical_accept = []
+    for field in fields:
+        analytical_accept.append(calculate_error_prob(field, gen_size, 0 ))
+    #analytical_accept = [ 0.2 , 0.3 , 0.4 , 0.5 , 0.6 , 0.7 , 0.8]
+
+
     std_devs = [val[1] for val in field_results.values()]
     error_rates = [1.0 - val[0] for val in field_results.values()]
     
@@ -136,6 +159,15 @@ def plot_acceptance_rates_comparison(
         height = bar.get_height()
         ax1.text(bar.get_x() + bar.get_width()/2., height + 0.005,
                 f'{prob:.4f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        
+    # ── Analytical line on left plot ──────────────────────────────────────────
+    if analytical_accept:
+        for i, val in enumerate(analytical_accept):
+            ax1.hlines(val, x_pos[i] - 0.4, x_pos[i] + 0.4,
+                       colors='black', linewidths=2, linestyles='--', label='Analytical' if i == 0 else None)
+        ax1.legend(fontsize=10)
+
+
     
     # Right plot: Error Rate
     bars2 = ax2.bar(x_pos, error_rates, yerr=std_devs, capsize=5,
@@ -161,6 +193,60 @@ def plot_acceptance_rates_comparison(
     
     #plt.show()
     return
+
+
+def plot_error_vs_field_size(
+    field_results: Dict[int, Tuple[float, float, int, int]],
+    gen_size: int,
+    k: int,
+    output_path: Path = None
+):
+    """
+    Bar chart of MC results vs analytical curve, for varying field sizes.
+    field_results: { field_size_int: (accept_prob, std_dev, accepted, total) }
+    gen_size: fixed M
+    k: number of swaps
+    """
+    # ── Unpack data ───────────────────────────────────────────────────────────
+    field_sizes  = sorted(field_results.keys())
+    labels       = [f"GF(2^{int(np.log2(f))})" for f in field_sizes]
+    mc_accept    = [field_results[f][0] for f in field_sizes]
+    mc_error     = [1.0 - field_results[f][0] for f in field_sizes]
+    std_devs     = [field_results[f][1] for f in field_sizes]
+    ana_accept   = [calculate_error_prob(gen_size, k, f) for f in field_sizes]
+    ana_error    = [1.0 - a for a in ana_accept]
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle(f'M={gen_size}, k={k} swaps — varying field size', fontsize=13, fontweight='bold')
+
+    x = np.arange(len(field_sizes))
+    colors = plt.cm.Blues(np.linspace(0.4, 0.85, len(field_sizes)))
+
+    for ax, mc_vals, ana_vals, ylabel, title in [
+        (ax1, mc_accept, ana_accept, 'Acceptance Probability', 'Acceptance Rate'),
+        (ax2, mc_error,  ana_error,  'Error Rate (1 − Acceptance)', 'Error Rate'),
+    ]:
+        bars = ax.bar(x, mc_vals, yerr=std_devs, capsize=5,
+                      color=colors, edgecolor='black', linewidth=1.2, alpha=0.85, label='Monte Carlo')
+        ax.plot(x, ana_vals, color='#e74c3c', marker='D', linewidth=2,
+                markersize=7, label='Analytical', zorder=5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=10, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_ylim(0, 1.05)
+        ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+        ax.legend(fontsize=10)
+        for bar, val in zip(bars, mc_vals):
+            ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height() + 0.01,
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    plt.tight_layout()
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved to: {output_path}")
+
 
 if __name__ == "__main__":
     '''
