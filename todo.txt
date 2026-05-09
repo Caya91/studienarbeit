@@ -16,7 +16,7 @@ monte carlo simulation of error rates for all fields
 
  - arc implement
  - swapping implement
-13.93 implemented bit shifting
+13.03 implemented bit shifting
 
 TODO: 
 
