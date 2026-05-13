@@ -1,0 +1,4 @@
+Source,Range OK,All vals seen,Mean [7.500],Std [4.610],Entropy [4.000],Chi-sq [~15],p-value [>0.05],Passes chi2
+random.randint,True,True,7.5927,4.6089,3.9994,20.9,0.14,True
+os.urandom,True,True,7.4571,4.6005,3.9997,10.75,0.7703,True
+secrets,True,True,7.5086,4.6147,3.9996,13.26,0.582,True
