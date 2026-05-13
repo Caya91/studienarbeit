@@ -23,8 +23,8 @@ src
 *logs
 *.log
 .env
-*.png
-*.csv
+#*.png
+#*.csv
 *.json
 
 

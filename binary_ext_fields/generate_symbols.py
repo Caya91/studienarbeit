@@ -27,15 +27,15 @@ bad_packets: set[tuple[int, ...]] = set()
 verbose = False
 
 
-def generate_symbols_random(min_int:int, max_int:int,data_fields:int, gen_size:int) -> list:
+def generate_symbols_random(min_int:int, max_int:int, data_fields:int, gen_size:int,
+                            rng=random.randint) -> list:
     assert data_fields > 0
     assert gen_size > 0
-        
-    
+
     symbols = []
 
     for packet in range(gen_size):
-        symbol = bytearray([random.randint(min_int, max_int) for _ in range(data_fields)] + [0 for _ in range(gen_size)])
+        symbol = bytearray([rng(min_int, max_int) for _ in range(data_fields)] + [0 for _ in range(gen_size)])
         symbols.append(symbol)
 
     #ic(len(symbols),symbols)
