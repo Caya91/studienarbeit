@@ -117,11 +117,27 @@ def write_to_file(text, log_file:Path = None):
     with open(log_file  / "ic.txt", "a", encoding="utf-8") as f:
         f.write(text + "\n")
 
+
+def log_header(text, log_file_path):
+    with open(log_file_path, 'a') as f:
+        f.write(f"\n======== {text} ========\n")
+    # Optional: also print to console if you want to see it live
+    print(f"======== {text} ========")
+
+
 def make_ic_logger(log_file:Path):
     def write_ic_file(text):
         with open(log_file , "a", encoding="utf-8") as f:
             f.write(text + "\n")
     return write_ic_file
+
+def custom_format(obj):
+    if isinstance(obj, (bytearray, bytes)):
+        # Converts bytearray(b'\x07\x05\t\x01') into [7, 5, 9, 1]
+        return str(list(obj))
+    
+    # Fallback to the default formatting for everything else
+    return repr(obj)
 
 
 

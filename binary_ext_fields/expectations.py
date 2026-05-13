@@ -76,7 +76,7 @@ def calculate_error_prob(field_size: int, gen_size: int, k: int):
     Probability that k random vectors over GF(q)^k do NOT span the full space.
     k: number of received packets
     gen_size: generation size (dimension)
-    field_size: field size (e.g. 256 for GF(2^8))
+    field_size: exponent m where actual field size = 2^m (e.g. 8 for GF(2^8), 4 for GF(2^4))
     '''
     # no error, one packet
     ic(f"field size: {field_size}")
@@ -108,10 +108,13 @@ def calculate_error_prob(field_size: int, gen_size: int, k: int):
     return p
 
 
-def acceptance_probability_tag_error( field_size:int, gen_size:int):
-    sigma = ic(1 - (1/field_size))
-    
-    return sigma ** gen_size
+def acceptance_probability_tag_error(field_size: int, gen_size: int):
+    '''
+    field_size: actual field size f (e.g. 16 for GF(2^4), 256 for GF(2^8))
+    The last packet is excluded: its zero self-tag does not corrupt cross-tags.
+    '''
+    sigma = 1 - (1 / field_size)
+    return sigma ** (gen_size - 1)
 
 if __name__ == "__main__":
     #monte_carlo_test()

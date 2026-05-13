@@ -18,7 +18,8 @@ from typing import Iterable, Any
 logs_dir = pathlib.Path("logs")
 logs_dir.mkdir(exist_ok=True)  
 
-LOG_PATH = pathlib.Path(os.getenv("LOG_FOLDER"))
+_env_log = os.getenv("LOG_FOLDER")
+LOG_PATH = pathlib.Path(_env_log) if _env_log else pathlib.Path(__file__).resolve().parent.parent / "logs"
 LOG_FILE = LOG_PATH / "orth_failures.log"
 bad_packets: set[tuple[int, ...]] = set()
 
@@ -216,7 +217,7 @@ def recode(field: TableField, generation:list[bytearray], count=1) -> bytearray:
             ic(result)
         return result
     else:
-        return SyntaxError
+        raise SyntaxError
     
 def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, count:int) -> bytearray:
     '''takes the original symbols as an argument, and return recoded packets
@@ -225,7 +226,7 @@ def recode_rlnc(field:TableField, generation:list[bytearray], gen_size:int, coun
     
     coefficient_matrix = []
     if count == 1:
-        coefficient_matrix = list[generate_coefficient_row(field, gen_size)]
+        coefficient_matrix = [generate_coefficient_row(field, gen_size)]
     elif count >= 2:
         coefficient_matrix =  generate_coefficient_matrix(field, gen_size, count)
 
@@ -287,7 +288,7 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None ,
 #TODO: Skip last element of the double for loop (i=j=len(gen)) without if statement
 #idea -  slicing the generation going untio gen[::-1] or soemthing
 #then checking the last packet seperately
-    if check_packet != None:
+    if check_packet is None:
         generation = generation + [check_packet]
         ic(generation)
     
@@ -309,8 +310,6 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None ,
         if log_dir: # logging to passed directory
             log_orthogonal_generation(generation, successes, log_dir)
         return True
-    
-    return True
 
 
 def check_orth_for_recovery(field, generation: list[bytearray], gen_size:int, log_dir: Path | None = None) -> set[int]:

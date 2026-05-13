@@ -15,7 +15,7 @@ from utils.log_helpers import log_packet, get_playground_dir, _interal_log_packe
 
 verbose = False
 
-dir =  get_playground_dir("generate_with_bitshift.txt")
+#dir =  get_playground_dir("generate_with_bitshift.txt")
 
 class OrthogonalTagGenerator:
     def __init__(self, field:TableField):
@@ -239,7 +239,7 @@ class OrthogonalTagGenerator:
                 # First, generate all cross-tags to already processed packets
                 # what happnes at tag 0?
                 self_tag = 0
-                bitshift = 1
+                bitshift = 1   #TODO: Bitshift has to be fixed as a whole
 
                 loop_counter = 0
                 while self_tag == 0:
@@ -267,7 +267,7 @@ class OrthogonalTagGenerator:
                         ic("Packet after bitshift", new_symbol)
                         
                         if loop_counter > bitshift:   # when there is more necessary bitshifts than we allow, break
-                            ic("ERROR: sellf tag is still zero after bitshifts", )
+                            ic("ERROR: self tag is still zero after bitshifts", )
                             break     # TODO: there should be an value error here, 
                                       #but for testing the sucessrate, we let it stay for now
 

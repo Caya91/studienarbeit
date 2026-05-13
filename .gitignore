@@ -1,4 +1,5 @@
 venv/
+.claude
 .venv
 env/
 ENV/
@@ -22,5 +23,10 @@ src
 *logs
 *.log
 .env
+*.png
+*.csv
+*.json
+
+
 
 implement_other_fields.txt

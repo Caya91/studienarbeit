@@ -120,7 +120,7 @@ def fixed_gen_size_plot():
         tuples_for_plotting.update({field.max_value + 1: monte_carlo_result_tuple})
     
     #ic(tuples_for_plotting)
-    plot_error_vs_field_size(tuples_for_plotting, gen_size, k, get_playground_dir("plots_error_gen_size"))
+    plot_error_vs_field_size(tuples_for_plotting, fields, gen_size, k, get_playground_dir("plots_error_gen_size"))
     #plot_acceptance_rates_comparison(tuples_for_plotting,get_playground_dir("plots_error_gen_size"))
 
 
@@ -158,7 +158,6 @@ def fixed_field_size_plot(gen_size: int):
         field_results: Dict mapping to (accept_prob, std_dev, accepted_count, total_trials)
                       e.g., {"GF(2^4)": (0.977, 0.001, 9770, 10000)}
         '''
-        tuples_for_plotting.update({field.name: monte_carlo_result_tuple})
         tuples_for_plotting.update({field.name: monte_carlo_result_tuple})
     
 
