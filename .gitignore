@@ -2,6 +2,7 @@ venv/
 .venv
 env/
 ENV/
+.claude/
 env.bak/
 venv.bak/
 .vscode
@@ -17,6 +18,10 @@ structure.txt
 pyproject.toml
 __init__.py
 binary_2pow4.egg-info
+
+binary_2pow4/
+binary_2pow8/
+
 src
 
 *logs
