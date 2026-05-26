@@ -47,6 +47,7 @@ class TableField:
             #ic(i,row, row[value])
             if row[value] == 1:
                 return i
+        raise ValueError(f"No multiplicative inverse for {value} in {self.name} (0 has no inverse)")
             
     def get_mul_to_target(self, base:int, target:int) -> int:
         '''returns the scalar that results in
@@ -56,6 +57,7 @@ class TableField:
             #ic(i,row, row[value])
             if row[base] == target:
                 return i
+        raise ValueError(f"No scalar s satisfying {base} * s = {target} in {self.name}")
 
 
     def vector_multiply_add_into(self, x: bytearray, y: bytes, c: int):

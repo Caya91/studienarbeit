@@ -1,7 +1,7 @@
 import pathlib
 from typing import Sequence
 
-from binary_2pow4.operations_bin4 import inner_product_bytes
+from binary_ext_fields.operations import inner_product_bytes
 from pyerasure.finite_field import Binary4
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
