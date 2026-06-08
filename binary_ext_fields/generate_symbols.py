@@ -279,6 +279,22 @@ def recode_rlnc_without_coeffs(field:TableField, generation:list[bytearray], gen
     return rlnc_matrix
 
 
+def code_with_given_coefficients(generation: list[bytearray], coefficients: bytearray, field: TableField) -> bytearray:
+
+
+    coded_packet = bytearray(len(generation[0]))
+
+    for i,c in enumerate(coefficients):
+        coded_packet = field.vector_multiply_add_into(coded_packet, generation[i], c)        
+
+    return coded_packet
+
+
+
+
+
+
+
 def check_orth(field, generation: list[bytearray], log_dir: Path | None = None , check_packet: bytearray = None) -> bool:
     ''' returns True if all packets in the generation are orthogonal to each other'''
     failures = []

@@ -105,6 +105,9 @@ def print_generation(
 def log_packet(label: str, packet: list[bytearray], f) -> None:
     f.write(f"{label} (len={len(packet)}): {packet}\n")
 
+def print_packet( packet: list[bytearray]) -> None:
+    print(list(packet))
+
 def _interal_log_packet(label: str, packet: list[bytearray], log_file:Path) -> None:
     with log_file.open("a", encoding="utf-8") as f:
         f.write(f"{label} (len={len(packet)}): {packet}\n")
