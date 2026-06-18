@@ -93,6 +93,10 @@ class TableField:
                 return key
         return None # Not found
     
+
+    def get_element_list(self):
+        return list(range(0, self.max_value + 1))
+    
     def _make_name(self):
         pow_int = 0
         for key, value in PRIMES_GF2M.items():

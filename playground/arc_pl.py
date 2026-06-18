@@ -28,6 +28,8 @@ and 1 where i take random packets out and check them
 import dataclasses
 from binary_ext_fields.custom_field import TableField, create_field
 from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero, recode, recode_rlnc, recode_rlnc_without_coeffs, code_with_given_coefficients
+from binary_ext_fields.generate_symbols import inner_product_bytes, check_orth
+
 from binary_ext_fields.rref import *
 
 from utils.log_helpers import make_ic_logger, print_generation, print_packet
@@ -52,6 +54,80 @@ long_matrix =[
     [3,3,3]
 ]
 
+
+def arc(generation:list[bytearray], packet_count: int, gen_size: int, field:TableField) -> set[int]:
+    # TODO: think about: what should be done with packet count
+    # how should that be chosen`?`
+
+    # TODO: How to add hamming distance evalution to the check of errors?
+    '''
+    packet_count:  k + 1 packets to be taken from the generation
+                    it should be = ( gen_size + 1) in most cases
+    
+    '''
+    chosen_packets = []
+    for _ in range(0,packet_count):
+        tmp = random.choice(generation)
+        chosen_packets.append(tmp)
+        generation.remove(tmp)
+
+    print("============= Chosen Packets ====================")
+    print_generation(chosen_packets)
+    
+
+    assert len(generation) <= packet_count
+    tmp_packet = random.choice(chosen_packets)
+    chosen_packets.remove(tmp_packet)
+    ic(tmp_packet)
+    control_coefficients = tmp_packet[0:gen_size]
+    control_packet = tmp_packet[gen_size::]
+
+    ic(control_coefficients, control_packet, chosen_packets, len(chosen_packets))
+    
+
+    print("============= Chosen Packets ====================")
+    print_generation(chosen_packets)
+    
+    
+    print("============= Control Packet ====================")
+    print_packet(control_coefficients)
+    print_packet(control_packet)
+
+
+    partial_rref, cleaned_rref = calculate_rref(chosen_packets, field, gen_size)
+    print("============= Original Packets ====================")
+    inverted_rref = invert_pivot_rows(cleaned_rref, field, gen_size)
+    print_generation(inverted_rref)
+
+    coefficients = []
+    estimated_symbols = []
+
+    for i in range(0, gen_size):
+        coefficients.append(inverted_rref[i][0:gen_size])
+        estimated_symbols.append(inverted_rref[i][gen_size::])
+
+        error_positions = set()
+
+    calculated_packet = code_with_given_coefficients(estimated_symbols, control_coefficients, field)
+    print("============= Original Packet ====================")
+
+    print_packet(control_packet)
+
+
+
+    print("============= Calculated Packet ====================")
+
+    print_packet(calculated_packet)
+
+    error_columns = set()
+
+    for i, (e,r) in enumerate(zip(control_packet,calculated_packet)):
+        if e != r:
+            error_positions.add(i)
+
+    print(error_positions)
+
+    return error_columns 
 
 def test1():
     '''
@@ -91,10 +167,36 @@ def test1():
     print_generation(inverted_rref)
 
 
+def quick_inner_product_test():  # TODO: delete this, its just a check
+
+    field_int = 3
+    data_fields = 2
+    gen_size= 3
 
 
-if __name__ == "__main__":
+    field = create_field(field_int)
 
+    dir = get_playground_dir("simple_arc_check.txt")
+    ic.configureOutput(outputFunction = make_ic_logger(dir))
+
+    generation = generate_symbols_until_nonzero(field,data_fields, gen_size, coefficients=True )
+    print("============= Generation ====================")
+    print_generation(generation)
+
+
+    recoded_packets = recode_rlnc_without_coeffs(field, generation, gen_size, count=7)
+    print("============= Recoded Packets ====================")
+    print_generation(recoded_packets)
+
+    #recoded_packets = error_into_generation(recoded_packets, 1)
+
+    return check_orth(field, recoded_packets)
+
+
+
+
+
+def test2():
     print("arc_check")
 
     field_int = 3
@@ -190,8 +292,83 @@ if __name__ == "__main__":
     # it should return the error columns as a set/list
     # TODO: think: how can this be implemented with the hmac to have error zones that we try to repair
 
+def test_arc_no_error():
+    print("arc_check")
+
+    field_int = 3
+    data_fields = 2
+    gen_size= 3
 
 
+    field = create_field(field_int)
+
+    #dir = get_playground_dir("simple_arc_check.txt")
+    #ic.configureOutput(outputFunction = make_ic_logger(dir))
+
+    generation = generate_symbols_until_nonzero(field,data_fields, gen_size, coefficients=True )
+    print("============= Generation ====================")
+    print_generation(generation)
+
+
+    recoded_packets = recode_rlnc_without_coeffs(field, generation, gen_size, count=7)
+    print("============= Recoded Packets ====================")
+    print_generation(recoded_packets)
+
+    arc(recoded_packets, 4, gen_size, field)
+
+
+def error_into_generation(generation:list[bytearray], error_column:int, ):
+    if error_column >= len(generation[0]):
+        raise ValueError(f"error column {error_column} is out of bounds of the generation {len(generation[0])}")
+    
+    for packet in generation:
+        packet[error_column] = packet[error_column] ^ 1     # 1 bit XOR
+
+    return generation
+
+def error_into_packet(packet: bytearray, error_column:int):
+    if error_column >= len(packet):
+        raise ValueError(f"error column {error_column} is out of bounds of the generation {len(packet)}")
+    
+    packet[error_column] = packet[error_column] ^ 1
+    return packet
+
+
+def test_arc_error():
+
+    print("arc_check_with_error")
+
+    field_int = 3
+    data_fields = 2
+    gen_size= 3
+
+
+    field = create_field(field_int)
+
+    #dir = get_playground_dir("simple_arc_check.txt")
+    #ic.configureOutput(outputFunction = make_ic_logger(dir))
+
+    generation = generate_symbols_until_nonzero(field,data_fields, gen_size, coefficients=True )
+    print("============= Generation ====================")
+    print_generation(generation)
+
+
+    recoded_packets = recode_rlnc_without_coeffs(field, generation, gen_size, count=7)
+    print("============= Recoded Packets ====================")
+    print_generation(recoded_packets)
+
+    print("============= Error Packets ====================")
+    error_packets = error_into_generation(recoded_packets, 0)
+    print_generation(error_packets)
+
+    arc(error_packets, 4, gen_size, field)
+
+
+
+if __name__ == "__main__":
+
+    test_arc_error()
+    print(quick_inner_product_test())
 
 
 

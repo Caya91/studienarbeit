@@ -329,6 +329,13 @@ def check_orth(field, generation: list[bytearray], log_dir: Path | None = None ,
     return True
 
 
+def check_orth_packet(field, packet: bytearray):
+    if inner_product_bytes(field, packet, packet) == 0:
+        return True
+    else:
+        return False
+
+
 def check_orth_for_recovery(field, generation: list[bytearray], gen_size:int, log_dir: Path | None = None) -> set[int]:
     ''' returns rows of the packets that are not fully zero in the generation, uses the full rref form of the generation'''
     failure_rows = set()

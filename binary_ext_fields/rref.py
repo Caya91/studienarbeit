@@ -193,7 +193,9 @@ def invert_pivot_rows(cleaned_matrix:list[list[int]], field: TableField, gen_siz
              # when the pivot rows are handled we can break the loop
 
         pivot_element = row[i]
-        assert pivot_element != 0  # if pivot element == 0   this should break
+        if pivot_element == 0:
+            raise ValueError(f"Pivot Element: {pivot_element} = 0 ")
+        #assert pivot_element != 0  # if pivot element == 0   this should break
         if pivot_element != 1:
             inverse = field.get_mul_inverse(pivot_element)
             new_row = row.copy()
