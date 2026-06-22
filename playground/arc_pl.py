@@ -330,7 +330,7 @@ def error_into_packet(packet: bytearray, error_column:int):
     if error_column >= len(packet):
         raise ValueError(f"error column {error_column} is out of bounds of the generation {len(packet)}")
     
-    packet[error_column] = packet[error_column] ^ 1
+    packet[error_column] = packet[error_column] ^ 1 << 1
     return packet
 
 

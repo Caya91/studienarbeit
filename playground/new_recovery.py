@@ -99,14 +99,38 @@ def recover_packet(field: TableField, packet: bytearray, recovery_column: int):
         print("packet was orthogonal")
         return packet
     
-    print(f"packet before recovery {packet}")
+    print(f"packet before recovery {list(packet)}")
     tmp = packet.copy()
     element_list = list(range(0,field.max_value + 1 ))
 
-    for e in element_list:
+    for e in element_list: 
         packet[recovery_column] = e
         if check_orth_packet(field, packet):
-            break
+            break # is the packet orthogonal after the fix then this is our recovered packet
+
+    return packet
+
+def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):
+    '''try to make the function for a single bit flip first, then lets see how to to a bigger hamming distance
+    this now recovers any single bitflip
+    TODO: How to what to do about flips that push the element outside of the field size?
+    '''
+
+    if check_orth_packet(field, packet):
+        print("packet was orthogonal")
+        return packet
+    
+    print(f"packet before recovery {list(packet)}")
+    tmp = packet.copy()
+
+    i = 0
+    print(f"Original byte before recovery {packet[recovery_column]:08b} ")
+    while ((not check_orth_packet(field, packet)) and i < 8):
+        #print(f"{i}, {packet}")
+        packet = bytearray(tmp)
+        packet[recovery_column] = packet[recovery_column] ^ (1 << i)
+        print(f"Bit {i} wird geflippt   {packet[recovery_column]:08b} ({packet[recovery_column]}) ") 
+        i +=  1
 
     return packet
 
@@ -124,7 +148,7 @@ if __name__ == "__main__":
     # This tests right now to put an error in one packet and then recovering that error
     # to make the generation orthogonal again
 
-    field = create_field(2)
+    field = create_field(5)
     generation = generate_symbols_until_nonzero(field, 3 , 3)
 
     print("generation Before introducing Error")
@@ -133,12 +157,26 @@ if __name__ == "__main__":
 
     print(check_orth(field, generation))
 
-    generation[0] = error_into_packet(generation[0], 1)
+    error_column = 3
+    error_packet = 0
+
+    generation[error_packet] = error_into_packet(generation[error_packet], error_column)
 
     print("Generation After Introducing Error")
     print_generation(generation)
 
     print(check_orth(field, generation))
+
+    print("===== Start packet recovery =====")
+    print(f"Original polluted Packet: {error_packet} with the Error Column: {error_column}")
+
+    #recovered_packet = recover_packet(field, generation[error_packet], error_column)
+    recovered_packet = recover_packet_bitflip(field, generation[error_packet], error_column, 0)
+
+    generation[error_packet] = recovered_packet
+
+    print("==== Recovered Generation ==== ")
+    print_generation(generation)
 
 
     #packet
