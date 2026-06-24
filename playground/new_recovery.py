@@ -163,6 +163,18 @@ def recover_generation(field: TableField, generation: list[bytearray], columns:l
     print(kartesian)
     print(list(kartesian))
 
+    # TODO: das kartesiche Produkt enthält alle möglichen Kombinationen an Fehlern
+    # wie gestalte ich den Loop der das überprüft
+    # Funktion die den nächsten For loop gibt
+
+    def _chunks(list, len(columns)):
+        '''liefert chunks für den for loop'''
+        it = iter(list)
+
+    # TODO: Bin gerade sehr lost hier, was wenn Fehler mal nicht genau gelichverteilt sind?
+    
+
+
 
 
     # TODO: erstmal naiver approach -> später mehr Varianten, wie weitermachen falls ein Packet nicht repaired wurde?
