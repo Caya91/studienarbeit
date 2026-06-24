@@ -29,10 +29,10 @@ def bit_flip_candidates(byte: int, max_hamming_dist: int, n_bits: int = 8):
     #TODO: HIER gehts weiter
 
     for dist in range(1, max_hamming_dist + 1):
-        ic(dist)
-        ic(n_bits, list(combinations(range(n_bits), dist)))
+        #ic(dist)
+        #ic(n_bits, list(combinations(range(n_bits), dist)))
         for positions in combinations(range(n_bits), dist):
-            ic(positions)
+            #ic(positions)
             mask = 0
             for p in positions:
                 mask |= (1 << p)
@@ -53,5 +53,5 @@ if __name__ == "__main__":
 
     byte = 0b00000000  
 
-    for flipped, mask, dist in bit_flip_candidates(byte, max_hamming_dist=2):
+    for flipped, mask, dist in bit_flip_candidates(byte, max_hamming_dist=2, n_bits=4):
         print(f"dist={dist}  mask={mask:08b}  result={flipped:08b} ({flipped})")

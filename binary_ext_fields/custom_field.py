@@ -24,6 +24,7 @@ class TableField:
         self.max_value = len(add_table) - 1
         self.prime = prime
         self.name = self._make_name()
+        self.bit_lenght = self.prime.bit_length() - 1
 
     def add(self, a: int, b: int) -> int:
         #TODO:  maybe mit XOR ausrechen statt lookup

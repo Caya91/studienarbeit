@@ -8,7 +8,7 @@ from binary_ext_fields.generate_symbols import inner_product_bytes, check_orth, 
 from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero
 from utils.log_helpers import make_ic_logger, print_generation, print_packet
 from arc_pl import error_into_generation, error_into_packet
-
+from itertools import combinations, product
 
 def verify_tag(data: bytearray, tag: bytearray) -> bool:
     # A very simple verification check (XOR checksum)
@@ -110,43 +110,72 @@ def recover_packet(field: TableField, packet: bytearray, recovery_column: int):
 
     return packet
 
-def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):
-    '''try to make the function for a single bit flip first, then lets see how to to a bigger hamming distance
-    this now recovers any single bitflip
-    TODO: How to what to do about flips that push the element outside of the field size?
-    '''
 
+def bit_flip_candidates(byte: int, max_hamming_dist: int, n_bits: int = 8):
+    '''Generiere alle möglichen Bitflips bis zur gegebenen Hamming Distanz. \n
+    Yields: (flipped_byte, mask)'''
+
+    for dist in range(1, max_hamming_dist + 1):
+        #ic(dist)
+        #ic(n_bits, list(combinations(range(n_bits), dist)))
+        for positions in combinations(range(n_bits), dist):
+            #ic(positions)
+            mask = 0
+            for p in positions:
+                mask |= (1 << p)
+            yield byte ^ mask, mask
+
+
+def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):
+    '''flips bits up to a hamming distance and then checks if packet is recovered. \n
+    If recovery is not possible -> returns Original Packet \n
+    Return: (Recovered Packed | Original Packet)
+    '''
     if check_orth_packet(field, packet):
         print("packet was orthogonal")
         return packet
     
-    print(f"packet before recovery {list(packet)}")
-    tmp = packet.copy()
+    #print(f"packet before recovery {list(packet)}")
 
-    i = 0
-    print(f"Original byte before recovery {packet[recovery_column]:08b} ")
-    while ((not check_orth_packet(field, packet)) and i < 8):
-        #print(f"{i}, {packet}")
-        packet = bytearray(tmp)
-        packet[recovery_column] = packet[recovery_column] ^ (1 << i)
-        print(f"Bit {i} wird geflippt   {packet[recovery_column]:08b} ({packet[recovery_column]}) ") 
-        i +=  1
+    tmp = bytearray(packet)
+    recovery_success = False
+    for flipped, mask in bit_flip_candidates(packet[recovery_column], hamming_distance, field.bit_lenght):
+        tmp = bytearray(packet)
+        #ic(tmp)
+        tmp[recovery_column] = flipped
+        if check_orth_packet(field, tmp):
+            #c(flipped, mask)
+            recovery_success = True
+            #print(f"Bit {recovery_column} wird geflippt   {tmp[recovery_column]:08b} ({tmp[recovery_column]}) ") 
+            break
 
-    return packet
+    if recovery_success:
+        return tmp, recovery_success
+    else:
+        return packet, recovery_success
+    
+
+def recover_generation(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hammind_distance: int ):
+
+    tmp = generation.copy()
+
+    kartesian = product(columns, rows)
+    print(kartesian)
+    print(list(kartesian))
 
 
-def base_test():
 
-    faulty_columns = set(1)
+    # TODO: erstmal naiver approach -> später mehr Varianten, wie weitermachen falls ein Packet nicht repaired wurde?
+    # eine andere Kombination an rows und columns probieren
+    for column, row in zip(columns, rows):
+        packet, status = recover_packet_bitflip(field, generation[row], column, hammind_distance)
+        if status == True:
+            continue
 
-    #packet
 
 
-# Run the tests
-if __name__ == "__main__":
 
-    # This tests right now to put an error in one packet and then recovering that error
-    # to make the generation orthogonal again
+def base_recovery_test():
 
     field = create_field(5)
     generation = generate_symbols_until_nonzero(field, 3 , 3)
@@ -171,12 +200,51 @@ if __name__ == "__main__":
     print(f"Original polluted Packet: {error_packet} with the Error Column: {error_column}")
 
     #recovered_packet = recover_packet(field, generation[error_packet], error_column)
-    recovered_packet = recover_packet_bitflip(field, generation[error_packet], error_column, 0)
+    recovered_packet, status= recover_packet_bitflip(field, generation[error_packet], error_column, 2)
 
     generation[error_packet] = recovered_packet
 
     print("==== Recovered Generation ==== ")
     print_generation(generation)
+
+
+# Run the tests
+if __name__ == "__main__":
+    # TODO: test how to find false positives
+    # TODO: implement full recovery with rows and columns
+
+    # This tests right now to put an error in one packet and then recovering that error
+    # to make the generation orthogonal again
+
+    error_packets = [0,2]
+    error_columns = [0,3]
+    hamming_distance = 2
+
+
+    field = create_field(3)
+    generation = generate_symbols_until_nonzero(field, 3 , 3)
+
+    print("===== Generation Before Error =====")
+    print_generation(generation)
+
+    for packet,column in zip(error_packets, error_columns):
+        ic()
+        generation[packet] = error_into_packet(generation[packet], column)
+    
+    
+    print("===== Generation After Error =====")
+    print_generation(generation)
+
+
+    generation = recover_generation(field, generation, error_columns, error_packets, hamming_distance)
+
+
+    
+    print("===== Generation After Recovery =====")
+    print_generation(generation)
+
+
+
 
 
     #packet
