@@ -9,19 +9,6 @@ def flip_bit(byte: int, position: int) -> int:
     return byte ^ (1 << position)
 
 
-def flip_bit_2(byte: int, position: int) -> int:
-    """Flippe das BIt an Position """
-    hd = 2
-
-
-
-
-
-
-
-
-    return byte ^ (1 << position)
-
 
 def bit_flip_candidates(byte: int, max_hamming_dist: int, n_bits: int = 8):
     '''Generiere alle möglichen Bitflips bis zur gegebenen Hamming Distanz.
