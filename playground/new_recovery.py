@@ -182,6 +182,54 @@ def recover_generation(field: TableField, generation: list[bytearray], columns:l
         #TODO: Was ist eine Abbruchsbedingung, falls Generation nicht recovered werden kann?
         # change the for loop to go through all columns for a package and then stop
 
+    ''' PSEUDOCODE:
+
+    liste unserer Reihen und Spalten
+
+    1. Fix 1 Bit Errors everywhere
+    1.1 check orthogonality
+    1.2 recheck ACR (Only the column)
+
+    1.3 remove columns from lists
+    1.4 remove packets from lists
+    
+    ====== Still Errors ? ======
+
+    2. Fix 2 Bit Errors 
+    2. check orthogonality
+    
+    -> and so on for different 
+    
+    
+
+    ....
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+    '''
+
+
+
+
+
+
+
+
+
+
     recovered_columns = []
     recovered_rows = []
 
