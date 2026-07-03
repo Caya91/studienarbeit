@@ -155,36 +155,46 @@ def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column
         return packet, recovery_success
     
 
-def recover_generation(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hammind_distance: int ):
+def recover_generation(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hamming_distance: int ):
 
-    tmp = generation.copy()
+    tmp = [bytearray(packet) for packet in generation] # TODO: this tmp has to be recovered
+    # to the original generation when a partial recovery was unsuccessful
+    print_generation(tmp)
+
 
     kartesian = product(columns, rows)
     print(kartesian)
     print(list(kartesian))
 
-    # TODO: das kartesiche Produkt enthält alle möglichen Kombinationen an Fehlern
-    # wie gestalte ich den Loop der das überprüft
-    # Funktion die den nächsten For loop gibt
-
-    def _chunks(list, len(columns)):
-        '''liefert chunks für den for loop'''
-        it = iter(list)
-
-    # TODO: Bin gerade sehr lost hier, was wenn Fehler mal nicht genau gelichverteilt sind?
     
-
-
-
+    # TODO: was wenn Fehler mal nicht genau gelichverteilt sind?
+    # ignorieren wir das einfach, weil das so unwarhscheinlich ist?
+    
 
     # TODO: erstmal naiver approach -> später mehr Varianten, wie weitermachen falls ein Packet nicht repaired wurde?
     # eine andere Kombination an rows und columns probieren
+    
+    # Idee für jetzt: wir gehen packet durch für alle columns, fixed eine column das packet
+    # -> dann streichen wir die column
+    # was tun wenn 2 fehler pro packet auftreten?
+
+    #while not check_orth(field, tmp):
+        #TODO: Was ist eine Abbruchsbedingung, falls Generation nicht recovered werden kann?
+        # change the for loop to go through all columns for a package and then stop
+
+    recovered_columns = []
+    recovered_rows = []
+
+    packet = []
     for column, row in zip(columns, rows):
-        packet, status = recover_packet_bitflip(field, generation[row], column, hammind_distance)
+        packet, status = recover_packet_bitflip(field, generation[row], column, hamming_distance)
         if status == True:
+            recovered_columns.append(column)
+            recovered_rows.append(row)
+            tmp[row] = bytearray(packet)        
             continue
-
-
+    
+    return tmp
 
 
 def base_recovery_test():
