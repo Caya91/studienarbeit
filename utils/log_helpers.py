@@ -1,6 +1,5 @@
 from pathlib import Path
 from datetime import datetime
-import pickle
 from icecream import ic
 
 from binary_ext_fields.custom_field import TableField, create_field

@@ -6,6 +6,7 @@ from binary_ext_fields.custom_field import TableField, create_field
 
 from binary_ext_fields.generate_symbols import inner_product_bytes, check_orth, check_orth_packet
 from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero
+from binary_ext_fields.bitops import bit_flip_candidates
 from utils.log_helpers import make_ic_logger, print_generation, print_packet
 from arc_pl import error_into_generation, error_into_packet
 from itertools import combinations, product
@@ -109,21 +110,6 @@ def recover_packet(field: TableField, packet: bytearray, recovery_column: int):
             break # is the packet orthogonal after the fix then this is our recovered packet
 
     return packet
-
-
-def bit_flip_candidates(byte: int, max_hamming_dist: int, n_bits: int = 8):
-    '''Generiere alle möglichen Bitflips bis zur gegebenen Hamming Distanz. \n
-    Yields: (flipped_byte, mask)'''
-
-    for dist in range(1, max_hamming_dist + 1):
-        #ic(dist)
-        #ic(n_bits, list(combinations(range(n_bits), dist)))
-        for positions in combinations(range(n_bits), dist):
-            #ic(positions)
-            mask = 0
-            for p in positions:
-                mask |= (1 << p)
-            yield byte ^ mask, mask
 
 
 def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):

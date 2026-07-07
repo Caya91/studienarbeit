@@ -1,4 +1,3 @@
-from binary_ext_fields.log_utils import clear_logs
 from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation, to_int_matrx
 
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC_custom

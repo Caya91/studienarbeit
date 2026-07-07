@@ -2,7 +2,9 @@ venv/
 .venv
 env/
 ENV/
+results/
 .claude/
+claude.md
 env.bak/
 venv.bak/
 .vscode

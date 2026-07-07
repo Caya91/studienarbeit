@@ -1,4 +1,3 @@
-from binary_ext_fields.log_utils import clear_logs
 from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC_custom
 
 from binary_ext_fields.custom_field import TableField, create_field, build_tables_gf2m, PRIMES_GF2M
@@ -88,7 +87,6 @@ def monte_carlo_recoding_test(num_trials, data_fields, gen_size, field:TableFiel
     return (prob, std, total_accepted, num_trials)
 
 def recoding_test1():
-    clear_logs()
     dir = get_playground_dir("recoding_pl.txt")
 
     accepts = False
