@@ -14,6 +14,12 @@ __pycache__/
 *$py.class
 
 
+docs/
+misc/misc.py
+misc/string_print_test.py
+CONTEXT.md
+.VSCodeCounter/
+
 structure.txt
 
 

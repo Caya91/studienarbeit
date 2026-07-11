@@ -10,7 +10,6 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True, parents=True)
 
 
-
 def get_run_log_dir(script_name: str, **run_params) -> Path:
     """Returns unique run dir: logs/<script>/<timestamp>_<params>/"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -102,7 +101,7 @@ def print_generation(
 
 
 def log_packet(label: str, packet: list[bytearray], f) -> None:
-    f.write(f"{label} (len={len(packet)}): {packet}\n")
+    f.write(f"{label} (len={len(packet)}): {[int(b) for b in packet]}\n")
 
 def print_packet( packet: list[bytearray]) -> None:
     print(list(packet))
@@ -139,8 +138,11 @@ def log_inner_product_detail(
 
     if log_file == None:
         print(f"=== Detailed inner product ===")
-        print(f"{label1} (len={len(p1)}): {p1}")
-        print(f"{label2} (len={len(p2)}): {p2}")
+
+        p1_str = [f"".join(f"{b:02x}" for b in p1)]
+        
+        print(f"{label1} (len={len(p1)}): {[int(b) for b in p1]}")
+        print(f"{label2} (len={len(p2)}): {[int(b) for b in p2]}")
 
         tmp = bytearray(1)
         acc = 0

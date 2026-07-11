@@ -521,15 +521,15 @@ def test_remove_coefficients_bytearray():
 if __name__ == "__main__":
     print("hi")
 
-    field_int = 3
+    field_int = 8
     field = create_field(field_int)
-    data_fields = 4
-    gen_size = 5
+    data_fields = 2
+    gen_size = 3
 
     generation = generate_symbols_until_nonzero(field, data_fields, gen_size, coefficients=True )
     
-    ic(generation)
-
+    [print(list(p)) for p in generation]
+    print(check_orth(field, generation))
 
     '''failed_gen = []
     for i in range(100):

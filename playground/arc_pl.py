@@ -326,11 +326,42 @@ def error_into_generation(generation:list[bytearray], error_column:int, ):
 
     return generation
 
-def error_into_packet(packet: bytearray, error_column:int):
+def error_into_packet(packet: bytearray, error_column:int, hamming_distance: int):
     if error_column >= len(packet):
         raise ValueError(f"error column {error_column} is out of bounds of the generation {len(packet)}")
-    
-    packet[error_column] = packet[error_column] ^ ((1 << 1) | (1 << 2)) 
+    if not 0 <= hamming_distance <= 8:
+        raise ValueError("hamming distance must be between 0 and 8 for one byte")
+
+
+    bit_positions = random.sample(range(8), hamming_distance)
+    mask = 0
+    for pos in bit_positions:
+        mask |= (1 << pos)
+
+    packet[error_column] ^= mask 
+    ic(packet)
+    return packet
+
+def error_into_packet_chosen_bit(packet: bytearray, error_column:int, chosen_bit: int):
+    tmp = bytearray(packet)
+    if error_column >= len(packet):
+        raise ValueError(f"error column {error_column} is out of bounds of the generation {len(packet)}")
+    if not 0 <= chosen_bit <= 8:
+        raise ValueError("hamming distance must be between 0 and 8 for one byte")
+
+    tmp[error_column] ^= (1 << chosen_bit)
+
+    return tmp
+
+
+
+    bit_positions = random.sample(range(8), hamming_distance)
+    mask = 0
+    for pos in bit_positions:
+        mask |= (1 << pos)
+
+    packet[error_column] ^= mask 
+    ic(packet)
     return packet
 
 
