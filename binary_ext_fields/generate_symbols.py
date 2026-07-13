@@ -66,7 +66,7 @@ def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:in
     while not (accepts and no_tag_error):
         symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
         symbols_with_coeffs = generate_identity_coefficients(field, symbols)
-        ic(symbols_with_coeffs)
+        #ic(symbols_with_coeffs)
         tagged_symbols = otc.generate_all_tags(symbols_with_coeffs)
         accepts = check_orth(field, tagged_symbols)
         no_tag_error = check_no_tag_error(tagged_symbols)
@@ -95,7 +95,7 @@ def generate_with_zero_tag_error(field:TableField,data_fields:int, gen_size:int)
     while not (accepts and not no_tag_error):
         symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
         symbols_with_coeffs = generate_identity_coefficients(field, symbols)
-        ic(symbols_with_coeffs)
+        #ic(symbols_with_coeffs)
         tagged_symbols = otc.generate_all_tags(symbols_with_coeffs)
         accepts = check_orth(field, tagged_symbols)
         no_tag_error = check_no_tag_error(tagged_symbols)
@@ -411,10 +411,10 @@ def check_no_tag_error(generation:list[bytearray]) -> bool:
         self_tags.append(packet[i + data_fields + gen_size])
 
     if self_tags.count(0) == 0:
-        ic("no Zero tags", self_tags)
+        #ic("no Zero tags", self_tags)
         return True
     else:
-        ic("yes Zero tags", self_tags)
+        #ic("yes Zero tags", self_tags)
         return False
 
 def check_orth_skip_coeffs(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int, log_dir: Path | None = None) -> bool:

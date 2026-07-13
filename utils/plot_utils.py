@@ -304,6 +304,57 @@ def plot_error_for_fixed_gen_size(
 
 
 
+def plot_kpi_vs_field_size(
+    summaries: list,
+    gen_sizes: list[int],
+    value_attr: str,
+    std_attr: str | None,
+    ylabel: str,
+    output_path: Path = None,
+):
+    """
+    Line plot of a throughput_kpi_sweep KPISummary field (value_attr) vs field
+    size, with one line per swept generation size.
+
+    Args:
+        summaries: list of simulation.kpi_metrics.KPISummary
+        gen_sizes: generation sizes that were swept, one line each
+        value_attr: name of the KPISummary attribute to plot on the y-axis
+        std_attr: name of the matching std-dev attribute, or None for no error bars
+        ylabel: y-axis label / plot title
+        output_path: where to save the plot (if None, just builds the figure)
+    """
+    fig, ax = plt.subplots(figsize=(9, 6))
+    colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(gen_sizes)))
+
+    for color, gen_size in zip(colors, gen_sizes):
+        points = sorted(
+            (s.field_size, getattr(s, value_attr), getattr(s, std_attr) if std_attr else 0.0)
+            for s in summaries if s.gen_size == gen_size
+        )
+        if not points:
+            continue
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        errs = [p[2] for p in points]
+
+        ax.errorbar(xs, ys, yerr=errs, marker='o', linewidth=2, markersize=6,
+                    color=color, capsize=4, label=f"gen_size={gen_size}")
+
+    ax.set_xlabel('Field size (GF(2^m))', fontsize=12, fontweight='bold')
+    ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+    ax.set_title(f'{ylabel} vs field size', fontsize=13, fontweight='bold')
+    ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Saved to: {output_path}")
+
+    return fig
+
+
 if __name__ == "__main__":
     '''
      Args:

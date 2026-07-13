@@ -258,10 +258,12 @@ def matrix_full_rank(Matrix:list[list[int]], gen_size:int):
 
 
     for i, row in enumerate(Matrix):
-        ic(i,row)
-        if i >= gen_size: return True # when we reach a the packet nr that is higher than gen_size, matrix has full rank  
+        #ic(i,row)
+        if i >= gen_size: return True # when we reach a the packet nr that is higher than gen_size, matrix has full rank
         if row[i] !=0: continue # as long as the pivot elements are non-zero   The Matrix could be of full rank
-        return False # when we reach this point Matrix is not of full rank: 1.an element row[i] == 0 and it was not a packet later than gen_size (packets) 
+        return False # when we reach this point Matrix is not of full rank: 1.an element row[i] == 0 and it was not a packet later than gen_size (packets)
+
+    return True # loop finished without an early return: len(Matrix) == gen_size and every pivot was non-zero
 
 
 
@@ -278,13 +280,13 @@ def stepwise_partial_rref(Matrix:list[bytearray], packet:bytearray, field:TableF
         pivot_tuples.append(pivot_tuple)
     
     packet = subtract_pivot_from_packet(pivot_tuples,Matrix, packet, field)
-    ic()
+    #ic()
 
 
     if packet.count(0) != 0:
-        ic()
-        ic("in stepwise", packet)
-        ic("this were the pivot tuples", pivot_tuples)
+        #ic()
+        #ic("in stepwise", packet)
+        #ic("this were the pivot tuples", pivot_tuples)
         return packet
 
     return packet
