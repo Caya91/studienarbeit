@@ -5,11 +5,14 @@ from random import choice
 from binary_ext_fields.custom_field import TableField, create_field
 
 from binary_ext_fields.generate_symbols import inner_product_bytes, check_orth, check_orth_packet
-from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero
+from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero, recode_rlnc_without_coeffs
+from binary_ext_fields.rref import calculate_rref, invert_pivot_rows
 from binary_ext_fields.bitops import bit_flip_candidates
 from utils.log_helpers import make_ic_logger, print_generation, print_packet
 from playground.arc_pl import error_into_generation, error_into_packet, error_into_packet_chosen_bit
-from itertools import combinations, product
+from playground.arc_pl import localize_errors
+from playground.sniffing import sniff_pool
+from itertools import combinations
 
 
 def recover_packet_combined(field, p1:bytearray, p2:bytearray, recovery_columns: list[int]):
@@ -21,26 +24,86 @@ def recover_packet_combined(field, p1:bytearray, p2:bytearray, recovery_columns:
     pass
 
 
-def recover_packet(field: TableField, packet: bytearray, recovery_column: int):
+def build_recovery_system(field: TableField, broken_packet: bytearray, candidate_columns: list[int], trusted_packets: list[bytearray]) -> list[list[int]]:
     '''
-    takes a broken packet and
-    tries out all the elements of the field at the recovery column for that packet
-    and returns the fixed packet, or the old packet if no solution was found
+    Builds the augmented (M x K+1) matrix for the ADR-0002 linear solve.
+
+    One row per trusted packet p_j: A[j][k] = p_j[candidate_columns[k]] (the
+    linear coefficient of the unknown x_k in mul(p_j[c], x_c)), and the
+    appended RHS b_j = inner_product(p_j, broken_packet-with-candidates-zeroed)
+    -- the known-column contribution that the unknowns must sum to for
+    orthogonality to hold (char-2 field, so no sign flip moving terms across =).
     '''
-    if check_orth_packet(field, packet):
-        print("packet was orthogonal")
-        return packet
-    
-    print(f"packet before recovery {list(packet)}")
-    tmp = packet.copy()
-    element_list = list(range(0,field.max_value + 1 ))
+    zeroed = bytearray(broken_packet)
+    for c in candidate_columns:
+        zeroed[c] = 0
 
-    for e in element_list: 
-        packet[recovery_column] = e
-        if check_orth_packet(field, packet):
-            break # is the packet orthogonal after the fix then this is our recovered packet
+    matrix = []
+    for p in trusted_packets:
+        row = [p[c] for c in candidate_columns]
+        b = inner_product_bytes(field, p, zeroed)
+        row.append(b)
+        matrix.append(row)
 
-    return packet
+    return matrix
+
+
+def solve_recovery_system(field: TableField, matrix: list[list[int]], K: int) -> list[int] | None:
+    '''
+    Runs calculate_rref + invert_pivot_rows (both from rref.py, unmodified)
+    restricted to the K unknown columns of the augmented matrix.
+
+    Returns the solved byte value per candidate column (in the same order as
+    the columns of `matrix`), or None if the system is underdetermined --
+    fewer independent trusted rows than K (ADR-0003: this is the signal to
+    wait for more trusted packets, or fall back to bit-flip search).
+    '''
+    if len(matrix) < K:
+        return None
+
+    try:
+        _, cleaned_rref = calculate_rref(matrix, field, K)
+        solved_rref = invert_pivot_rows(cleaned_rref, field, K)
+    except ValueError:
+        # a zero pivot means the available trusted rows don't span the
+        # K candidate columns yet -- underdetermined, not an error
+        return None
+
+    for i in range(K):
+        if solved_rref[i][i] != 1:
+            return None
+
+    return [solved_rref[i][K] for i in range(K)]
+
+
+def recover_packet_linear(field: TableField, broken_packet: bytearray, candidate_columns: set[int], trusted_packets: list[bytearray]) -> bytearray | None:
+    '''
+    ADR-0002: solve for the broken packet's true byte values at the ARC
+    candidate columns via a linear system over trusted packets' cross-tags,
+    instead of brute-force bit-flipping.
+
+    Returns a repaired copy of broken_packet, or None if underdetermined
+    (caller must still verify the result against the full acceptance oracle
+    per ADR-0001 before accepting it -- this only proves internal consistency
+    of the chosen candidate column set, not that it's the right one).
+    '''
+    columns = list(candidate_columns)
+    K = len(columns)
+
+    if K == 0:
+        return bytearray(broken_packet)
+
+    matrix = build_recovery_system(field, broken_packet, columns, trusted_packets)
+    solved = solve_recovery_system(field, matrix, K)
+
+    if solved is None:
+        return None
+
+    fixed = bytearray(broken_packet)
+    for c, value in zip(columns, solved):
+        fixed[c] = value
+
+    return fixed
 
 
 def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):
@@ -73,240 +136,56 @@ def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column
         return packet, recovery_success
     
 
-def recover_generation(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hamming_distance: int ):
-
-    tmp = [bytearray(packet) for packet in generation] # TODO: this tmp has to be recovered
-    # to the original generation when a partial recovery was unsuccessful
-    print_generation(tmp)
-
-
-    kartesian = product(columns, rows)
-    print(kartesian)
-    print(list(kartesian))
-
-    
-    # TODO: was wenn Fehler mal nicht genau gelichverteilt sind?
-    # ignorieren wir das einfach, weil das so unwarhscheinlich ist?
-    
-
-    # TODO: erstmal naiver approach -> später mehr Varianten, wie weitermachen falls ein Packet nicht repaired wurde?
-    # eine andere Kombination an rows und columns probieren
-    
-    # Idee für jetzt: wir gehen packet durch für alle columns, fixed eine column das packet
-    # -> dann streichen wir die column
-    # was tun wenn 2 fehler pro packet auftreten?
-
-    #while not check_orth(field, tmp):
-        #TODO: Was ist eine Abbruchsbedingung, falls Generation nicht recovered werden kann?
-        # change the for loop to go through all columns for a package and then stop
-
-    ''' Algoritm Idea:
-
-    liste unserer Reihen und Spalten
-
-    1. Fix 1 Bit Errors everywhere
-    1.1 check orthogonality
-    1.2 recheck ACR (Only the column)
-
-    1.3 remove columns from lists
-    1.4 remove packets from lists
-    
-    ====== Still Errors ? ======
-
-    2. Fix 2 Bit Errors 
-    2. check orthogonality
-    
-    -> and so on for different depths of errors that we fix
-
-    
-    ===== After thoughts : What happens when generation is not fixed? ======
-
-    (do we go again with different combinations?
-     do we save every way to fix a packet and then restart with different )
-
-
-
-
-
-    ...
-
-
-
-
-
-
-
-
-
+def recover_generation(field: TableField, packet_pool: list[bytearray], gen_size: int, min_trust_count: int = 4, min_pool_size: int = 10, hamming_fallback: int = 1):
     '''
+    Orchestrates the single-packet recovery pipeline: sniffing -> ARC -> linear solve
+    (CONTEXT.md glossary), replacing the old bit-flip-only orchestration.
 
+    Returns (repaired_pool, status), where status is one of:
+    - "waiting": not enough trusted packets yet for even an ARC basis (ADR-0003, no timeout -- caller retries later)
+    - "recovered": every broken packet was fixed and verified
+    - "partial": some broken packets could not be fixed (left as-is in repaired_pool)
+    '''
+    broken_idx, trusted_idx = sniff_pool(field, packet_pool, min_trust_count, min_pool_size)
 
-    
+    ic(broken_idx, trusted_idx)
+    if len(trusted_idx) < gen_size:
+        return packet_pool, "waiting"
 
+    tmp = [bytearray(p) for p in packet_pool]
+    trusted_basis = [tmp[i] for i in trusted_idx[0:gen_size]]
+    trusted_packets = [tmp[i] for i in trusted_idx]
 
+    unrecovered = []
+    for row in broken_idx:
+        broken_packet = tmp[row]
+        candidate_columns = localize_errors(field, trusted_basis, broken_packet, gen_size)
 
+        fixed = recover_packet_linear(field, broken_packet, candidate_columns, trusted_packets)
 
-    recovered_columns = []
-    recovered_rows = []
+        if fixed is None:
+            # ADR-0003 fallback: linear system underdetermined, try bit-flip search
+            for column in candidate_columns:
+                candidate, success = recover_packet_bitflip(field, broken_packet, column, hamming_fallback)
+                if success:
+                    fixed = candidate
+                    break
 
-    packet = []
-    for column, row in zip(columns, rows):
-        packet, status = recover_packet_bitflip(field, generation[row], column, hamming_distance)
-        if status == True:
-            recovered_columns.append(column)
-            recovered_rows.append(row)
-            tmp[row] = bytearray(packet)        
+        if fixed is None:
+            unrecovered.append(row)
             continue
-    
-    return tmp
 
+        # ADR-0001 acceptance oracle: full-generation orthogonality, not self-tag alone
+        if check_orth(field, trusted_packets + [fixed]):
+            tmp[row] = fixed
+        else:
+            unrecovered.append(row)
 
-def recover_generation_v2(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hamming_distance: int ):
-    """
-    TODO: Implement: after we recover a packet from a bitflip, we should check orthogonality
-    against another packet, because there is a lot of false positives
-
-
-    """
-
-
-
-    #kartesian = product(columns, rows)
-    #print(kartesian)
-    #print(list(kartesian))
-
-    
-    # TODO: was wenn Fehler mal nicht genau gelichverteilt sind?
-    # ignorieren wir das einfach, weil das so unwarhscheinlich ist?
-    
-
-    # TODO: erstmal naiver approach -> später mehr Varianten, wie weitermachen falls ein Packet nicht repaired wurde?
-    # eine andere Kombination an rows und columns probieren
-    
-    # Idee für jetzt: wir gehen packet durch für alle columns, fixed eine column das packet
-    # -> dann streichen wir die column
-    # was tun wenn 2 fehler pro packet auftreten?
-
-    #while not check_orth(field, tmp):
-        #TODO: Was ist eine Abbruchsbedingung, falls Generation nicht recovered werden kann?
-        # change the for loop to go through all columns for a package and then stop
-
-    ''' Algoritm Idea:
-
-    liste unserer Reihen und Spalten
-
-    1. Fix 1 Bit Errors everywhere
-    1.1 check orthogonality
-    1.2 recheck ACR (Only the column)
-
-    1.3 remove columns from lists
-    1.4 remove packets from lists
-    
-    ====== Still Errors ? ======
-
-    2. Fix 2 Bit Errors 
-    2. check orthogonality
-    
-    -> and so on for different depths of errors that we fix
-
-    
-    ===== After thoughts : What happens when generation is not fixed? ======
-
-    (do we go again with different combinations?
-     do we save every way to fix a packet and then restart with different )
-
-    '''
-
-
-
-
-
-    #print("====== Before recovery Process =======")
-    tmp = [bytearray(packet) for packet in generation]
-    #print_generation(tmp)
-
-
-    # combined list of broken packets
-    indexed_packets = [ (p ,bytearray(generation[p])) for p in rows]
-    packet_column_tuples = []
-
-    while columns and indexed_packets:
-        #ic(columns, indexed_packets)
-        solved_any = False
-
-        for i, col in enumerate(columns):
-            status = None
-
-            for j, pkt in enumerate(indexed_packets):
-
-                packet, success = recover_packet_bitflip(field, pkt[1], col, hamming_distance)
-                if not success:
-                    continue
-
-                indexed_packets[j] = packet
-
-                packet_column_tuples.append((pkt[0], packet, col))   #  row, packet, column
-                indexed_packets.pop(j)
-                columns.pop(i)
-                #ic(packet_column_tuples)
-
-                solved_any = True
-                break
-    
-            if solved_any:
-                break
-        if not solved_any:
-            break
-    
-    # falls alle Fehler gefunden wurden, können wir returnen -> sonst starten wir von vorn bis zur nächsten hamming distance
-    
-    if len(columns) == 0 or len(indexed_packets) == 0:
-        for row, pkt, col in packet_column_tuples:
-            tmp[row] = pkt
-
-        print("===== The returned fully repaired generation =======")
-        print_generation(tmp)
-        return tmp
-    else:
-        print("ERROR: couldnt repair generation" )
-        return None
-    return tmp
-
-
-
-    '''
-
-    recovered_columns = []
-    recovered_rows = []
-
-    packet = []
-    for column, row in zip(columns, rows):
-        packet, status = recover_packet_bitflip(field, generation[row], column, hamming_distance)
-        if status == True:
-            recovered_columns.append(column)
-            recovered_rows.append(row)
-            tmp[row] = bytearray(packet)        
-            continue
-    '''
-    return tmp
-
-
-def recovery_loop(field: TableField, generation: list[bytearray], columns:list[int], rows:list[int], hamming_distance: int ):
-    if hamming_distance <= 1:
-        hds = [1]
-    elif hamming_distance <= 8:
-        hds = list(range(1, hamming_distance + 1))
-
-    i = 1
-    while( i <= hamming_distance ):
-        print(f"Recovery Loop {i}")
-        i += 1
-        tmp = [bytearray(p) for p in generation]
-        tmp = recover_generation_v2(field, tmp, columns, rows, i)
-
-        if check_orth(field,tmp):
-            return tmp
-    return None
+    # Final ground-truth check on the whole pool, not just per-packet bookkeeping --
+    # if sniffing ever misses a broken packet, "recovered" must not be reported anyway
+    # (ADR-0001: a silently wrong recovery is worse than none).
+    status = "recovered" if (not unrecovered and check_orth(field, tmp)) else "partial"
+    return tmp, status
 
 
 
@@ -347,7 +226,6 @@ def base_recovery_test():
     print("===== Start packet recovery =====")
     print(f"Original polluted Packet: {error_packet} with the Error Column: {error_column}")
 
-    #recovered_packet = recover_packet(field, generation[error_packet], error_column)
     recovered_packet, status= recover_packet_bitflip(field, generation[error_packet], error_column, 2)
 
     generation[error_packet] = recovered_packet
@@ -358,60 +236,42 @@ def base_recovery_test():
 
 # Run the tests
 if __name__ == "__main__":
-    # TODO: test how to find false positives
-    # TODO: implement full recovery with rows and columns
-
-    # This tests right now to put an error in one packet and then recovering that error
-    # to make the generation orthogonal again
-
-    error_packets = [0,2]
-    error_columns = [0,3]
-    hamming_distance = 1
-
+    # Exercises the sniffing -> ARC -> linear solve pipeline end to end:
+    # build a clean, pairwise-orthogonal recoded pool, break one packet, recover it.
 
     field = create_field(8)
-    generation = generate_symbols_until_nonzero(field, 3 , 3)
+    data_fields = 3
+    gen_size = 3
+    hamming_distance = 1
 
-    print("===== Generation Before Error =====")
+    generation = generate_symbols_until_nonzero(field, data_fields, gen_size)
+
+    print("===== Generation Before Recoding =====")
     print_generation(generation)
 
-    for packet,column in zip(error_packets, error_columns):
-        ic()
-        generation[packet] = error_into_packet(generation[packet], column, hamming_distance)
-    
-    
-    print("===== Generation After Error =====")
-    print_generation(generation)
+    pool = recode_rlnc_without_coeffs(field, generation, gen_size, count=12)
 
-    #   just use the 
+    print("===== Recoded Pool (should already be pairwise orthogonal) =====")
+    print_generation(pool)
+    print(check_orth(field, pool))
 
-    error_packets = [0, 2]
-    error_columns = [3, 0]
+    broken_row = 0
+    error_column = gen_size  # first data column, past the coefficient block
+    pool[broken_row] = error_into_packet(pool[broken_row], error_column, hamming_distance)
 
+    print("===== Pool After Introducing Error =====")
+    print_generation(pool)
+    print(check_orth(field, pool))
 
+    tmp, status = recover_generation(field, pool, gen_size)
 
-    tmp = recover_generation_v2(field, generation, error_columns, error_packets, hamming_distance)
-
-
-    
-    print("===== Generation After Recovery =====")
+    print(f"===== Generation After Recovery (status: {status}) =====")
     print_generation(tmp)
 
     print(check_orth(field, tmp))
 
     for pkt in tmp:
         print(check_orth_packet(field, pkt))
-
-    tmp = recovery_loop(field, generation, error_columns, error_packets, hamming_distance)
-    if tmp == None:
-        print("couldnt recover the error")
-    else:
-        print(check_orth(field, tmp))
-        for pkt in tmp:
-            print(check_orth_packet(field, pkt))
-    
-
-
 
     #packet
     '''

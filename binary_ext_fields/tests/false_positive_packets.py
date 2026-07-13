@@ -12,7 +12,7 @@ from utils.log_helpers import log_generation_detail, log_inner_product_detail
 from itertools import combinations, product
 import random
 from playground.arc_pl import  error_into_packet, error_into_packet_chosen_bit
-from playground.new_recovery import recover_generation_v2, recover_packet_bitflip
+from playground.new_recovery import recover_packet_bitflip
 
 
 
@@ -72,25 +72,29 @@ def false_positive_pair():
     print("===== Retest after flipping every other bit in p1 =========")
 
 
+    # we flip every other bit than the original and check if we still get a positive self orthogonality -> false positives
+    false_positives = []
+    cross_checked = []
+
     for i in list(range(0, len(p1_flipped))):
         if i == chosen_column: continue
         err_pkt = error_into_packet_chosen_bit(p1_flipped, i, flipped_bit)
         print(i)
         print(list(err_pkt))
-        print("Check roth of 2 packets after different bitflip: (false) ", check_orth(field, [err_pkt,p2]))
+        print("Check orth of 2 packets after different bitflip: (false) ", check_orth(field, [err_pkt,p2]))
         print("err_pkt: orth: ", check_orth_packet(field, err_pkt))
         print("p2: orth: ", check_orth_packet(field, p2))
         log_inner_product_detail(field, err_pkt, p2)
 
+        false_positives.append(check_orth_packet(field, err_pkt))
+        cross_checked.append(check_orth(field, [err_pkt,p2]))
 
 
+    print("==== False Positives ====")
+    print(false_positives)
 
-
-
-
-
-
-
+    print("==== Cross Checking with another packet ====")
+    print(cross_checked)
 
 
 

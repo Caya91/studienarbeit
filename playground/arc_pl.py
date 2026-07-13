@@ -55,79 +55,43 @@ long_matrix =[
 ]
 
 
-def arc(generation:list[bytearray], packet_count: int, gen_size: int, field:TableField) -> set[int]:
-    # TODO: think about: what should be done with packet count
-    # how should that be chosen`?`
-
-    # TODO: How to add hamming distance evalution to the check of errors?
+def localize_errors(field: TableField, trusted_basis: list[bytearray], broken_packet: bytearray, gen_size: int) -> set[int]:
     '''
-    packet_count:  k + 1 packets to be taken from the generation
-                    it should be = ( gen_size + 1) in most cases
-    
+    ARC / localization step (see ADR-0002, CONTEXT.md "Localization (ARC)"):
+    given `gen_size` trusted, full-rank packets as a decoding basis, re-derive
+    the expected data+tag columns for `broken_packet` from its own
+    coefficients and diff against what it actually carries.
+
+    trusted_basis: exactly `gen_size` trusted, full-rank packets. Caller is
+    responsible for sourcing these from sniff_pool() - this function no
+    longer picks/mutates a shared pool itself.
+
+    Returns the set of candidate corrupted columns as full-packet indices
+    (i.e. past the coefficient block), matching the column space recovery
+    operates in.
     '''
-    chosen_packets = []
-    for _ in range(0,packet_count):
-        tmp = random.choice(generation)
-        chosen_packets.append(tmp)
-        generation.remove(tmp)
+    assert len(trusted_basis) == gen_size
 
-    print("============= Chosen Packets ====================")
-    print_generation(chosen_packets)
-    
+    control_coefficients = broken_packet[0:gen_size]
+    control_packet = broken_packet[gen_size::]
 
-    assert len(generation) <= packet_count
-    tmp_packet = random.choice(chosen_packets)
-    chosen_packets.remove(tmp_packet)
-    ic(tmp_packet)
-    control_coefficients = tmp_packet[0:gen_size]
-    control_packet = tmp_packet[gen_size::]
-
-    ic(control_coefficients, control_packet, chosen_packets, len(chosen_packets))
-    
-
-    print("============= Chosen Packets ====================")
-    print_generation(chosen_packets)
-    
-    
-    print("============= Control Packet ====================")
-    print_packet(control_coefficients)
-    print_packet(control_packet)
-
-
-    partial_rref, cleaned_rref = calculate_rref(chosen_packets, field, gen_size)
-    print("============= Original Packets ====================")
+    partial_rref, cleaned_rref = calculate_rref(trusted_basis, field, gen_size)
     inverted_rref = invert_pivot_rows(cleaned_rref, field, gen_size)
-    print_generation(inverted_rref)
 
-    coefficients = []
     estimated_symbols = []
-
     for i in range(0, gen_size):
-        coefficients.append(inverted_rref[i][0:gen_size])
         estimated_symbols.append(inverted_rref[i][gen_size::])
 
-        error_positions = set()
-
     calculated_packet = code_with_given_coefficients(estimated_symbols, control_coefficients, field)
-    print("============= Original Packet ====================")
 
-    print_packet(control_packet)
-
-
-
-    print("============= Calculated Packet ====================")
-
-    print_packet(calculated_packet)
-
-    error_columns = set()
-
-    for i, (e,r) in enumerate(zip(control_packet,calculated_packet)):
+    error_positions = set()
+    for i, (e, r) in enumerate(zip(control_packet, calculated_packet)):
         if e != r:
-            error_positions.add(i)
+            error_positions.add(i + gen_size)
 
-    print(error_positions)
+    ic(error_positions)
 
-    return error_columns 
+    return error_positions
 
 def test1():
     '''
@@ -314,7 +278,12 @@ def test_arc_no_error():
     print("============= Recoded Packets ====================")
     print_generation(recoded_packets)
 
-    arc(recoded_packets, 4, gen_size, field)
+    trusted_basis = recoded_packets[0:gen_size]
+    broken_packet = recoded_packets[gen_size]
+
+    candidate_columns = localize_errors(field, trusted_basis, broken_packet, gen_size)
+    print("============= Candidate Columns (should be empty) ====================")
+    print(candidate_columns)
 
 
 def error_into_generation(generation:list[bytearray], error_column:int, ):
@@ -388,11 +357,15 @@ def test_arc_error():
     print("============= Recoded Packets ====================")
     print_generation(recoded_packets)
 
-    print("============= Error Packets ====================")
-    error_packets = error_into_generation(recoded_packets, 0)
-    print_generation(error_packets)
+    trusted_basis = recoded_packets[0:gen_size]
+    broken_packet = error_into_packet(bytearray(recoded_packets[gen_size]), gen_size, 1)
 
-    arc(error_packets, 4, gen_size, field)
+    print("============= Broken Packet ====================")
+    print_packet(broken_packet)
+
+    candidate_columns = localize_errors(field, trusted_basis, broken_packet, gen_size)
+    print("============= Candidate Columns ====================")
+    print(candidate_columns)
 
 
 
