@@ -1,81 +1,23 @@
+## Todo:
 
-Stand 11.02.2026
+implement measuremen of KPIs for different kinds of pollution.
 
-Done:
-using my own finite field implementation, dont need pyerase for the field anymore 
-generating plots with error rates for different field sizes
-monte carlo simulation of error rates for all fields
-
-27.02: simple recoding done, orthogonality stays intact 
-28.02: started rref implementation, added base functions like inverse that will be necessary
-03.03 rref implemented
-04.03 repo is portable, but needs pyerasure to be installed
-04.03 started implementing arc
-06.03 metting with hosein/akif -> should implement arc and swapping, then evaluate error prob with that
+generating logs for different functions to control if the behaviour runs as expected.
+For example: Full log for the recovery mechanism. To self check if the kpis are measured correctly.
+Or fro the pollution, have a log of the original generation, then the polluted packets and see how the recovery is working on that-
+Or for stepwise rref, i want to check if the algorithm is working correctly and see the result.
 
 
- - arc implement
- - swapping implement
-13.03 implemented bit shifting
+## Todos if there is enough time left over:
 
-TODO: 
-
-Ideas from Frau Wolf:   - one extra field, to make self orthogonal, (similair to bitshift), then test again, then increase field etc
-                        - for orthogonality, use smaller field for the orthogonality check -> we can use multiple symbols of the higher field, to solve the orthogonality , can lead to multiple possible sollutions that we can choose from, to not get zero 
-                        ( would have to think really hard on how to implement this though)  
+Implement more efficient way of generating non zero tag error packets.
 
 
-some part of the code breaks for very long packets, have to check what exactly and where, which packet/generation size
+## Questions:
 
+What are reasonable KPIs that are used in related research papers?
 
-procedural coding decoding, on different nodes
+Are there other measurements that would make sense?
 
-monte carlo test with recoding
+How can we measure the security of this algorithm?
 
-implement swap / other means of preventing the 0 error tag
-
-compare error rates, when swapping
-
-implementing ARC  
--> preselecting incoming packets    Done
--> probably rref now and checking the packet columns now
--> orthogonality check for for rlnc without coefficients, seems to not work
-
--> return positions of possible recoverys 
-
-
--> implementing combined recovery
-
-
-pollution security check for different fields
-
-Later:
-
-
-optimize performance 
-
-    use functools to cache answer, for example for inverse, square root   etc
-
-    if code is sparse, can maybe save some time with rref implement
-    
-    Python's built-in ctypes module
-    Cython: Write Python-like code 
-    CPython Extensions: Pure C API 
-
-
-    We can swap two numbers without requiring a temporary variable by using the XOR operator (^). 
-    It works because applying XOR twice with the same value brings back the original number.
-        a = 5
-        b = 10
-        ​
-        a = a ^ b
-        b = a ^ b
-        a = a ^ b
-
-progressive / on the ly elimination with konsistency check
-
-    adding packets stepwise
-    check every new packet
-    if a packet becomes zero -> no new information
-    if not zero -> new base packet
-    if more base packets than necessary -> there is an error

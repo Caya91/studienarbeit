@@ -17,10 +17,10 @@ from simulation.kpi_metrics import derive_kpis, summarize, KPISummary
 from utils.log_helpers import get_run_log_dir
 from utils.plot_utils import plot_kpi_vs_field_size
 
-FIELDS = list(range(8, 9))
+FIELDS = list(range(5, 9))
 GEN_SIZES = [8, 16, 32]
-DATA_FIELDS = 7
-NUM_TRIALS = 1000
+DATA_FIELDS = 50
+NUM_TRIALS = 100
 
 
 def run_sweep(
