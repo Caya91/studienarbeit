@@ -1,5 +1,6 @@
 from icecream import ic
 from pprint import pprint
+import random
 
 
 PRIMES_GF2M = {
@@ -106,6 +107,29 @@ class TableField:
                 return f"GF_2pow{pow_int}"
         return None # None found
 
+
+class CountingField(TableField):
+    """
+    Wraps a field to count multiplications/additions. Used for ADR-007 - measuring the operations for recovery of polluted/broken packets
+
+    """
+    def __init__(self, base: TableField):
+        super().__init__(base._add, base._mul, base.prime)
+        self.mul_count = 0
+        self.add_count = 0
+
+    def mul(self, a, b):
+        self.mul_count += 1
+        return super().mul(a, b)
+
+    def add(self, a, b):
+        self.add_count += 1
+        return super().add(a, b)
+
+    def reset(self):
+        self.mul_count = 0
+        self.add_count = 0
+
         
 def build_tables_gf2m(m: int, poly: int):
     """
@@ -155,14 +179,8 @@ def create_field(field_m:int, ) -> TableField:
 
     return TableField(ADD_GF16, MUL_GF16, poly)
 
-if __name__ == "__main__":
-    '''
-        add_table = []
-        mul_table = []
-        prime = 5
 
-        field = TableField(add_table=add_table, mul_table=mul_table,prime = prime)
-    '''
+def _test_sanity():
 
     m = 4
     poly = PRIMES_GF2M[m]
@@ -183,6 +201,57 @@ if __name__ == "__main__":
     scalar3 = table_field.get_mul_to_target(9,target3)
 
     ic(scalar1,scalar2, scalar3)
+
+
+if __name__ == "__main__":
+    '''
+        add_table = []
+        mul_table = []
+        prime = 5
+
+        field = TableField(add_table=add_table, mul_table=mul_table,prime = prime)
+    '''
+
+    m = 4
+    field = create_field(m)
+    counting_field = CountingField(field)
+
+
+
+
+
+    # Sanity Test to get scalar to reach target
+    target1 = 5
+    target2 = 1
+    target3 = 7
+
+    scalar1 = counting_field.get_mul_to_target(3,target1)
+    scalar2 = counting_field.get_mul_to_target(1,target2)
+    scalar3 = counting_field.get_mul_to_target(9,target3)
+
+    adds = random.randint(1, 100)
+    muls = random.randint(1, 100)
+
+    for i in range(muls):
+        mul = counting_field.mul(3,2)
+
+    for i in range(adds):
+        add = counting_field.add(3,2)
+
+
+
+    ic(scalar1,scalar2, scalar3)
+    ic(adds, muls)
+    ic(counting_field.add_count, counting_field.mul_count)
+
+    assert counting_field.add_count == adds
+    assert counting_field.mul_count == muls
+
+    counting_field.reset()
+
+    assert counting_field.add_count == 0
+    assert counting_field.mul_count == 0
+
 
 
 
