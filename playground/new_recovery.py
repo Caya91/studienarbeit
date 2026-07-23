@@ -7,7 +7,7 @@ from binary_ext_fields.custom_field import TableField, create_field
 
 from binary_ext_fields.generate_symbols import inner_product_bytes, check_orth, check_orth_packet
 from binary_ext_fields.generate_symbols import generate_symbols_until_nonzero, recode_rlnc_without_coeffs
-from binary_ext_fields.rref import calculate_rref, invert_pivot_rows
+from binary_ext_fields.rref import calculate_rref, invert_pivot_rows, calculate_only_partial_rref, matrix_full_rank
 from binary_ext_fields.bitops import bit_flip_candidates
 from utils.log_helpers import make_ic_logger, print_generation, print_packet
 from playground.arc_pl import error_into_generation, error_into_packet, error_into_packet_chosen_bit
@@ -238,7 +238,56 @@ def _flip_candidates_whole_packet(broken_packet: bytearray, hamming_distance: in
     return None
 
 
-def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], min_trusted_packets: int, hamming_distance: int, mode: str = "per_column", min_trust_count: int = 4, min_pool_size: int = 10):
+def _basis_full_rank(field: TableField, trusted_basis: list[bytearray], gen_size: int) -> bool:
+    '''Mode C full-rank gate: does the `gen_size`-packet trusted basis span the
+    generation? localize_errors inverts the basis' pivot rows, which raises on a
+    zero pivot (ADR-0003: an underdetermined basis is a "wait for more", not a
+    guess), so C must check rank *before* trusting localization.
+
+    Uses only the partial RREF (no full cleanup -- matrix_full_rank only reads the
+    diagonal pivots) and works on copies, because calculate_only_partial_rref
+    mutates its input rows.
+    '''
+    partial_rref = calculate_only_partial_rref([bytearray(p) for p in trusted_basis], field, gen_size)
+    return bool(matrix_full_rank(partial_rref, gen_size))
+
+
+def _flip_candidates_arc_localized(broken_packet: bytearray, hamming_distance: int, oracle: Callable[[bytearray], bool], field: TableField, trusted_basis: list[bytearray], gen_size: int) -> bytearray | None:
+    '''Mode C (ADR-0007 + ARC): localize the corrupted byte-columns with ARC
+    (localize_errors) against the full-rank trusted basis, then bit-flip only
+    within those columns. This is the same per-column, single-corrupted-column
+    repair as mode B, but the search is restricted to the handful of ARC-flagged
+    columns instead of every column -- so recovery costs far fewer ops (localize
+    once, then search k columns instead of len(packet)).
+
+    Caller guarantees trusted_basis is exactly gen_size packets and full rank
+    (recover_generation_bitflip gates on _basis_full_rank first); localize_errors
+    asserts the length and needs full rank to invert its pivot rows. A fresh copy
+    of the basis is passed in because localize_errors' RREF mutates its rows.
+
+    Like mode B this only repairs single-corrupted-column packets: the oracle is a
+    whole-packet property, so a single-column flip passes only when that column was
+    the sole corruption. Multi-column repair within the localized columns (a
+    combined flip over candidate_columns) is deliberately out of scope here.
+
+    Intrinsic blind spot: localize_errors re-encodes the data columns *from* the
+    broken packet's own coefficient block, so it cannot detect or localize
+    corruption that lands in that coefficient block -- candidate_columns will never
+    include a coefficient index. A packet whose only error is in a coefficient byte
+    is therefore unrecoverable by C (returns None -> "partial"), whereas mode B,
+    which flips every column, does repair it. This is a property of ARC
+    localization, not a bug, and is a measurable source of C's recovery gap vs B.
+    '''
+    basis_copy = [bytearray(p) for p in trusted_basis]
+    candidate_columns = localize_errors(field, basis_copy, broken_packet, gen_size)
+    for column in candidate_columns:
+        candidate, success = recover_packet_bitflip(field, broken_packet, column, hamming_distance, oracle)
+        if success:
+            return candidate
+    return None
+
+
+def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], min_trusted_packets: int, hamming_distance: int, mode: str = "per_column", verify_count: int | None = None, min_trust_count: int = 4, min_pool_size: int = 10):
     '''ADR-0007: standalone bit-flip + cross-check recovery, with NO ARC column
     localization. Sniff the pool into broken/trusted, then for each broken packet
     flip bits and accept the first candidate orthogonal to the trusted set.
@@ -249,13 +298,30 @@ def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], 
     mode="whole_packet" (A, the exhaustive upper bound): flip up to
         `hamming_distance` bits across the whole packet. Recovers multi-column
         corruption within the bit budget.
+    mode="arc_localized" (C): ARC-localize the corrupted columns first, then run
+        the per-column flip (B) over only those columns. Same single-column repair
+        as B at far lower ops. Needs a full-rank `min_trusted_packets` basis; if
+        the trusted packets don't span the generation yet it returns "waiting"
+        (this extra gate applies to C only -- A/B behavior is unchanged).
+
+    verify_count: how many trusted packets the acceptance oracle checks against.
+        None (default) = all sniffed trusted packets (safest, most ops). An int
+        caps the oracle at the first `verify_count` trusted packets: fewer inner
+        products per accepted repair, but weaker acceptance. The safety floor is
+        `min_trusted_packets` (gen_size) independent packets -- orthogonality to
+        that many already pins a repair uniquely; below it the system is
+        underdetermined and wrong repairs start passing (measurable silent
+        failures). Above it only buys redundancy against a sniff false-positive.
+        Note the caller's slice is in sniff order, so with fewer than gen_size the
+        subset may also be linearly dependent, compounding the weakness.
 
     The oracle (is_orthogonal_to_trusted) is both the recovery test and the
     acceptance test -- first-match wins (ADR-0007 3b), so there is no separate
     second acceptance step.
 
     Returns (repaired_pool, status):
-    - "waiting":   fewer than `min_trusted_packets` trusted packets (no basis yet)
+    - "waiting":   fewer than `min_trusted_packets` trusted packets (no basis yet),
+                   or -- for mode "arc_localized" -- that basis is not full rank
     - "recovered": every broken packet was repaired to an oracle-accepted value
     - "partial":   at least one broken packet could not be repaired within budget
     '''
@@ -267,7 +333,21 @@ def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], 
     tmp = [bytearray(p) for p in packet_pool]
     trusted_packets = [tmp[i] for i in trusted_idx]
 
-    oracle = lambda cand: is_orthogonal_to_trusted(field, cand, trusted_packets)
+    # The oracle's trusted set can be capped (verify_count) to trade acceptance
+    # safety for fewer inner products; None keeps the full set. The full-rank gate
+    # below still uses the full gen_size basis -- verify_count tunes acceptance,
+    # not localization.
+    verify_set = trusted_packets if verify_count is None else trusted_packets[:verify_count]
+    oracle = lambda cand: is_orthogonal_to_trusted(field, cand, verify_set)
+
+    # Mode C needs a full-rank gen_size basis before ARC localization can run.
+    # Gate here (C only) so a non-full-rank basis becomes an honest "waiting"
+    # rather than a crash inside localize_errors' pivot inversion.
+    trusted_basis = None
+    if mode == "arc_localized":
+        trusted_basis = trusted_packets[:min_trusted_packets]
+        if not _basis_full_rank(field, trusted_basis, min_trusted_packets):
+            return packet_pool, "waiting"
 
     unrecovered = []
     for row in broken_idx:
@@ -276,8 +356,10 @@ def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], 
             fixed = _flip_candidates_per_column(broken_packet, hamming_distance, oracle, field)
         elif mode == "whole_packet":
             fixed = _flip_candidates_whole_packet(broken_packet, hamming_distance, oracle, field)
+        elif mode == "arc_localized":
+            fixed = _flip_candidates_arc_localized(broken_packet, hamming_distance, oracle, field, trusted_basis, min_trusted_packets)
         else:
-            raise ValueError(f"unknown recovery mode {mode!r} (expected 'per_column' or 'whole_packet')")
+            raise ValueError(f"unknown recovery mode {mode!r} (expected 'per_column', 'whole_packet' or 'arc_localized')")
 
         if fixed is None:
             unrecovered.append(row)
