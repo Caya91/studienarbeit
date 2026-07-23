@@ -1,4 +1,5 @@
 from icecream import ic
+from collections.abc import Callable
 from utils.log_helpers import log_packet
 from random import choice
 
@@ -106,34 +107,47 @@ def recover_packet_linear(field: TableField, broken_packet: bytearray, candidate
     return fixed
 
 
-def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int):
-    '''flips bits up to a hamming distance and then checks if packet is recovered. \n
-    If recovery is not possible -> returns Original Packet \n
-    Return: (Recovered Packed | Original Packet)
+def is_orthogonal_to_trusted(field: TableField, candidate: bytearray, trusted_packets: list[bytearray]) -> bool:
+    '''The bit-flip acceptance oracle (ADR-0007, "check with other packets").
+
+    A repaired candidate is accepted iff it is self-orthogonal AND orthogonal to
+    every trusted packet. This is the targeted, per-candidate cost -- exactly
+    M+1 inner products -- rather than the full O(M^2) check_orth, so a
+    CountingField measures only the work attributable to recovery.
+
+    Orthogonality to a trusted set is necessary but not sufficient: with fewer
+    than gen_size independent trusted packets a wrong repair can still pass,
+    which is exactly the silent-failure regime the simulation measures.
     '''
-    if check_orth_packet(field, packet):
-        print("packet was orthogonal")
-        print(" This shouldnt happen here")
-        return packet
-    
-    #print(f"packet before recovery {list(packet)}")
+    if not check_orth_packet(field, candidate):
+        return False
+    for t in trusted_packets:
+        if inner_product_bytes(field, candidate, t) != 0:
+            return False
+    return True
 
-    tmp = bytearray(packet)
-    recovery_success = False
-    for flipped, mask in bit_flip_candidates(packet[recovery_column], hamming_distance, field.bit_lenght):
+
+def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column: int, hamming_distance: int, oracle: Callable[[bytearray], bool] | None = None):
+    '''Flip up to `hamming_distance` bits within a single byte-column and accept
+    the first flipped candidate that satisfies `oracle`.
+
+    oracle: callable(candidate) -> bool. Defaults to self-orthogonality
+    (check_orth_packet), preserving the original single-packet behavior. The
+    cross-check recoverer (ADR-0007) passes an oracle that also tests
+    orthogonality against the trusted set (is_orthogonal_to_trusted).
+
+    Return: (candidate, True) on first accepted flip, else (original_packet, False).
+    '''
+    if oracle is None:
+        oracle = lambda cand: check_orth_packet(field, cand)
+
+    for flipped, mask, dist in bit_flip_candidates(packet[recovery_column], hamming_distance, field.bit_lenght):
         tmp = bytearray(packet)
-        #ic(tmp)
         tmp[recovery_column] = flipped
-        if check_orth_packet(field, tmp):
-            ic(flipped, mask)
-            recovery_success = True
-            print(f"Bit {recovery_column} wird geflippt   {tmp[recovery_column]:08b} ({tmp[recovery_column]}) ") 
-            break
+        if oracle(tmp):
+            return tmp, True
 
-    if recovery_success:
-        return tmp, recovery_success
-    else:
-        return packet, recovery_success
+    return packet, False
     
 
 def recover_generation(field: TableField, packet_pool: list[bytearray], min_trusted_packets: int, min_trust_count: int = 4, min_pool_size: int = 10, hamming_fallback: int = 1):
@@ -186,6 +200,91 @@ def recover_generation(field: TableField, packet_pool: list[bytearray], min_trus
     # if sniffing ever misses a broken packet, "recovered" must not be reported anyway
     # (ADR-0001: a silently wrong recovery is worse than none).
     status = "recovered" if (not unrecovered and check_orth(field, tmp)) else "partial"
+    return tmp, status
+
+
+def _flip_candidates_per_column(broken_packet: bytearray, hamming_distance: int, oracle: Callable[[bytearray], bool], field: TableField) -> bytearray | None:
+    '''Mode B (ADR-0007): flip up to `hamming_distance` bits within each byte-column
+    independently, column by column, and return the first candidate accepted by the
+    oracle. Because the oracle is a whole-packet property, a single-column flip only
+    passes when that column was the *only* corrupted one -- so this recovers
+    single-corrupted-column packets. Columns are tried in index order (coefficient
+    block included), so first-match may accept a wrong column before the right one
+    (a measurable silent failure).
+    '''
+    for column in range(len(broken_packet)):
+        candidate, success = recover_packet_bitflip(field, broken_packet, column, hamming_distance, oracle)
+        if success:
+            return candidate
+    return None
+
+
+def _flip_candidates_whole_packet(broken_packet: bytearray, hamming_distance: int, oracle: Callable[[bytearray], bool], field: TableField) -> bytearray | None:
+    '''Mode A (ADR-0007): the exhaustive upper bound. Flip up to `hamming_distance`
+    bits anywhere across the whole packet (all byte-columns at once) and return the
+    first oracle-accepted candidate. Unlike mode B this can repair multi-column
+    corruption, as long as the total number of flipped bits is within budget.
+    Search size is C(len*bit_lenght, d), so keep `hamming_distance` small.
+    '''
+    n_bits = field.bit_lenght
+    total_bits = len(broken_packet) * n_bits
+    for dist in range(1, hamming_distance + 1):
+        for positions in combinations(range(total_bits), dist):
+            candidate = bytearray(broken_packet)
+            for pos in positions:
+                candidate[pos // n_bits] ^= (1 << (pos % n_bits))
+            if oracle(candidate):
+                return candidate
+    return None
+
+
+def recover_generation_bitflip(field: TableField, packet_pool: list[bytearray], min_trusted_packets: int, hamming_distance: int, mode: str = "per_column", min_trust_count: int = 4, min_pool_size: int = 10):
+    '''ADR-0007: standalone bit-flip + cross-check recovery, with NO ARC column
+    localization. Sniff the pool into broken/trusted, then for each broken packet
+    flip bits and accept the first candidate orthogonal to the trusted set.
+
+    mode="per_column" (B, the method under study): flip up to `hamming_distance`
+        bits within each byte-column independently. Recovers single-corrupted-column
+        packets.
+    mode="whole_packet" (A, the exhaustive upper bound): flip up to
+        `hamming_distance` bits across the whole packet. Recovers multi-column
+        corruption within the bit budget.
+
+    The oracle (is_orthogonal_to_trusted) is both the recovery test and the
+    acceptance test -- first-match wins (ADR-0007 3b), so there is no separate
+    second acceptance step.
+
+    Returns (repaired_pool, status):
+    - "waiting":   fewer than `min_trusted_packets` trusted packets (no basis yet)
+    - "recovered": every broken packet was repaired to an oracle-accepted value
+    - "partial":   at least one broken packet could not be repaired within budget
+    '''
+    broken_idx, trusted_idx = sniff_pool(field, packet_pool, min_trust_count, min_pool_size)
+
+    if len(trusted_idx) < min_trusted_packets:
+        return packet_pool, "waiting"
+
+    tmp = [bytearray(p) for p in packet_pool]
+    trusted_packets = [tmp[i] for i in trusted_idx]
+
+    oracle = lambda cand: is_orthogonal_to_trusted(field, cand, trusted_packets)
+
+    unrecovered = []
+    for row in broken_idx:
+        broken_packet = tmp[row]
+        if mode == "per_column":
+            fixed = _flip_candidates_per_column(broken_packet, hamming_distance, oracle, field)
+        elif mode == "whole_packet":
+            fixed = _flip_candidates_whole_packet(broken_packet, hamming_distance, oracle, field)
+        else:
+            raise ValueError(f"unknown recovery mode {mode!r} (expected 'per_column' or 'whole_packet')")
+
+        if fixed is None:
+            unrecovered.append(row)
+        else:
+            tmp[row] = fixed
+
+    status = "recovered" if not unrecovered else "partial"
     return tmp, status
 
 

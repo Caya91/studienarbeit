@@ -60,13 +60,17 @@ def pollute_intelligent(field, packet, trusted_packets, gen_size, data_length) -
 
 
 def pollute_random(field, packet, bit_error_rate) -> bytearray:
+    # Only flip the field.bit_lenght low bits (m for GF(2^m)); flipping higher
+    # bits would push a symbol above field.max_value, out of the field. This also
+    # keeps pollution in the same bit space the recoverer searches (bit_flip_candidates
+    # / whole_packet both use field.bit_lenght).
     polluted_packet = bytearray(packet)
 
     for i in range(len(polluted_packet)):
         byte = polluted_packet[i]
-        for bit_pos in range(8):
+        for bit_pos in range(field.bit_lenght):
             if random.random() < bit_error_rate:
-                byte ^= (1 <<bit_pos)    
+                byte ^= (1 << bit_pos)
         polluted_packet[i] = byte
 
     return polluted_packet
