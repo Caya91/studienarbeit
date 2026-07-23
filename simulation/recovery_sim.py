@@ -42,9 +42,9 @@ from utils.log_helpers import get_run_log_dir, print_generation
 
 # ── Sweep configuration ──────────────────────────────────────────────────────
 FIELD_M = 8                 # GF(2^m), fixed so the BER x d grid stays readable
-GEN_SIZE = 12               # packets needed for a full-rank trusted basis
+GEN_SIZE = 8               # packets needed for a full-rank trusted basis
 DATA_FIELDS = 5             # data symbols per packet (before the tag)
-POOL_SIZE = 3 * GEN_SIZE    # recode into a pool > gen_size so a trusted basis survives pollution
+POOL_SIZE = 2 * GEN_SIZE    # recode into a pool > gen_size so a trusted basis survives pollution
 NUM_TRIALS = 100
 
 # Kept deliberately small: per-packet corruption probability is (1-BER)^(packet_bits),
@@ -61,7 +61,7 @@ MODES = ["per_column", "whole_packet", "arc_localized"]
 # that many independent packets pins a repair uniquely. Below it, wrong repairs
 # start passing (silent failures); above it only buys redundancy at extra ops.
 # Values straddle the floor so the tradeoff curve shows both sides.
-VERIFY_COUNTS = [6, 9, 12, 18, 24]
+VERIFY_COUNTS = [2, 4, 6, 8]
 # Reference point for the vs-BER plots, which fix verify_count so the BER lines
 # stay readable. The tradeoff *over* verify_count gets its own vs-verify_count plots.
 REFERENCE_VERIFY_COUNT = GEN_SIZE
@@ -306,6 +306,7 @@ def _plot_metric_vs_ber(summary_rows, hamming_distances, modes, metric, ylabel, 
             ax.plot(xs, ys, _MODE_STYLE.get(m, "-"), marker="o", color=color, linewidth=2,
                     markersize=5, label=f"{m}, d={d}")
 
+    ax.set_xscale("log")
     ax.set_xlabel("Bit error rate", fontsize=12, fontweight="bold")
     ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
     ax.set_title(f"{ylabel} vs bit error rate (verify_count={verify_count})", fontsize=13, fontweight="bold")
@@ -339,6 +340,7 @@ def _plot_metric_vs_verify_count(summary_rows, ber, d, modes, gen_size, metric, 
         ax.plot(xs, ys, _MODE_STYLE.get(m, "-"), marker="o", color=color, linewidth=2,
                 markersize=5, label=m)
 
+    ax.set_xscale("log")
     ax.axvline(gen_size, color="grey", linestyle="-.", alpha=0.6, label=f"gen_size={gen_size} (safety floor)")
     ax.set_xlabel("verify_count (trusted packets checked by oracle)", fontsize=12, fontweight="bold")
     ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
@@ -353,6 +355,6 @@ def _plot_metric_vs_verify_count(summary_rows, ber, d, modes, gen_size, metric, 
 
 
 if __name__ == "__main__":
-    #run_sweep()
+    run_sweep()
 
-    smoke_test()
+    #smoke_test()
