@@ -136,7 +136,8 @@ def recover_packet_bitflip(field: TableField, packet: bytearray, recovery_column
         return packet, recovery_success
     
 
-def recover_generation(field: TableField, packet_pool: list[bytearray], gen_size: int, min_trust_count: int = 4, min_pool_size: int = 10, hamming_fallback: int = 1):
+def recover_generation(field: TableField, packet_pool: list[bytearray], min_trusted_packets: int, min_trust_count: int = 4, min_pool_size: int = 10, hamming_fallback: int = 1):
+    #TODO: rename gen_size to something that makes more sense, min trust packages
     '''
     Orchestrates the single-packet recovery pipeline: sniffing -> ARC -> linear solve
     (CONTEXT.md glossary), replacing the old bit-flip-only orchestration.
@@ -149,17 +150,17 @@ def recover_generation(field: TableField, packet_pool: list[bytearray], gen_size
     broken_idx, trusted_idx = sniff_pool(field, packet_pool, min_trust_count, min_pool_size)
 
     ic(broken_idx, trusted_idx)
-    if len(trusted_idx) < gen_size:
+    if len(trusted_idx) < min_trusted_packets:
         return packet_pool, "waiting"
 
     tmp = [bytearray(p) for p in packet_pool]
-    trusted_basis = [tmp[i] for i in trusted_idx[0:gen_size]]
+    trusted_basis = [tmp[i] for i in trusted_idx[0:min_trusted_packets]]
     trusted_packets = [tmp[i] for i in trusted_idx]
 
     unrecovered = []
     for row in broken_idx:
         broken_packet = tmp[row]
-        candidate_columns = localize_errors(field, trusted_basis, broken_packet, gen_size)
+        candidate_columns = localize_errors(field, trusted_basis, broken_packet, min_trusted_packets)
 
         fixed = recover_packet_linear(field, broken_packet, candidate_columns, trusted_packets)
 
@@ -186,12 +187,6 @@ def recover_generation(field: TableField, packet_pool: list[bytearray], gen_size
     # (ADR-0001: a silently wrong recovery is worse than none).
     status = "recovered" if (not unrecovered and check_orth(field, tmp)) else "partial"
     return tmp, status
-
-
-
-
-
-
 
 
 def test_full_recovery():

@@ -418,10 +418,16 @@ def check_no_tag_error(generation:list[bytearray]) -> bool:
         return False
 
 def check_orth_skip_coeffs(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int, log_dir: Path | None = None) -> bool:
-    '''this is a wrapper to check orthogonality between all packets of a generateion
+    '''this is a wrapper to check orthogonality between all packets of a generation
     but is skipping the coefficients'''
     generation_no_coefficients = skip_coefficients(field, generation_with_coefficients, gen_size)
     return check_orth(field, generation_no_coefficients, log_dir)
+
+
+def check_generation_equal(generation1:list[bytearray],generation2:list[bytearray] ):
+    for a,b in zip (generation1, generation2):
+        if not (a == b): return False 
+    return True
 
 
 def skip_coefficients(field:TableField, generation_with_coefficients: list[bytearray], gen_size:int) -> list[bytearray]:
