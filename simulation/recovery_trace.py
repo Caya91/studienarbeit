@@ -1,8 +1,7 @@
 """Follow-along trace of a SINGLE recovery scenario -- the debug companion to the
 recovery_sim.py sweeps.
 
-Where run_sweep aggregates thousands of trials into rates and op-counts, this shows
-ONE small generation end to end: the clean pool, the error you injected, how sniffing
+this shows ONE small generation end to end: the clean pool, the error you injected, how sniffing
 classifies the packets, (for arc_localized) which columns ARC localizes, and exactly
 what each mode does to each packet. Everything is printed as an aligned byte table
 with the corrupted/changed columns marked, so you can literally follow a packet from

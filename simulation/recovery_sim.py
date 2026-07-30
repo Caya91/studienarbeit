@@ -42,8 +42,8 @@ from utils.log_helpers import get_run_log_dir, print_generation
 
 # ── Sweep configuration ──────────────────────────────────────────────────────
 FIELD_M = 8                 # GF(2^m), fixed so the BER x d grid stays readable
-GEN_SIZE = 8               # packets needed for a full-rank trusted basis
-DATA_FIELDS = 5             # data symbols per packet (before the tag)
+GEN_SIZE = 10               # packets needed for a full-rank trusted basis
+DATA_FIELDS = 10             # data symbols per packet (before the tag)
 POOL_SIZE = 2 * GEN_SIZE    # recode into a pool > gen_size so a trusted basis survives pollution
 NUM_TRIALS = 100
 
@@ -54,17 +54,17 @@ NUM_TRIALS = 100
 # cases at the top end. Verified empirically 2026-07-23.
 BIT_ERROR_RATES = [10e-6, 10e-6 *5, 10e-5, 10e-5 *5, 10e-4, 10e-4 * 5, 10e-3]
 HAMMING_DISTANCES = [1]
-MODES = ["per_column", "whole_packet", "arc_localized"]
+MODES = ["per_column"] #"arc_localized" , "whole_packet"
 
 # Oracle safety/ops tradeoff axis: how many trusted packets the acceptance oracle
 # checks a repair against. GEN_SIZE (=12) is the safety floor -- orthogonality to
 # that many independent packets pins a repair uniquely. Below it, wrong repairs
 # start passing (silent failures); above it only buys redundancy at extra ops.
 # Values straddle the floor so the tradeoff curve shows both sides.
-VERIFY_COUNTS = [2, 4, 6, 8]
+VERIFY_COUNTS = [4]
 # Reference point for the vs-BER plots, which fix verify_count so the BER lines
 # stay readable. The tradeoff *over* verify_count gets its own vs-verify_count plots.
-REFERENCE_VERIFY_COUNT = GEN_SIZE
+REFERENCE_VERIFY_COUNT = 4       #GEN_SIZE
 
 # Per-trial original/polluted/recovered generation dumps: useful for eyeballing a
 # single trial, catastrophic for a multi-thousand-trial sweep. Off by default
@@ -253,17 +253,19 @@ def run_sweep(
     # ── vs-verify_count plots: the oracle safety/ops tradeoff, at the top BER where ──
     # recovery is actually exercised. silent_failure_rate (safety cost) should climb
     # as verify_count drops below gen_size; mul_ops_mean (savings) should fall.
-    tradeoff_ber = max(bit_error_rates)
+    #tradeoff_ber = max(bit_error_rates)
     d0 = hamming_distances[0]
-    _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "silent_failure_rate",
-                                 "Silent-failure rate (wrong repair / polluted)",
-                                 run_dir / "silent_failure_rate_vs_verify_count.png")
-    _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "recovery_rate",
-                                 "Recovery rate (correct / polluted)",
-                                 run_dir / "recovery_rate_vs_verify_count.png")
-    _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "mul_ops_mean",
-                                 "Mean mul-ops per recovery",
-                                 run_dir / "mul_ops_vs_verify_count.png", ylim=None)
+    for tradeoff_ber in bit_error_rates:
+
+        _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "silent_failure_rate",
+                                    "Silent-failure rate (wrong repair / polluted)",
+                                    run_dir / f"silent_failure_rate_vs_verify_count_ber_{tradeoff_ber}.png")
+        _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "recovery_rate",
+                                    "Recovery rate (correct / polluted)",
+                                    run_dir / f"recovery_rate_vs_verify_count_ber_{tradeoff_ber}.png")
+        _plot_metric_vs_verify_count(summary_rows, tradeoff_ber, d0, modes, gen_size, "mul_ops_mean",
+                                    "Mean mul-ops per recovery",
+                                    run_dir / f"mul_ops_vs_verify_count_ber_{tradeoff_ber}.png", ylim=None)
 
     print(f"\nDone. Results written to: {run_dir}")
     return run_dir
