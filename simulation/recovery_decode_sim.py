@@ -190,6 +190,10 @@ def run_incremental_trial(base_field, data_fields, gen_size, bit_error_rate,
             min_trust_count=min_trust_count, min_pool_size=min_pool_size,
         )
 
+        # if status == waiting -> no decodable basis yet, so skip
+        if _status == "waiting":
+            continue
+
         accepted = _accepted_packets(cnt, repaired, decode_verify_count, min_pool_size)
         decoded, correct = _try_decode(cnt, accepted, gen_size, source_suffix)
         if decoded:
@@ -399,4 +403,4 @@ def _plot_vs_ber_multi(summary_rows, series_values, metric, ylabel, output_path,
 if __name__ == "__main__":
     smoke_test()
     #run_sweep()
-    #run_verify_sweep()
+    run_verify_sweep()
