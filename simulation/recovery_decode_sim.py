@@ -57,7 +57,7 @@ from utils.log_helpers import get_run_log_dir
 FIELD_M = 8
 GEN_SIZE = 10               # packets needed for a full-rank decodable basis
 DATA_FIELDS = 10            # data symbols per packet (before the tag)
-NUM_TRIALS = 100
+NUM_TRIALS = 1000
 
 # Written as plain floats (recovery_sim.py's 10e-3 notation is misread as 1e-3 when
 # it is actually 1e-2). Range spans the regime where the one-shot sim collapsed to
@@ -401,6 +401,6 @@ def _plot_vs_ber_multi(summary_rows, series_values, metric, ylabel, output_path,
 
 
 if __name__ == "__main__":
-    smoke_test()
-    #run_sweep()
+    #smoke_test()
+    run_sweep()
     run_verify_sweep()
