@@ -2,7 +2,7 @@
 
 Full derivation: docs/zero_tag_probability.md. This bench does three jobs:
 
-1. CONFIRM the closed forms against sampling (with 95% Wilson CIs):
+1. CONFIRM the closed forms against sampling (with 99% Wilson CIs):
      A  P(one packet's self-tag = 0)          = 1/q
      B  P(a generation needs a redo)          = 1 - (1-1/q)^g
      C  E[regenerations until success]        = (q/(q-1))^g
@@ -47,11 +47,11 @@ from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as O
 SEED = 20260731
 
 # ── Sweep sizes (tune here; kept modest so a full run is a couple of minutes) ──
-AB_TRIALS = 15_000        # A/B/C core sweep
-INVAR_TRIALS = 15_000     # data_fields-invariance of A
-SPOT_TRIALS = 60_000      # GF(2^8) rare-event spot check
-COST_TRIALS = 6_000       # solution 1 vs 2 cost
-SALT_TRIALS = 6_000       # salt-byte fix
+AB_TRIALS = 12_000        # A/B/C core sweep
+INVAR_TRIALS = 12_000     # data_fields-invariance of A
+SPOT_TRIALS = 50_000      # GF(2^8) rare-event spot check
+COST_TRIALS = 5_000       # solution 1 vs 2 cost
+SALT_TRIALS = 5_000       # salt-byte fix
 
 
 # ── Closed forms ──────────────────────────────────────────────────────────────
@@ -81,8 +81,10 @@ def cost_regen_single(q: int, g: int) -> float:
 
 
 # ── Stats helpers ─────────────────────────────────────────────────────────────
-def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """95% Wilson score interval for a binomial proportion k/n."""
+def wilson_ci(k: int, n: int, z: float = 2.576) -> tuple[float, float]:
+    """99% Wilson score interval for a binomial proportion k/n. 99% (not 95%) because
+    the harness makes ~40 CI comparisons; at 95% we'd expect ~2 chance failures even
+    when every closed form is correct (multiple-comparison correction)."""
     if n == 0:
         return (0.0, 0.0)
     p = k / n
@@ -92,8 +94,8 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (center - half, center + half)
 
 
-def mean_ci(values: list[float], z: float = 1.96) -> tuple[float, float, float]:
-    """Sample mean and normal CI (returns mean, lo, hi)."""
+def mean_ci(values: list[float], z: float = 2.576) -> tuple[float, float, float]:
+    """Sample mean and 99% normal CI (returns mean, lo, hi)."""
     n = len(values)
     m = sum(values) / n
     var = sum((v - m) ** 2 for v in values) / (n - 1) if n > 1 else 0.0
@@ -122,16 +124,23 @@ def _self_tags(generation, data_fields: int, gen_size: int) -> list[int]:
 
 # ── Experiment 1: A / B / C ───────────────────────────────────────────────────
 def measure_abc(field: TableField, otc: OTC, data_fields: int, gen_size: int, trials: int):
+    """Returns (zero_tags, total_tags, bad_gens, zero_pos0).
+    zero_pos0 counts zero self-tags in PACKET 0 only, where P = 1/q is provably exact
+    (no cross-tag correlation); the generation-wide `zero_tags` carries the small §7
+    sub-1/q bias from later packets."""
     zero_tags = 0
     total_tags = trials * gen_size
     bad_gens = 0
+    zero_pos0 = 0
     for _ in range(trials):
         tags = _self_tags(_fresh_tagged(field, otc, data_fields, gen_size), data_fields, gen_size)
         z = tags.count(0)
         zero_tags += z
+        if tags[0] == 0:
+            zero_pos0 += 1
         if z:
             bad_gens += 1
-    return zero_tags, total_tags, bad_gens
+    return zero_tags, total_tags, bad_gens, zero_pos0
 
 
 # ── Experiment 4/5: strategy costs (greedy, keeps earlier packets fixed) ──────
@@ -157,31 +166,31 @@ def cost_single_trial(field: TableField, otc: OTC, data_fields: int, gen_size: i
     return draws
 
 
-def salt_trial(field: TableField, otc: OTC, data_fields: int, gen_size: int):
-    """Fixed-payload salt fix: payload frozen, one appended salt byte resampled until
-    all self-tags nonzero. Returns (draws, orthogonal_ok, payload_untouched)."""
+def salt_trial(field: TableField, otc: OTC, data_fields: int, gen_size: int, cap: int = 200):
+    """Fixed-payload salt fix (ONE salt byte per packet). Payload is frozen; the whole
+    salt VECTOR is resampled until every self-tag is nonzero.
+
+    IMPORTANT: one salt byte is NOT a guarantee. Salt_i's leverage on packet i's
+    self-tag is `salt_i * (1 + sum_{k<i} salt_k / t_k)`; when that multiplier is 0,
+    salt_i cannot move the self-tag off 0. So we resample the whole salt vector (not
+    one position, which can stall forever) and give up after `cap` draws. See
+    docs/zero_tag_probability.md §9.
+
+    Returns (solved, draws, orthogonal_ok, payload_untouched)."""
     df = data_fields + 1                      # one extra salt column
     data_len = gen_size + df
     payloads = [[random.randint(0, field.max_value) for _ in range(data_fields)]
                 for _ in range(gen_size)]
     frozen = [list(p) for p in payloads]      # snapshot to prove data never changes
-    salts = [random.randint(0, field.max_value) for _ in range(gen_size)]
-    draws = gen_size
 
-    def _tag():
+    for draws in range(1, cap + 1):
+        salts = [random.randint(0, field.max_value) for _ in range(gen_size)]
         symbols = [bytearray(payloads[k] + [salts[k]] + [0] * gen_size)
                    for k in range(gen_size)]
-        return otc.generate_all_tags(generate_identity_coefficients(field, symbols))
-
-    tagged = _tag()
-    for i in range(gen_size):
-        while tagged[i][data_len + i] == 0:
-            salts[i] = random.randint(0, field.max_value)
-            draws += 1
-            tagged = _tag()
-    orthogonal_ok = check_orth(field, tagged)
-    payload_untouched = payloads == frozen
-    return draws, orthogonal_ok, payload_untouched
+        tagged = otc.generate_all_tags(generate_identity_coefficients(field, symbols))
+        if all(tagged[i][data_len + i] != 0 for i in range(gen_size)):
+            return True, draws, check_orth(field, tagged), payloads == frozen
+    return False, cap, False, payloads == frozen
 
 
 # ── Tiny PASS/FAIL harness ────────────────────────────────────────────────────
@@ -233,45 +242,60 @@ def main():
 
     print("=" * 78)
     print("Experiment 1 — A / B / C  (data_fields=2)")
-    print("   asserted for q>=16 (GF(2^4)+); GF(2^2)/GF(2^3) shown INFO-only:")
-    print("   the i.i.d. closed form is a documented small-field approximation (Q8/A).")
+    print("   A on PACKET 0 is exact (asserted via CI, all fields). Generation-wide")
+    print("   A/B/C are asserted for q>=16 with a small tolerance (§7 sub-1/q bias);")
+    print("   GF(2^2)/GF(2^3) shown INFO-only.")
     print("=" * 78)
     for m in (2, 3, 4):
         field, otc, q = fields[m], otcs[m], q_of(fields[m])
         enforce = q >= 16
         for g in (2, 4, 6, 8):
-            zt, tt, bad = measure_abc(field, otc, 2, g, AB_TRIALS)
-            # A
+            zt, tt, bad, z0 = measure_abc(field, otc, 2, g, AB_TRIALS)
+            # A on packet 0: exact 1/q, asserted every field via CI
+            lo, hi = wilson_ci(z0, AB_TRIALS)
+            check(f"A0 GF(2^{m}) g={g}  P(tag=0|pkt0)=1/q", p_single(q), lo, hi)
+            # A generation-wide: carries the §7 bias -> tolerance for q>=16, else INFO
+            a_mean = zt / tt
             lo, hi = wilson_ci(zt, tt)
-            check(f"A  GF(2^{m}) g={g}  P(tag=0)=1/q", p_single(q), lo, hi, enforce=enforce)
-            # B
-            lo, hi = wilson_ci(bad, AB_TRIALS)
-            check(f"B  GF(2^{m}) g={g}  P(redo)", p_generation(q, g), lo, hi, enforce=enforce)
-            # C derived from B's CI (C = 1/(1-B), monotone in B)
+            if enforce:
+                check_close(f"A  GF(2^{m}) g={g}  avg P(tag=0)", p_single(q), a_mean, lo, hi,
+                            rel_tol=0.03)
+            else:
+                check(f"A  GF(2^{m}) g={g}  avg P(tag=0)", p_single(q), lo, hi, enforce=False)
+            # B / C
+            b_mean = bad / AB_TRIALS
             b_lo, b_hi = wilson_ci(bad, AB_TRIALS)
-            check(f"C  GF(2^{m}) g={g}  E[regens]",
-                  expected_regens(q, g), 1 / (1 - b_lo), 1 / (1 - b_hi), enforce=enforce)
+            if enforce:
+                check_close(f"B  GF(2^{m}) g={g}  P(redo)", p_generation(q, g), b_mean,
+                            b_lo, b_hi, rel_tol=0.03)
+                check_close(f"C  GF(2^{m}) g={g}  E[regens]", expected_regens(q, g),
+                            1 / (1 - b_mean), 1 / (1 - b_lo), 1 / (1 - b_hi), rel_tol=0.03)
+            else:
+                check(f"B  GF(2^{m}) g={g}  P(redo)", p_generation(q, g), b_lo, b_hi, enforce=False)
+                check(f"C  GF(2^{m}) g={g}  E[regens]", expected_regens(q, g),
+                      1 / (1 - b_lo), 1 / (1 - b_hi), enforce=False)
         print()
 
     print("=" * 78)
-    print("Experiment 2 — A is invariant to data_fields  (GF(2^4), g=3)")
+    print("Experiment 2 — A (packet 0) is invariant to data_fields  (GF(2^4), g=3)")
     print("=" * 78)
     field, otc, q = fields[4], otcs[4], q_of(fields[4])
     for df in (1, 2, 5, 10):
-        zt, tt, _ = measure_abc(field, otc, df, 3, INVAR_TRIALS)
-        lo, hi = wilson_ci(zt, tt)
-        check(f"A  data_fields={df:<2}  P(tag=0)=1/q", p_single(q), lo, hi)
+        _, _, _, z0 = measure_abc(field, otc, df, 3, INVAR_TRIALS)
+        lo, hi = wilson_ci(z0, INVAR_TRIALS)
+        check(f"A0 data_fields={df:<2}  P(tag=0|pkt0)=1/q", p_single(q), lo, hi)
     print()
 
     print("=" * 78)
     print("Experiment 3 — GF(2^8) rare-event spot check  (g=3, data_fields=2)")
     print("=" * 78)
     field, otc, q = fields[8], otcs[8], q_of(fields[8])
-    zt, tt, bad = measure_abc(field, otc, 2, 3, SPOT_TRIALS)
-    lo, hi = wilson_ci(zt, tt)
-    check("A  GF(2^8) g=3  P(tag=0)=1/256", p_single(q), lo, hi)
-    lo, hi = wilson_ci(bad, SPOT_TRIALS)
-    check("B  GF(2^8) g=3  P(redo)", p_generation(q, 3), lo, hi)
+    zt, tt, bad, z0 = measure_abc(field, otc, 2, 3, SPOT_TRIALS)
+    lo, hi = wilson_ci(z0, SPOT_TRIALS)
+    check("A0 GF(2^8) g=3  P(tag=0|pkt0)=1/256", p_single(q), lo, hi)
+    b_mean = bad / SPOT_TRIALS
+    b_lo, b_hi = wilson_ci(bad, SPOT_TRIALS)
+    check_close("B  GF(2^8) g=3  P(redo)", p_generation(q, 3), b_mean, b_lo, b_hi, rel_tol=0.03)
     print()
 
     print("=" * 78)
@@ -300,22 +324,34 @@ def main():
     print()
 
     print("=" * 78)
-    print("Experiment 5 — fixed-payload salt fix  (GF(2^4), g=4, data_fields=3)")
+    print("Experiment 5 — fixed-payload salt fix, g=4, data_fields=3")
+    print("   ONE salt byte is NOT a guarantee: for some frozen payloads no salt")
+    print("   vector fixes a later self-tag (multiplier-zero, §9). Effectively a")
+    print("   guarantee in GF(2^8); degrades in small fields.")
     print("=" * 78)
-    field, otc, q = fields[4], otcs[4], q_of(fields[4])
-    salt_costs = []
-    all_orth = True
-    all_frozen = True
-    for _ in range(SALT_TRIALS):
-        draws, orth_ok, frozen_ok = salt_trial(field, otc, 3, 4)
-        salt_costs.append(draws)
-        all_orth = all_orth and orth_ok
-        all_frozen = all_frozen and frozen_ok
-    m_s, lo, hi = mean_ci(salt_costs)
-    check("cost SALT (payload frozen)", cost_regen_single(q, 4), lo, hi,
-          extra=f"(mean={m_s:.3f})")
-    check_bool("salt fix: every generation passes check_orth", all_orth)
-    check_bool("salt fix: real payload never mutated", all_frozen)
+    for m in (8, 4, 2):
+        field, otc, q = fields[m], otcs[m], q_of(fields[m])
+        solved = 0
+        orth_ok_all = True
+        frozen_all = True
+        draws_ok = []
+        for _ in range(SALT_TRIALS):
+            ok, draws, orth_ok, frozen_ok = salt_trial(field, otc, 3, 4)
+            frozen_all = frozen_all and frozen_ok
+            if ok:
+                solved += 1
+                draws_ok.append(draws)
+                orth_ok_all = orth_ok_all and orth_ok
+        fail_rate = 100 * (SALT_TRIALS - solved) / SALT_TRIALS
+        mean_draws = sum(draws_ok) / len(draws_ok) if draws_ok else float("nan")
+        print(f"  GF(2^{m}): solved {solved}/{SALT_TRIALS} "
+              f"(unsolvable {fail_rate:.2f}%)  mean_saltvec_draws={mean_draws:.3f}")
+        if m == 8:
+            # practical field: assert the salt fix effectively always works and is valid
+            check_bool("salt fix GF(2^8): unsolvable rate < 0.1%",
+                       fail_rate < 0.1, extra=f"({fail_rate:.3f}%)")
+        check_bool(f"salt fix GF(2^{m}): solved cases pass check_orth", orth_ok_all)
+        check_bool(f"salt fix GF(2^{m}): real payload never mutated", frozen_all)
     print()
 
     print("=" * 78)

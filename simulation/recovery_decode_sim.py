@@ -30,6 +30,7 @@ received packet (no window), cap by total packets received.
 """
 
 import csv
+import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -98,6 +99,7 @@ class DecodeTrialResult:
     add_ops: int
     rounds: int
     status: str                 # "decoded" | "silent_decode" | "timeout"
+    wall_time_s: float          # wall-clock seconds spent on this trial's loop
 
 
 def _accepted_packets(field, pool, decode_verify_count=DECODE_VERIFY_COUNT, min_pool_size=MIN_POOL_SIZE):
@@ -165,6 +167,7 @@ def run_incremental_trial(base_field, data_fields, gen_size, bit_error_rate,
     the packet cap is hit. One CountingField spans the whole trial so mul_ops is the
     cumulative work to reach the stop condition (an honest upper bound -- recovery
     re-scans the whole pool each round rather than incrementally)."""
+    start = time.perf_counter()
     source = generate_symbols_until_nonzero(base_field, data_fields, gen_size, coefficients=True)
     source_suffix = [bytearray(p[gen_size:]) for p in source]
 
@@ -201,6 +204,7 @@ def run_incremental_trial(base_field, data_fields, gen_size, bit_error_rate,
 
     silent = decoded and not correct
     status = "decoded" if correct else ("silent_decode" if decoded else "timeout")
+    wall_time_s = time.perf_counter() - start
     return DecodeTrialResult(
         decoded=decoded,
         correct=correct,
@@ -211,6 +215,7 @@ def run_incremental_trial(base_field, data_fields, gen_size, bit_error_rate,
         add_ops=cnt.add_count,
         rounds=rounds,
         status=status,
+        wall_time_s=wall_time_s,
     )
 
 
@@ -221,7 +226,7 @@ def smoke_test(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
     base_field = create_field(field_m)
     print(f"\nsmoke_test  gen_size={gen_size}  trials/BER={num_trials}  "
           f"cap={MAX_PACKETS_FACTOR}x gen_size")
-    print(f"{'BER':>8} {'decode%':>8} {'silent%':>8} {'mean_ovh':>9} {'mean_mul':>10}")
+    print(f"{'BER':>8} {'decode%':>8} {'silent%':>8} {'mean_ovh':>9} {'mean_mul':>10} {'mean_ms':>9}")
     for ber in bit_error_rates:
         rs = [run_incremental_trial(base_field, data_fields, gen_size, ber)
               for _ in range(num_trials)]
@@ -230,7 +235,8 @@ def smoke_test(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
         silent_rate = sum(r.silent_decode for r in rs) / len(rs)
         mean_ovh = float(np.mean([r.overhead for r in dec])) if dec else float("nan")
         mean_mul = float(np.mean([r.mul_ops for r in rs]))
-        print(f"{ber:>8.0e} {decode_rate:>8.2f} {silent_rate:>8.2f} {mean_ovh:>9.2f} {mean_mul:>10.0f}")
+        mean_ms = float(np.mean([r.wall_time_s for r in rs])) * 1e3
+        print(f"{ber:>8.0e} {decode_rate:>8.2f} {silent_rate:>8.2f} {mean_ovh:>9.2f} {mean_mul:>10.0f} {mean_ms:>9.2f}")
 
 
 def run_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
@@ -265,6 +271,8 @@ def run_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
             "mean_packets_to_decode": float(np.mean([r.packets_to_decode for r in decoded])) if decoded else float("nan"),
             "mul_ops_mean": float(np.mean([r.mul_ops for r in results])),
             "add_ops_mean": float(np.mean([r.add_ops for r in results])),
+            "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
+            "wall_time_s_total": float(np.sum([r.wall_time_s for r in results])),
         })
 
     _write_csv(run_dir / "raw_results.csv", raw_rows)
@@ -278,6 +286,8 @@ def run_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
                  run_dir / "overhead_vs_ber.png", ylim=None, hline=1.0)
     _plot_vs_ber(summary_rows, "mul_ops_mean", "Mean cumulative mul-ops to stop",
                  run_dir / "mul_ops_vs_ber.png", ylim=None)
+    _plot_vs_ber(summary_rows, "wall_time_s_mean", "Mean wall-clock time per trial (s)",
+                 run_dir / "wall_time_vs_ber.png", ylim=None)
 
     print(f"\nDone. Results written to: {run_dir}")
     return run_dir
@@ -315,6 +325,7 @@ def run_verify_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS
                 "timeout_rate": sum(r.status == "timeout" for r in results) / num_trials,
                 "mean_overhead_decoded": float(np.mean([r.overhead for r in decoded])) if decoded else float("nan"),
                 "mul_ops_mean": float(np.mean([r.mul_ops for r in results])),
+                "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
             })
 
     _write_csv(run_dir / "raw_results.csv", raw_rows)
@@ -334,6 +345,9 @@ def run_verify_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS
     _plot_vs_ber_multi(summary_rows, decode_verify_counts, "mul_ops_mean",
                        "Mean cumulative mul-ops to stop",
                        run_dir / "mul_ops_vs_ber_by_V.png", ylim=None)
+    _plot_vs_ber_multi(summary_rows, decode_verify_counts, "wall_time_s_mean",
+                       "Mean wall-clock time per trial (s)",
+                       run_dir / "wall_time_vs_ber_by_V.png", ylim=None)
 
     print(f"\nDone. Results written to: {run_dir}")
     return run_dir
@@ -401,6 +415,6 @@ def _plot_vs_ber_multi(summary_rows, series_values, metric, ylabel, output_path,
 
 
 if __name__ == "__main__":
-    #smoke_test()
+    smoke_test()
     run_sweep()
-    run_verify_sweep()
+    #run_verify_sweep()
