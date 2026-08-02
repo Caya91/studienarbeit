@@ -74,6 +74,70 @@ def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:in
     return tagged_symbols
 
 
+def generate_symbols_single_resample(field: TableField, data_fields: int, gen_size: int) -> list:
+    '''Additive alternative to generate_symbols_until_nonzero (does NOT replace it).
+
+    Same output contract -- a tagged, fully self/cross-orthogonal generation with every
+    self-tag nonzero -- but on a zero self-tag it resamples ONLY the offending packet(s)'
+    data and re-tags, instead of throwing away the whole generation. Expected cost is
+    linear in gen_size rather than exponential (ADR-0010, docs/zero_tag_probability.md).
+
+    Use when the source data is ours to draw (mutable payload). For a FIXED payload use
+    generate_symbols_salt.'''
+    assert data_fields > 0
+    assert gen_size > 0
+
+    min_int, max_int = 0, field.max_value
+    data_len = gen_size + data_fields          # self-tag of packet i sits at data_len + i
+    otc = OTC(field)
+
+    symbols = generate_symbols_random(min_int, max_int, data_fields, gen_size)
+    while True:
+        tagged_symbols = otc.generate_all_tags(generate_identity_coefficients(field, symbols))
+        zero_rows = [i for i in range(gen_size) if tagged_symbols[i][data_len + i] == 0]
+        if not zero_rows:
+            return tagged_symbols
+        # resample only the offending packets' data (coeff block is re-added on next tag)
+        for i in zero_rows:
+            symbols[i] = bytearray(
+                [random.randint(min_int, max_int) for _ in range(data_fields)]
+                + [0] * gen_size
+            )
+
+
+def generate_symbols_salt(field: TableField, payloads: list, gen_size: int,
+                          max_salt_draws: int = 1000):
+    '''Fixed-payload variant (does NOT replace generate_symbols_until_nonzero).
+
+    `payloads` is a list of gen_size fixed data rows (list/bytearray of data symbols),
+    transmitted verbatim. One salt symbol per packet is appended right after the data;
+    the whole salt VECTOR is resampled until every self-tag is nonzero, so the real
+    payload is never altered. Packet layout gains one column:
+        [ gen_size coeffs | data_fields payload | 1 salt | gen_size tags ]
+
+    Returns (tagged_generation, ok). One salt byte is NOT a hard guarantee
+    (multiplier-zero, ADR-0010): effectively guaranteed in GF(2^8) but can fail in small
+    fields -> returns (None, False) after max_salt_draws so the caller can fall back
+    (e.g. a second salt byte, or generate_symbols_single_resample if data is mutable).'''
+    assert gen_size > 0
+    assert len(payloads) == gen_size
+    data_fields = len(payloads[0])
+    assert data_fields > 0
+
+    min_int, max_int = 0, field.max_value
+    data_len = gen_size + data_fields + 1      # +1 for the salt column
+    otc = OTC(field)
+
+    for _ in range(max_salt_draws):
+        salts = [random.randint(min_int, max_int) for _ in range(gen_size)]
+        symbols = [bytearray(list(payloads[k]) + [salts[k]] + [0] * gen_size)
+                   for k in range(gen_size)]
+        tagged_symbols = otc.generate_all_tags(generate_identity_coefficients(field, symbols))
+        if all(tagged_symbols[i][data_len + i] != 0 for i in range(gen_size)):
+            return tagged_symbols, True
+    return None, False
+
+
 def generate_with_zero_tag_error(field:TableField,data_fields:int, gen_size:int) -> list:
     '''This function generates Symbols until all the self tags are non-zero
     
