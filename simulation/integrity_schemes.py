@@ -1,4 +1,4 @@
-"""Pluggable integrity schemes for the baseline comparison (ADR-0009).
+"""Pluggable integrity schemes for the baseline comparison (ADR-0009, ADR-0011).
 
 The recovery/decode loop and the attack loop both reduce to the same skeleton --
 build a source generation, then per round: recode -> attach a tag -> pollute ->
@@ -7,22 +7,29 @@ append -> admit (verify / repair / drop) -> try to decode. Only *attach* and
 overhead figure, and a native op counter) behind an `IntegrityScheme` and let the
 driver (`scheme_comparison_sim.py`) stay scheme-agnostic.
 
-Three schemes:
+Two schemes here:
 - `OrthogonalScheme`  -- the project's own homomorphic self-tag. Its `attach` is a
   no-op (the tag rides along under recoding for free) and its `admit` reuses the
   *unchanged* validated internals `recover_generation_bitflip` + `_accepted_packets`
   from `recovery_decode_sim`, so it reproduces the standalone sim as a cross-check.
-- `CrcScheme`  -- keyless CRC-32 checksum. Detect-and-drop, no repair, no key.
 - `HmacScheme` -- keyed HMAC-SHA-256 truncated to 128 bits. Detect-and-drop.
 
-The decisive asymmetry (see ADR-0009): the orthogonal tag survives RLNC recoding
-and REPAIRS, so it needs fewer transmissions; CRC/HMAC do not survive recoding
-(they only work here because the recovery sim is single-hop) and can only DROP.
+The CRC baseline is not here: ADR-0011 refocused it as a standalone single-packet
+Hamming-distance recovery study (`simulation/crc_recovery.py` /
+`crc_recovery_sim.py`) with its own pure functions, not an `IntegrityScheme`.
+(The plain CRC-32 detect-and-drop `CrcScheme` once here, and its short-lived
+Fly-PRAC dependent-group replacement, were both retired.) The homomorphic-MAC
+benchmark that will join this file as a second recovery-capable scheme is the
+deferred phase 2 (ADR-0011).
 
-Computation is measured in each scheme's *native* primitive (field muls, CRC byte
-ops, HMAC block compressions) -- they are incommensurable, so we never sum them
-into one number (ADR-0009, docs/comparison_methodology_notes.md). The RLNC decode
-itself is common to all schemes and is charged to a *separate* CountingField by the
+The decisive asymmetry (see ADR-0009): the orthogonal tag survives RLNC recoding
+and REPAIRS, so it needs fewer transmissions; HMAC does not survive recoding
+(it only works here because the recovery sim is single-hop) and can only DROP.
+
+Computation is measured in each scheme's *native* primitive (field muls, HMAC
+block compressions) -- they are incommensurable, so we never sum them into one
+number (ADR-0009, docs/comparison_methodology_notes.md). The RLNC decode itself
+is common to all schemes and is charged to a *separate* CountingField by the
 driver, kept out of the per-scheme op counts.
 """
 
@@ -31,8 +38,7 @@ import hmac
 import math
 import os
 import random
-import zlib
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field
 
 from binary_ext_fields.custom_field import CountingField, TableField
 from binary_ext_fields.generate_symbols import (
@@ -41,11 +47,16 @@ from binary_ext_fields.generate_symbols import (
 )
 from binary_ext_fields.pollution import pollute_intelligent
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
+from simulation.crc_recovery import CrcInstrument, recover as crc_recover
+from playground.arc_pl import localize_errors
+from playground.new_recovery import _basis_full_rank
 
 
 # ── Tag widths (ADR-0009) ─────────────────────────────────────────────────────
-CRC_TAG_BYTES = 4          # CRC-32
 HMAC_TAG_BYTES = 16        # HMAC-SHA-256 truncated to 128 bits
+CRC_WIDTH = 16             # comparison CRC width -- CRC-16, the PRAC/S-PRAC/QPPR anchor
+CRC_TAG_BYTES = 2          # 16-bit tag = 2 bytes
+CRC_WHOLE_BUDGET = 100_000 # whole-packet (no-localization) per-packet candidate cap
 
 
 @dataclass
@@ -61,20 +72,9 @@ class AdmitConfig:
 
 
 # ── Native op-count instruments ───────────────────────────────────────────────
-# Orthogonal uses CountingField directly (mul_count / add_count). CRC and HMAC use
-# these tiny counters so their tagging/verification work is charged in their own
-# primitive, comparable to the field-op count only in spirit, never in units.
-
-@dataclass
-class CrcInstrument:
-    """CRC-32 with a byte-operation counter: table-driven CRC does one lookup+XOR
-    per input byte, so byte_ops == total bytes fed through crc() this trial."""
-    byte_ops: int = 0
-
-    def crc(self, data: bytes) -> int:
-        self.byte_ops += len(data)
-        return zlib.crc32(data) & 0xFFFFFFFF
-
+# Orthogonal uses CountingField directly (mul_count / add_count). HMAC uses this
+# tiny counter so its tagging/verification work is charged in its own primitive,
+# comparable to the field-op count only in spirit, never in units.
 
 @dataclass
 class HmacInstrument:
@@ -171,7 +171,8 @@ class OrthogonalScheme(IntegrityScheme):
 
 
 class _MacScheme(IntegrityScheme):
-    """Shared detect-and-drop machinery for the keyless CRC and keyed HMAC baselines.
+    """Detect-and-drop machinery, currently used by the keyed HMAC baseline only
+    (kept as its own base class in case a second MAC-style scheme is added later).
 
     Packet layout: [gen_size coeffs | data_fields data] + tag_bytes. The tag covers
     the whole code packet (coeffs+data) and is appended for transmission; the whole
@@ -210,23 +211,6 @@ class _MacScheme(IntegrityScheme):
         return self.tag_bytes * 8
 
 
-class CrcScheme(_MacScheme):
-    name = "crc"
-    tag_bytes = CRC_TAG_BYTES
-
-    def new_instrument(self, base_field):
-        return CrcInstrument()
-
-    def _tag(self, instrument, code: bytes) -> bytes:
-        return instrument.crc(code).to_bytes(CRC_TAG_BYTES, "big")
-
-    def op_counts(self, instrument) -> dict:
-        return {"crc_byte_ops": instrument.byte_ops}
-
-    def primary_ops(self, instrument) -> int:
-        return instrument.byte_ops
-
-
 class HmacScheme(_MacScheme):
     name = "hmac"
     tag_bytes = HMAC_TAG_BYTES
@@ -246,10 +230,113 @@ class HmacScheme(_MacScheme):
         return instrument.block_ops
 
 
-SCHEMES = {s.name: s for s in (OrthogonalScheme(), CrcScheme(), HmacScheme())}
+# ── CRC recovery baseline (ADR-0011, phase 3) ─────────────────────────────────
+# Unlike HMAC (detect-and-drop), the CRC arm REPAIRS: a packet whose CRC fails is
+# bit-flip searched (HD 1..3) for a candidate whose CRC matches, exactly the
+# standalone crc_recovery.recover primitive, now embedded in the send-until-decodable
+# generation loop. Two variants share this class:
+#   crc_localized -- ACR-localized (localize_errors flags the suspect byte-columns
+#     from the trusted basis; only those bits are searched). Gives CRC the SAME
+#     algebraic localization the orthogonal arm gets -- the fair fight (ADR-0011).
+#   crc_whole     -- no localization: search every bit, budget-capped. The bare-CRC
+#     floor; slow, and blind to structure.
+# Channel model: the whole wire (tag included) rides the BER, same as every other
+# arm. A corrupted tag makes the CRC target wrong, so such a packet just fails to
+# repair and is dropped -> a retransmission, folded into overhead + completion time.
+
+@dataclass
+class CrcBundle:
+    """Per-trial CRC state: the field (for ARC localization), the native CRC op
+    counter, and a repair cache. Because a failing packet's bytes never change and
+    localization is basis-independent once the basis is full rank, each distinct
+    failing packet need be searched only once per trial -- the cache makes the
+    whole-packet variant tractable inside the every-round pool re-scan."""
+    base_field: TableField
+    crc: CrcInstrument
+    repair_cache: dict = field(default_factory=dict)
 
 
-# ── Attack-side forging (ADR-0009 HMAC arm; CRC is not tested vs the attacker) ─
+def _suspect_bits(base_field, basis, code: bytes, gen_size: int) -> set[int]:
+    """ARC-localized suspect bit positions for `code` (coeffs+data, no tag): the bits
+    of every byte-column localize_errors flags as corrupted. Empty when the error is
+    in the coefficient block (localize_errors' intrinsic blind spot) -> that packet is
+    unrepairable in localized mode, a measurable gap vs whole-packet search."""
+    cols = localize_errors(base_field, [bytearray(b) for b in basis], bytearray(code), gen_size)
+    return {8 * c + b for c in cols for b in range(8)}
+
+
+class CrcScheme(_MacScheme):
+    """CRC-16 tag + bit-flip repair. Reuses _MacScheme's make_source/attach/overhead
+    (identical [coeffs|data]+tag layout); only admit differs (repair, not drop)."""
+    width = CRC_WIDTH
+    tag_bytes = CRC_TAG_BYTES
+    whole_budget = CRC_WHOLE_BUDGET
+
+    def __init__(self, localized: bool, name: str):
+        self.localized = localized
+        self.name = name
+
+    def new_instrument(self, base_field):
+        return CrcBundle(base_field=base_field, crc=CrcInstrument())
+
+    def _tag(self, instrument, code: bytes) -> bytes:
+        return instrument.crc.crc(bytes(code), self.width).to_bytes(self.tag_bytes, "big")
+
+    def admit(self, instrument, wire_pool, gen_size, cfg: AdmitConfig):
+        tb, w = self.tag_bytes, self.width
+        verified: list[bytearray] = []
+        failing: list[tuple[bytes, int]] = []
+        for wire in wire_pool:
+            code = bytes(wire[:-tb])
+            recv_tag = int.from_bytes(bytes(wire[-tb:]), "big")
+            if instrument.crc.crc(code, w) == recv_tag:
+                verified.append(bytearray(code))          # CRC-clean -> straight into basis
+            else:
+                failing.append((code, recv_tag))
+        accepted = list(verified)
+        if not failing:
+            return accepted
+
+        basis = None
+        if self.localized:
+            # ARC needs a full-rank gen_size basis of CRC-clean packets; until then we
+            # admit only the clean ones (the failing ones wait / get retransmitted).
+            if len(verified) >= gen_size and _basis_full_rank(instrument.base_field, verified[:gen_size], gen_size):
+                basis = verified[:gen_size]
+            else:
+                return accepted
+
+        max_hd = cfg.hamming_distance          # HD-matched to the orthogonal arm (fair comparison)
+        cache = instrument.repair_cache
+        for code, recv_tag in failing:
+            if code in cache:
+                repaired = cache[code]
+            elif self.localized:
+                suspect = _suspect_bits(instrument.base_field, basis, code, gen_size)
+                repaired, _ = crc_recover(instrument.crc, code, recv_tag, w, max_hd=max_hd, suspect_bits=suspect)
+                cache[code] = repaired
+            else:
+                repaired, _ = crc_recover(instrument.crc, code, recv_tag, w, max_hd=max_hd, budget=self.whole_budget)
+                cache[code] = repaired
+            if repaired is not None:
+                accepted.append(bytearray(repaired))
+        return accepted
+
+    def op_counts(self, instrument) -> dict:
+        return {"crc_checks": instrument.crc.correction_trials, "crc_bytes": instrument.crc.crc_ops}
+
+    def primary_ops(self, instrument) -> int:
+        return instrument.crc.correction_trials
+
+
+SCHEMES = {s.name: s for s in (
+    OrthogonalScheme(), HmacScheme(),
+    CrcScheme(localized=True, name="crc_localized"),
+    CrcScheme(localized=False, name="crc_whole"),
+)}
+
+
+# ── Attack-side forging (ADR-0009 HMAC arm; CRC/Fly-PRAC not tested vs attacker) ─
 def forge_orthogonal(atk_field, saved_code_packets, gen_size, data_fields, threshold,
                      avoid_coeff_rows, rng):
     """Targeted forgery against the orthogonal oracle -- the existing white-box
