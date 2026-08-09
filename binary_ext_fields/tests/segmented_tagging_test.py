@@ -142,6 +142,27 @@ def test_salt_give_up_surfaces_ok_false_instead_of_looping_forever():
     assert result.failed_segment == "coeff"
 
 
+def test_rank_deficient_segment_exhausts_salt_budget_no_matter_how_generous():
+    '''
+    build_segments' own docstring warning, made concrete: a data-segment shorter
+    than gen_size - 1 is rank-deficient by construction, so at least one packet's
+    self-tag MUST be zero -- no salt draw can fix it. Unlike the max_salt_draws=0
+    case above (which never tries), this proves give-up still holds with a large,
+    realistic budget, because the failure is structural, not bad luck.
+    '''
+    field = create_field(4)
+    gen_size = 4
+    data_fields = 4
+    num_data_segments = 4  # data-segment length 1 -> payload_length+1=2 < gen_size=4
+
+    plain_packets = generate_identity_coefficients(field, _random_data_rows(field, data_fields, gen_size))
+    result = tag_generation_segmented(field, plain_packets, gen_size, num_data_segments, max_salt_draws=200)
+
+    assert result.ok is False
+    assert result.packets is None
+    assert result.failed_segment == "data-0"  # coeff-segment (length=gen_size) is not rank-deficient
+
+
 if __name__ == "__main__":
     test_build_segments_lays_out_coeff_and_data_segments()
     print("test_build_segments_lays_out_coeff_and_data_segments passed")
@@ -160,5 +181,8 @@ if __name__ == "__main__":
 
     test_salt_give_up_surfaces_ok_false_instead_of_looping_forever()
     print("test_salt_give_up_surfaces_ok_false_instead_of_looping_forever passed")
+
+    test_rank_deficient_segment_exhausts_salt_budget_no_matter_how_generous()
+    print("test_rank_deficient_segment_exhausts_salt_budget_no_matter_how_generous passed")
 
     print("All segmented tagging tests passed!")
