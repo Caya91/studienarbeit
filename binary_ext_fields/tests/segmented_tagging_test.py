@@ -46,13 +46,17 @@ def test_build_segments_lays_out_coeff_and_data_segments():
     ]
 
 
-def test_build_segments_rejects_uneven_split():
-    '''ADR-0012 defers uneven splits -- must fail loudly, not silently drop/pad bytes.'''
-    try:
-        build_segments(gen_size=3, data_len=5, num_data_segments=2)
-        assert False, "expected ValueError for a data_len that does not split evenly"
-    except ValueError:
-        pass
+def test_build_segments_round_robins_the_remainder():
+    '''ADR-0012 (resolved 2026-08-11): an uneven split round-robins the remainder,
+    +1 byte to each of the first (data_len % num_data_segments) segments, instead
+    of raising or dumping it all on the last segment.'''
+    segments = build_segments(gen_size=3, data_len=5, num_data_segments=2)
+
+    assert [(s.name, s.start, s.length) for s in segments] == [
+        ("coeff", 0, 3),
+        ("data-0", 3, 3),  # gets the +1 remainder byte
+        ("data-1", 6, 2),
+    ]
 
 
 def test_freshly_tagged_pool_is_orthogonal_in_every_segment():
@@ -167,8 +171,8 @@ if __name__ == "__main__":
     test_build_segments_lays_out_coeff_and_data_segments()
     print("test_build_segments_lays_out_coeff_and_data_segments passed")
 
-    test_build_segments_rejects_uneven_split()
-    print("test_build_segments_rejects_uneven_split passed")
+    test_build_segments_round_robins_the_remainder()
+    print("test_build_segments_round_robins_the_remainder passed")
 
     test_freshly_tagged_pool_is_orthogonal_in_every_segment()
     print("test_freshly_tagged_pool_is_orthogonal_in_every_segment passed")

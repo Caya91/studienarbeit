@@ -165,7 +165,8 @@ class PairRecoveryResult:
 
 def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice_b: bytearray,
                                      trusted_slices: list[bytearray], candidate_columns: list[int],
-                                     max_combined_hd: int) -> PairRecoveryResult:
+                                     max_combined_hd: int, candidates_budget: int | None = None
+                                     ) -> PairRecoveryResult:
     """
     Search low-Hamming-distance corrections to the XOR-combined row of two
     broken same-segment packets, restricted to `candidate_columns` (payload-local
@@ -179,6 +180,15 @@ def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     (self+cross orthogonal to the trusted pool) AND are mutually orthogonal to
     each other. This only ever recovers disjoint errors (module docstring);
     overlapping errors legitimately exhaust the search and return ok=False.
+
+    `candidates_budget` (None = unbounded) caps combined-candidate attempts, same
+    idea as the CRC arm's `whole_budget` (simulation/integrity_schemes.py): without
+    Option 1's ARC narrowing, `candidate_columns` can be the whole payload, and
+    combinations(bit_positions, hd) grows combinatorially in both segment size and
+    max_combined_hd -- a sim sweep needs this bounded, not just a correctness
+    demo. A budget give-up returns ok=False exactly like exhausting max_combined_hd
+    honestly (this IS a search-budget give-up, not a "provably unrecoverable"
+    result -- a larger budget might still find it).
     """
     bits_per_symbol = field.bit_lenght
     bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
@@ -187,6 +197,8 @@ def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     candidates_tried = 0
     for hd in range(1, max_combined_hd + 1):
         for combo in combinations(bit_positions, hd):
+            if candidates_budget is not None and candidates_tried >= candidates_budget:
+                return PairRecoveryResult(False, None, None, None, candidates_tried)
             candidates_tried += 1
             combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
             if not is_orthogonal_to_trusted(field, combined_candidate, trusted_slices):
@@ -235,7 +247,8 @@ class SegmentRepairOutcome:
 
 
 def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedSegment,
-                    candidate_columns_for, max_combined_hd: int = 4) -> SegmentRepairOutcome:
+                    candidate_columns_for, max_combined_hd: int = 4,
+                    candidates_budget: int | None = None) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -246,6 +259,10 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     candidate payload columns (None = search/solve over the whole payload, the
     no-localization default). This is the one hook that differs between
     Option 1 (always None) and Option 2 (ARC-narrowed for data segments).
+
+    candidates_budget: forwarded to recover_pair_by_combined_search per pair
+    (None = unbounded). Does not apply to the unpaired linear solve, which is
+    polynomial, not a search.
     """
     trust = classify_segment_trust(field, packets, segment)
     plan = plan_pairing(trust)
@@ -263,7 +280,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
 
         slice_a = segment_slice(packets[pair.packet_a], segment)
         slice_b = segment_slice(packets[pair.packet_b], segment)
-        result = recover_pair_by_combined_search(field, slice_a, slice_b, trusted_slices, columns, max_combined_hd)
+        result = recover_pair_by_combined_search(field, slice_a, slice_b, trusted_slices, columns,
+                                                  max_combined_hd, candidates_budget=candidates_budget)
 
         if result.ok:
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
@@ -298,7 +316,8 @@ class SegmentedRecoveryReport:
 
 
 def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
-                        max_combined_hd: int = 4) -> SegmentedRecoveryReport:
+                        max_combined_hd: int = 4, candidates_budget: int | None = None
+                        ) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -307,7 +326,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
     C/D) has always had."""
     tmp = [bytearray(p) for p in packets]
     per_segment = [
-        repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None, max_combined_hd=max_combined_hd)
+        repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
+                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
         for segment in segments
     ]
     ok = all(check_orth_segmented(field, tmp, segments).values())
@@ -379,7 +399,8 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
 
 
 def recover_coefficient_first(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
-                               gen_size: int, max_combined_hd: int = 4) -> SegmentedRecoveryReport:
+                               gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None
+                               ) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -390,7 +411,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
     data_segments = [s for s in segments if s.kind == "data"]
 
     per_segment = [
-        repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None, max_combined_hd=max_combined_hd)
+        repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
+                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
     ]
 
     coeff_trust = classify_segment_trust(field, tmp, coeff_segment)
@@ -400,7 +422,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
             field, tmp, coeff_segment, segment, gen_size, coeff_trust.trusted, data_trust.trusted,
         )
         per_segment.append(
-            repair_segment(field, tmp, segment, candidate_columns_for=localizer, max_combined_hd=max_combined_hd)
+            repair_segment(field, tmp, segment, candidate_columns_for=localizer,
+                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
         )
 
     ok = all(check_orth_segmented(field, tmp, segments).values())

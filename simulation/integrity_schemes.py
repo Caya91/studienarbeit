@@ -46,6 +46,10 @@ from binary_ext_fields.generate_symbols import (
     generate_symbols_until_nonzero,
 )
 from binary_ext_fields.pollution import pollute_intelligent
+from binary_ext_fields.segmented_tagging import layout_segments, tag_generation_segmented
+from binary_ext_fields.segmented_recovery import (
+    classify_segment_trust, recover_coefficient_first, recover_uniform_hd,
+)
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
 from simulation.crc_recovery import CrcInstrument, recover as crc_recover
 from playground.arc_pl import localize_errors
@@ -57,6 +61,7 @@ HMAC_TAG_BYTES = 16        # HMAC-SHA-256 truncated to 128 bits
 CRC_WIDTH = 16             # comparison CRC width -- CRC-16, the PRAC/S-PRAC/QPPR anchor
 CRC_TAG_BYTES = 2          # 16-bit tag = 2 bytes
 CRC_WHOLE_BUDGET = 100_000 # whole-packet (no-localization) per-packet candidate cap
+SEGMENTED_PAIR_BUDGET = 50_000  # recover_pair_by_combined_search candidate cap, per pair (ADR-0012)
 
 
 @dataclass
@@ -329,10 +334,180 @@ class CrcScheme(_MacScheme):
         return instrument.crc.correction_trials
 
 
+# ── Segmented orthogonal tagging (ADR-0012) ────────────────────────────────────
+# N = 1 + num_data_segments independent self/cross-orthogonal pools per packet
+# (coeff-segment + num_data_segments equal-or-round-robin data-segments), instead
+# of the whole-packet scheme's single pool. Two strategies (ADR-0012 Option 1/2),
+# measured against each other and against the N=1 baseline (plain OrthogonalScheme,
+# already registered above -- segmentation is additive, not a replacement).
+#
+# data_fields is fixed at construction (not read from make_source's data_fields
+# arg beyond an assert) because segment layout -- and therefore the rank-deficiency
+# floor from build_segments (each segment's payload length must be >= gen_size-1,
+# or that segment is a guaranteed give-up) -- depends on it. ADR-0012's resolution
+# (2026-08-11) fixes data_fields=48 for the N-sweep so every N in {1,2,3,5} clears
+# that floor with margin; see docs/adr/0012 "Resolved" section.
+
+@dataclass
+class SegmentedInstrument:
+    """CountingField for native op counting, plus IC-refinement bookkeeping (ADR-0012
+    "Resolved": measure-only, not implemented -- pairs_failed is exactly the rate of
+    same-bit-position overlapping errors this mechanism cannot split, reported per
+    (N, BER) rather than fixed)."""
+    field: CountingField
+    pairs_recovered: int = 0
+    pairs_failed: int = 0
+    unpaired_recovered: int = 0
+    unpaired_failed: int = 0
+
+
+def _strip_to_code(packet: bytearray, segments) -> bytearray:
+    """[coeffs | data...] with every segment's salt+tag bytes dropped -- the shape
+    _try_decode's RLNC basis expects, reassembled in the original column order
+    since `segments` is already coeff-first then data-0, data-1, ... in order."""
+    code = bytearray()
+    for segment in segments:
+        code += packet[segment.start: segment.start + segment.payload_length]
+    return code
+
+
+class SegmentedScheme(IntegrityScheme):
+    """ADR-0012's segmented orthogonal tag. attach is free (homomorphic per segment,
+    same as OrthogonalScheme -- recoding a segmented-tagged generation preserves
+    self/cross-orthogonality in every segment, verified in
+    binary_ext_fields/tests/segmented_recovery_test.py). admit repairs via pairing +
+    combined search (recover_uniform_hd / recover_coefficient_first), then admits a
+    packet into the decode basis only if EVERY segment ends up trusted for it --
+    one still-broken segment makes the whole packet unusable, even if the rest is fine.
+    """
+    _MAX_TAG_ATTEMPTS = 10  # make_source retries on salt give-up; see docstring below
+
+    def __init__(self, num_data_segments: int, data_fields: int, strategy: str, name: str):
+        assert strategy in ("uniform_hd", "coefficient_first")
+        self.num_data_segments = num_data_segments
+        self.data_fields = data_fields
+        self.strategy = strategy
+        self.name = name
+
+    def make_source(self, base_field, data_fields, gen_size):
+        assert data_fields == self.data_fields, (
+            f"{self.name} is fixed to data_fields={self.data_fields} (ADR-0012's rank-deficiency "
+            f"floor depends on it), got {data_fields}"
+        )
+        max_int = base_field.max_value
+        for _ in range(self._MAX_TAG_ATTEMPTS):
+            data_rows = [bytearray(random.randint(0, max_int) for _ in range(data_fields))
+                         for _ in range(gen_size)]
+            plain = generate_identity_coefficients(base_field, data_rows)
+            result = tag_generation_segmented(base_field, plain, gen_size, self.num_data_segments)
+            if result.ok:
+                return result.packets, [bytearray(row) for row in data_rows]
+        # Retries exhausted: this is the structural give-up build_segments documents
+        # (a segment below the gen_size-1 rank floor fails no matter how many salt
+        # draws), not bad luck -- surface it loudly rather than silently degrading.
+        raise RuntimeError(
+            f"{self.name}: segmented tagging gave up {self._MAX_TAG_ATTEMPTS} times in a row "
+            f"(N={1 + self.num_data_segments}, data_fields={data_fields}, gen_size={gen_size}) "
+            "-- check build_segments' rank-deficiency floor for this N/data_fields/gen_size combo."
+        )
+
+    def new_instrument(self, base_field):
+        return SegmentedInstrument(field=CountingField(base_field))
+
+    def attach(self, instrument, code_packet: bytearray) -> bytearray:
+        return bytearray(code_packet)
+
+    def admit(self, instrument, wire_pool, gen_size, cfg: AdmitConfig):
+        # Below gen_size packets, decode is mathematically impossible regardless of
+        # repair outcome -- don't pay for the search. cfg.min_pool_size can only
+        # push this gate later (a caller-requested extra margin), never earlier.
+        if len(wire_pool) < max(gen_size, cfg.min_pool_size):
+            return None
+
+        # KNOWN COST, DEFERRED (2026-08-12): once the gates above pass, every broken
+        # pair still gets re-searched from scratch each round even when neither
+        # packet's bytes nor the trusted set changed since the last failed attempt --
+        # this is why high-BER cells stay slow (see SEGMENTED_PAIR_BUDGET). Persisting
+        # per-pair search state across rounds (skip a pair whose inputs haven't
+        # changed since it last failed) was deliberately deferred: the priority right
+        # now is seeing the mechanism run end-to-end, not optimizing it. Do this before
+        # trusting wall-clock/op-count numbers from a high-BER sweep cell.
+
+        segments = layout_segments(gen_size, self.data_fields, self.num_data_segments)
+        field = instrument.field
+
+        # Cheap pre-check (self+cross orthogonality only, no combinatorial search):
+        # packets already good in every segment, no repair needed. If that alone
+        # already reaches gen_size, decode doesn't need this round's repair at all --
+        # skip the expensive combined search entirely.
+        already_good = set(range(len(wire_pool)))
+        for segment in segments:
+            already_good &= set(classify_segment_trust(field, wire_pool, segment).trusted)
+        if len(already_good) >= gen_size:
+            return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
+
+        if self.strategy == "uniform_hd":
+            report = recover_uniform_hd(field, wire_pool, segments, max_combined_hd=cfg.hamming_distance,
+                                        candidates_budget=SEGMENTED_PAIR_BUDGET)
+        else:
+            report = recover_coefficient_first(field, wire_pool, segments, gen_size,
+                                               max_combined_hd=cfg.hamming_distance,
+                                               candidates_budget=SEGMENTED_PAIR_BUDGET)
+
+        for outcome in report.per_segment:
+            instrument.pairs_recovered += outcome.pairs_recovered
+            instrument.pairs_failed += outcome.pairs_failed
+            instrument.unpaired_recovered += outcome.unpaired_recovered
+            instrument.unpaired_failed += outcome.unpaired_failed
+
+        # A packet enters the decode basis only if EVERY segment trusts it post-repair
+        # (self+cross orthogonal to that segment's trusted pool) -- intersect across
+        # segments, not union, since one broken segment still corrupts the packet.
+        good = set(range(len(report.packets)))
+        for segment in segments:
+            trust = classify_segment_trust(field, report.packets, segment)
+            if len(trust.trusted) < cfg.min_trust_count:
+                return None  # not enough trust yet in this segment -- keep waiting
+            good &= set(trust.trusted)
+
+        return [_strip_to_code(report.packets[i], segments) for i in sorted(good)]
+
+    def tag_overhead_bits(self, gen_size, m) -> int:
+        n = 1 + self.num_data_segments
+        return n * (gen_size + 1) * m  # N segments, each: gen_size tag symbols + 1 salt symbol
+
+    def op_counts(self, instrument) -> dict:
+        return {
+            "field_mul": instrument.field.mul_count, "field_add": instrument.field.add_count,
+            "pairs_recovered": instrument.pairs_recovered, "pairs_failed": instrument.pairs_failed,
+            "unpaired_recovered": instrument.unpaired_recovered, "unpaired_failed": instrument.unpaired_failed,
+        }
+
+    def primary_ops(self, instrument) -> int:
+        return instrument.field.mul_count
+
+
+# N sweep resolved in ADR-0012 (2026-08-11): {1, 2, 3, 5} total segments, i.e.
+# num_data_segments in {0, 1, 2, 4}. N=1 is the existing OrthogonalScheme (no
+# segmentation, registered above) -- only N>=2 needs a SegmentedScheme instance.
+SEGMENTED_DATA_FIELDS = 48
+SEGMENTED_N_VALUES = (2, 3, 5)  # total segments; num_data_segments = N - 1
+SEGMENTED_STRATEGIES = ("uniform_hd", "coefficient_first")
+
+SEGMENTED_SCHEMES = {
+    f"segmented_{strategy}_n{n}": SegmentedScheme(
+        num_data_segments=n - 1, data_fields=SEGMENTED_DATA_FIELDS,
+        strategy=strategy, name=f"segmented_{strategy}_n{n}",
+    )
+    for n in SEGMENTED_N_VALUES for strategy in SEGMENTED_STRATEGIES
+}
+
+
 SCHEMES = {s.name: s for s in (
     OrthogonalScheme(), HmacScheme(),
     CrcScheme(localized=True, name="crc_localized"),
     CrcScheme(localized=False, name="crc_whole"),
+    *SEGMENTED_SCHEMES.values(),
 )}
 
 

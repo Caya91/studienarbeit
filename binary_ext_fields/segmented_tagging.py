@@ -72,35 +72,36 @@ class SegmentedTagResult:
 
 def build_segments(gen_size: int, data_len: int, num_data_segments: int) -> list[Segment]:
     """
-    One fixed coeff-segment of length gen_size, plus num_data_segments equal-length
-    data-segments splitting the data block.
+    One fixed coeff-segment of length gen_size, plus num_data_segments data-segments
+    splitting the data block.
 
-    Uneven splits (data_len not a multiple of num_data_segments) are not supported:
-    ADR-0012 explicitly defers how remainder bytes should be distributed.
+    Uneven splits (data_len not a multiple of num_data_segments) are resolved
+    (ADR-0012, 2026-08-11): round-robin the remainder, +1 byte to each of the first
+    `data_len % num_data_segments` segments, rather than dumping it all on the last
+    one. This is safe because self/cross-orthogonality and pairing only ever compare
+    segment i of one packet against segment i of another (same length by
+    construction) -- never segment i against segment j -- so segments are free to
+    differ in length from each other. Round-robin just keeps that length spread as
+    small as possible, which minimizes how many segments sit close to the
+    rank-deficiency floor below.
 
     Caller beware: a segment's payload length (+1 for its salt byte) is the dimension
     of the vector space its gen_size packets live in. If that dimension is smaller
     than gen_size, the segment's Gram matrix is rank-deficient by construction, so
     at least one packet's self-tag MUST come out zero -- no salt draw or reorder can
     fix it (this is a hard rank limit, not the small-field give-up ADR-0010 documents).
-    Keep each data-segment's length >= gen_size - 1 to avoid this.
+    Keep every data-segment's length >= gen_size - 1 to avoid this -- round-robin
+    changes lengths by at most 1 byte, but the floor still applies per segment.
     """
     assert num_data_segments >= 1
-    if data_len % num_data_segments != 0:
-        raise ValueError(
-            f"data_len={data_len} does not split evenly into {num_data_segments} "
-            "data-segments; uneven splits are deferred (ADR-0012)."
-        )
-    data_segment_length = data_len // num_data_segments
+    base_length, remainder = divmod(data_len, num_data_segments)
 
     segments = [Segment(name="coeff", kind="coeff", start=0, length=gen_size)]
+    cursor = gen_size
     for i in range(num_data_segments):
-        segments.append(Segment(
-            name=f"data-{i}",
-            kind="data",
-            start=gen_size + i * data_segment_length,
-            length=data_segment_length,
-        ))
+        length = base_length + 1 if i < remainder else base_length
+        segments.append(Segment(name=f"data-{i}", kind="data", start=cursor, length=length))
+        cursor += length
     return segments
 
 
@@ -115,6 +116,16 @@ def _layout_tagged_segments(segments: list[Segment], gen_size: int) -> list[Tagg
         ))
         cursor += segment.length + 1 + gen_size
     return layouts
+
+
+def layout_segments(gen_size: int, data_len: int, num_data_segments: int) -> list[TaggedSegment]:
+    """Where each segment's [payload | salt | tags] block lands, without tagging anything.
+
+    Lets a receiver recompute segment boundaries deterministically from
+    (gen_size, data_len, num_data_segments) alone -- the same inputs the sender
+    used -- instead of needing the SegmentedTagResult a particular
+    tag_generation_segmented call returned."""
+    return _layout_tagged_segments(build_segments(gen_size, data_len, num_data_segments), gen_size)
 
 
 def _tag_segment_with_salt(field: TableField, payload_rows: list[bytearray], gen_size: int,

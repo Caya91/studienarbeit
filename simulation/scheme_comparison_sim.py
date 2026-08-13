@@ -42,6 +42,7 @@ from binary_ext_fields.pollution import pollute_generation, pollute_random
 from simulation.recovery_decode_sim import _try_decode
 from simulation.integrity_schemes import (
     SCHEMES, AdmitConfig, HmacScheme, forge_hmac,
+    SEGMENTED_DATA_FIELDS, SEGMENTED_N_VALUES, SEGMENTED_STRATEGIES,
 )
 from simulation.intelligent_attack_sim import run_attack_trial
 from utils.log_helpers import get_run_log_dir
@@ -63,6 +64,13 @@ SCHEME_COLORS = {"orthogonal": "#2a6f97", "hmac": "#3d405b",
                  "crc_localized": "#e07a5f", "crc_whole": "#f2a65a"}
 SCHEME_OP_UNIT = {"orthogonal": "field muls", "hmac": "HMAC block-ops",
                   "crc_localized": "CRC checks", "crc_whole": "CRC checks"}
+# Segmented scheme (ADR-0012) native op unit -- same primitive as orthogonal (field
+# muls), one entry per registered N/strategy combination so _print_op_table can
+# look any of them up by name.
+SCHEME_OP_UNIT.update({
+    f"segmented_{strategy}_n{n}": "field muls"
+    for n in SEGMENTED_N_VALUES for strategy in SEGMENTED_STRATEGIES
+})
 # HD-parity sweep: same bit-flip repair reach (HD 1/2/3) for both schemes, so the
 # comparison is fair. Colour = scheme, linestyle = Hamming distance.
 HD_LINESTYLE = {1: "-", 2: "--", 3: ":"}
@@ -83,6 +91,10 @@ class SchemeTrialResult:
     status: str              # "decoded" | "silent_decode" | "timeout"
     wall_time_s: float       # wall-clock spent in this trial's loop (pure-Python fair bridge)
     time_per_packet_s: float # wall_time_s / packets_to_decode -- the completion-time metric
+    pairs_recovered: int = 0 # segmented scheme only (ADR-0012); 0 for every other scheme
+    pairs_failed: int = 0    # segmented scheme's IC-refinement gap (measure-only, ADR-0012
+                              # "Resolved"): same-bit-position overlapping errors this
+                              # mechanism cannot split. 0 for every other scheme.
 
 
 def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate,
@@ -118,10 +130,12 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
 
     silent = decoded and not correct
     status = "decoded" if correct else ("silent_decode" if decoded else "timeout")
+    op_counts = scheme.op_counts(instrument)  # per-scheme dict; only segmented has pairs_*
     return SchemeTrialResult(
         scheme=scheme.name, decoded=decoded, correct=correct, silent_decode=silent,
         packets_to_decode=received, overhead=received / gen_size,
         scheme_ops=scheme.primary_ops(instrument), decode_ops=cnt_decode.mul_count,
+        pairs_recovered=op_counts.get("pairs_recovered", 0), pairs_failed=op_counts.get("pairs_failed", 0),
         status=status,
         wall_time_s=wall_time_s,
         time_per_packet_s=wall_time_s / received if received else float("nan"),
@@ -253,6 +267,108 @@ def run_hd_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
     _plot_by_scheme_hd(summary_rows, scheme_names, hamming_distances, "mean_overhead_decoded",
                        "Mean transmission overhead (packets / gen_size)",
                        run_dir / "overhead_vs_ber_by_hd.png", ylim=None, hline=1.0)
+    print(f"\nDone. Results written to: {run_dir}")
+    return run_dir
+
+
+# ── Segmented scheme sweep: N x BER (ADR-0012 "Resolved" 2026-08-11) ──────────
+# N is this scheme's headline knob (coeff-segment repair + pairing tradeoff), so it
+# gets its own 2D sweep against BER rather than a fixed value. data_fields is fixed
+# at SEGMENTED_DATA_FIELDS (48), applied to EVERY scheme here including the N=1
+# orthogonal baseline, so the comparison stays fair -- see ADR-0012 for why 48
+# (build_segments' rank-deficiency floor rules out this file's usual DATA_FIELDS=10
+# for N>=3). One line per (N, strategy): colour = strategy, linestyle = N. The N=1
+# baseline is plain OrthogonalScheme (no segmentation, registered in SCHEMES already).
+#
+# KNOWN COST, DEFERRED (see SegmentedScheme.admit in integrity_schemes.py): the
+# segmented arm recomputes its repair search from scratch every round, so high-BER
+# cells are slow -- expect this sweep to take much longer per cell than the other
+# two above at comparable trial counts. Tune num_trials/bit_error_rates down for a
+# first exploratory run; the defaults here are already smaller than NUM_TRIALS/
+# BIT_ERROR_RATES for that reason, not because they're the "right" final numbers.
+SEGMENTED_NUM_TRIALS = 20
+SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3, 5e-3)
+SEGMENTED_MAX_PACKETS_FACTOR = 8
+
+SEGMENTED_N_LINESTYLE = {1: "-", 2: "--", 3: "-.", 5: ":"}
+SEGMENTED_STRATEGY_COLORS = {"orthogonal": SCHEME_COLORS["orthogonal"],
+                             "uniform_hd": "#588157", "coefficient_first": "#bc4749"}
+
+
+def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES):
+    """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline plus every
+    (N, strategy) combination in the segmented sweep."""
+    rows = [("orthogonal", 1, "orthogonal")]
+    for n in n_values:
+        for strategy in strategies:
+            rows.append((f"segmented_{strategy}_n{n}", n, strategy))
+    return rows
+
+
+def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMENTED_DATA_FIELDS,
+                          num_trials=SEGMENTED_NUM_TRIALS, bit_error_rates=SEGMENTED_BIT_ERROR_RATES,
+                          n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
+                          max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR) -> Path:
+    """N x BER sweep for the segmented scheme (ADR-0012), against the N=1 orthogonal
+    baseline at the same data_fields. Reuses run_recovery_trial unchanged -- SegmentedScheme
+    is just another IntegrityScheme, so the driver doesn't know or care it's different."""
+    run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
+    base_field = create_field(field_m)
+    cfg = AdmitConfig()
+    sweep_schemes = _segmented_sweep_schemes(n_values, strategies)
+
+    raw_rows, summary_rows = [], []
+    for name, n, strategy in sweep_schemes:
+        tag_bits = _tag_overhead_bits_for(name, gen_size, field_m)
+        for ber in bit_error_rates:
+            print(f"=== scheme={name} N={n} strategy={strategy} BER={ber:g} ===")
+            results = [run_recovery_trial(base_field, SCHEMES[name], data_fields, gen_size, ber, cfg,
+                                          max_packets_factor=max_packets_factor)
+                       for _ in range(num_trials)]
+            for trial_id, r in enumerate(results):
+                raw_rows.append({"scheme": name, "n": n, "strategy": strategy,
+                                 "bit_error_rate": ber, "trial_id": trial_id, **asdict(r)})
+
+            decoded = [r for r in results if r.decoded]
+            total_pairs = sum(r.pairs_recovered + r.pairs_failed for r in results)
+            summary_rows.append({
+                "scheme": name, "n": n, "strategy": strategy,
+                "bit_error_rate": ber,
+                "trials": num_trials,
+                "tag_overhead_bits": tag_bits,
+                "correct_rate": sum(r.correct for r in results) / num_trials,
+                "decode_success_rate": len(decoded) / num_trials,
+                "silent_decode_rate": sum(r.silent_decode for r in results) / num_trials,
+                "timeout_rate": sum(r.status == "timeout" for r in results) / num_trials,
+                "mean_overhead_decoded": float(np.mean([r.overhead for r in decoded])) if decoded else float("nan"),
+                "time_per_packet_s_mean": float(np.mean([r.time_per_packet_s for r in results])),
+                "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
+                "scheme_ops_mean": float(np.mean([r.scheme_ops for r in results])),
+                # ADR-0012 "Resolved": IC-refinement is measure-only -- this IS that
+                # measurement. NaN (not 0) when no pair was ever attempted this cell,
+                # so it's visibly distinct from "attempted and always succeeded".
+                "ic_refinement_failure_rate": (
+                    sum(r.pairs_failed for r in results) / total_pairs if total_pairs else float("nan")
+                ),
+            })
+
+    _write_csv(run_dir / "raw_results.csv", raw_rows)
+    _write_csv(run_dir / "summary.csv", summary_rows)
+
+    _plot_by_n_strategy(summary_rows, n_values, strategies, "correct_rate",
+                        "Recovery rate (decoded to correct source)",
+                        run_dir / "recovery_rate_vs_ber_by_n.png", ylim=(-0.02, 1.02))
+    _plot_by_n_strategy(summary_rows, n_values, strategies, "mean_overhead_decoded",
+                        "Mean transmission overhead (packets / gen_size)",
+                        run_dir / "overhead_vs_ber_by_n.png", ylim=None, hline=1.0)
+    _plot_by_n_strategy(summary_rows, n_values, strategies, "ic_refinement_failure_rate",
+                        "IC-refinement failure rate (overlapping-error pairs, measure-only)",
+                        run_dir / "ic_refinement_failure_vs_ber_by_n.png", ylim=(-0.02, 1.02))
+    _plot_by_n_strategy(summary_rows, n_values, strategies, "time_per_packet_s_mean",
+                        "Mean completion time per received packet (s)",
+                        run_dir / "time_per_packet_vs_ber_by_n.png", ylim=None)
+
+    _print_op_table(summary_rows, [name for name, _, _ in sweep_schemes], bit_error_rates)
     print(f"\nDone. Results written to: {run_dir}")
     return run_dir
 
@@ -447,6 +563,50 @@ def _plot_by_scheme_hd(summary_rows, scheme_names, hds, metric, ylabel, output_p
     print(f"Plot saved: {output_path}")
 
 
+def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, output_path,
+                        ylim=(-0.02, 1.02), hline=None) -> None:
+    """One line per (N, strategy), plus the N=1 orthogonal baseline: colour =
+    strategy (orthogonal counts as its own "strategy" here), linestyle = N.
+    NaN points (e.g. ic_refinement_failure_rate with zero pairs attempted) are
+    dropped from that line rather than plotted as a gap."""
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    baseline_points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
+                             if row["n"] == 1 and not np.isnan(row[metric]))
+    if baseline_points:
+        xs = [p[0] for p in baseline_points]
+        ys = [p[1] for p in baseline_points]
+        ax.plot(xs, ys, SEGMENTED_N_LINESTYLE.get(1, "-"), marker="o",
+                color=SEGMENTED_STRATEGY_COLORS["orthogonal"], linewidth=2, markersize=6,
+                label="orthogonal (N=1)")
+
+    for strategy in strategies:
+        for n in n_values:
+            points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
+                            if row["n"] == n and row["strategy"] == strategy and not np.isnan(row[metric]))
+            if not points:
+                continue
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            ax.plot(xs, ys, SEGMENTED_N_LINESTYLE.get(n, "-"), marker="s",
+                    color=SEGMENTED_STRATEGY_COLORS.get(strategy), linewidth=2, markersize=5,
+                    label=f"{strategy} N={n}")
+
+    if hline is not None:
+        ax.axhline(hline, color="grey", linestyle="-.", alpha=0.6, label=f"ideal = {hline:g}")
+    ax.set_xscale("log")
+    ax.set_xlabel("Bit error rate", fontsize=12, fontweight="bold")
+    ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
+    ax.set_title(f"{ylabel} vs BER, by N x strategy", fontsize=13, fontweight="bold")
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(fontsize=8, ncol=2)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"Plot saved: {output_path}")
+
+
 def _plot_attack_comparison(summary_rows, output_path) -> None:
     fig, ax = plt.subplots(figsize=(9, 6))
     points = sorted((row["strike_s"], row["orth_silent_accept_rate"],
@@ -472,3 +632,4 @@ if __name__ == "__main__":
     run_hd_sweep()
     # run_recovery_sweep()
     # run_attack_comparison()
+    # run_segmented_n_sweep()  # ADR-0012; slow at high BER, see its module comment
