@@ -19,6 +19,25 @@ LOG_FOLDER="./logs" PYTHONPATH=. \
   -c "from simulation.scheme_comparison_sim import run_segmented_n_sweep; run_segmented_n_sweep()"
 ```
 
+## First-class sweep entrypoints (`scheme_comparison_sim`)
+
+Each experiment in `scheme_comparison_sim.py` is a named run — no source edit needed
+(ticket 02). The segmented N×BER sweep:
+
+```bash
+LOG_FOLDER="./logs" PYTHONPATH=. \
+  "E:/projects/studienarbeit/.venv/Scripts/python.exe" \
+  -m simulation.scheme_comparison_sim segmented
+```
+
+Other names: `smoke`, `hd`, `recovery`, `attack`; no arg → `smoke` + `hd`. The segmented
+run accepts `--cell-time-budget-s <sec>`: each (scheme, BER) cell runs up to `num_trials`
+trials but stops adding new ones once that many wall-clock seconds elapse, so a slow
+high-BER cell degrades to fewer trials instead of hanging the sweep. The `summary.csv`
+`trials_run`/`capped` columns show which cells hit the cap (don't read a capped cell's
+rates as full-confidence). A single in-flight trial always finishes, so actual wall time
+can overshoot the budget by up to one trial.
+
 ## Long sweeps → background
 
 High-BER segmented cells are slow (per-pair search recomputed every round, deferred —

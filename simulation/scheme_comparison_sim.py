@@ -152,6 +152,24 @@ def _tag_overhead_bits_for(name: str, gen_size, field_m) -> int:
     return SCHEMES[name].tag_overhead_bits(gen_size, field_m)
 
 
+def _run_capped_cell(trial_fn, num_trials, time_budget_s):
+    """Run up to `num_trials` calls of `trial_fn()`, stopping BEFORE starting a new
+    trial once `time_budget_s` of wall time has elapsed in this cell. Returns the list
+    of trial results; its length reflects the cap (fewer than num_trials on a capped
+    cell). Always runs at least one trial -- a slow cell degrades to fewer trials, not
+    an empty (divide-by-zero) one. `time_budget_s=None` disables the cap.
+
+    The check is between trials, not mid-trial: a single trial already in flight always
+    finishes, so the actual wall time can overshoot the budget by up to one trial."""
+    results = []
+    start = time.perf_counter()
+    for i in range(num_trials):
+        if i > 0 and time_budget_s is not None and time.perf_counter() - start >= time_budget_s:
+            break
+        results.append(trial_fn())
+    return results
+
+
 def run_recovery_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
                        num_trials=NUM_TRIALS, bit_error_rates=BIT_ERROR_RATES,
                        scheme_names=SCHEME_NAMES) -> Path:
@@ -280,15 +298,21 @@ def run_hd_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
 # for N>=3). One line per (N, strategy): colour = strategy, linestyle = N. The N=1
 # baseline is plain OrthogonalScheme (no segmentation, registered in SCHEMES already).
 #
-# KNOWN COST, DEFERRED (see SegmentedScheme.admit in integrity_schemes.py): the
-# segmented arm recomputes its repair search from scratch every round, so high-BER
-# cells are slow -- expect this sweep to take much longer per cell than the other
-# two above at comparable trial counts. Tune num_trials/bit_error_rates down for a
-# first exploratory run; the defaults here are already smaller than NUM_TRIALS/
-# BIT_ERROR_RATES for that reason, not because they're the "right" final numbers.
+# COST: the segmented arm's repair search is heavier than the other two, and high-BER
+# cells are the slow ones. Ticket 01 memoised the per-pair search (no recompute when a
+# pair is unchanged) and ticket 02 adds a per-cell wall-time budget below, so a hot cell
+# now degrades to fewer trials rather than blocking. The defaults here are still smaller
+# than NUM_TRIALS/BIT_ERROR_RATES for a feasible exploratory run, not the "right" final
+# numbers -- tune num_trials/bit_error_rates for a headline run.
 SEGMENTED_NUM_TRIALS = 20
 SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3, 5e-3)
 SEGMENTED_MAX_PACKETS_FACTOR = 8
+# Per-cell wall-time budget (ticket 02): even with ticket 01's per-pair memo, the
+# highest-BER cells can still be slow. A cell runs up to SEGMENTED_NUM_TRIALS trials
+# but stops adding new ones once this many seconds have elapsed, so one hot cell can't
+# hang the whole sweep. 120s at 20 trials ~= a slow high-BER cell gets a handful of
+# trials rather than blocking; lower it for a quick exploratory run. None disables it.
+SEGMENTED_CELL_TIME_BUDGET_S = 120.0
 
 SEGMENTED_N_LINESTYLE = {1: "-", 2: "--", 3: "-.", 5: ":"}
 SEGMENTED_STRATEGY_COLORS = {"orthogonal": SCHEME_COLORS["orthogonal"],
@@ -308,10 +332,18 @@ def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_S
 def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMENTED_DATA_FIELDS,
                           num_trials=SEGMENTED_NUM_TRIALS, bit_error_rates=SEGMENTED_BIT_ERROR_RATES,
                           n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
-                          max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR) -> Path:
+                          max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR,
+                          cell_time_budget_s=SEGMENTED_CELL_TIME_BUDGET_S) -> Path:
     """N x BER sweep for the segmented scheme (ADR-0012), against the N=1 orthogonal
     baseline at the same data_fields. Reuses run_recovery_trial unchanged -- SegmentedScheme
-    is just another IntegrityScheme, so the driver doesn't know or care it's different."""
+    is just another IntegrityScheme, so the driver doesn't know or care it's different.
+
+    Per-cell runtime cap (ticket 02): each (scheme, BER) cell runs up to num_trials trials
+    but stops adding new ones once cell_time_budget_s of wall time has elapsed, so a slow
+    high-BER cell degrades to fewer trials instead of hanging the whole sweep. The summary's
+    `trials_run` column reflects the ACTUAL count and `capped` flags cells that hit the
+    limit; all rates use trials_run as the denominator. Pass cell_time_budget_s=None to
+    disable the cap."""
     run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
     base_field = create_field(field_m)
     cfg = AdmitConfig()
@@ -322,9 +354,15 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
         tag_bits = _tag_overhead_bits_for(name, gen_size, field_m)
         for ber in bit_error_rates:
             print(f"=== scheme={name} N={n} strategy={strategy} BER={ber:g} ===")
-            results = [run_recovery_trial(base_field, SCHEMES[name], data_fields, gen_size, ber, cfg,
-                                          max_packets_factor=max_packets_factor)
-                       for _ in range(num_trials)]
+            results = _run_capped_cell(
+                lambda: run_recovery_trial(base_field, SCHEMES[name], data_fields, gen_size, ber, cfg,
+                                           max_packets_factor=max_packets_factor),
+                num_trials, cell_time_budget_s)
+            trials_run = len(results)
+            capped = trials_run < num_trials
+            if capped:
+                print(f"    [capped] cell hit {cell_time_budget_s:g}s budget after "
+                      f"{trials_run}/{num_trials} trials")
             for trial_id, r in enumerate(results):
                 raw_rows.append({"scheme": name, "n": n, "strategy": strategy,
                                  "bit_error_rate": ber, "trial_id": trial_id, **asdict(r)})
@@ -335,11 +373,13 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
                 "scheme": name, "n": n, "strategy": strategy,
                 "bit_error_rate": ber,
                 "trials": num_trials,
+                "trials_run": trials_run,
+                "capped": capped,
                 "tag_overhead_bits": tag_bits,
-                "correct_rate": sum(r.correct for r in results) / num_trials,
-                "decode_success_rate": len(decoded) / num_trials,
-                "silent_decode_rate": sum(r.silent_decode for r in results) / num_trials,
-                "timeout_rate": sum(r.status == "timeout" for r in results) / num_trials,
+                "correct_rate": sum(r.correct for r in results) / trials_run,
+                "decode_success_rate": len(decoded) / trials_run,
+                "silent_decode_rate": sum(r.silent_decode for r in results) / trials_run,
+                "timeout_rate": sum(r.status == "timeout" for r in results) / trials_run,
                 "mean_overhead_decoded": float(np.mean([r.overhead for r in decoded])) if decoded else float("nan"),
                 "time_per_packet_s_mean": float(np.mean([r.time_per_packet_s for r in results])),
                 "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
@@ -601,9 +641,14 @@ def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, outp
     if ylim is not None:
         ax.set_ylim(*ylim)
     ax.yaxis.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(fontsize=8, ncol=2)
+    # Only draw a legend when something was actually plotted: the ic-refinement plot
+    # for a sweep where no pair was ever attempted has all-NaN lines and no baseline,
+    # and an unconditional legend() there just warns "No artists with labels".
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, ncol=2)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
     print(f"Plot saved: {output_path}")
 
 
@@ -627,9 +672,43 @@ def _plot_attack_comparison(summary_rows, output_path) -> None:
     print(f"Plot saved: {output_path}")
 
 
+def main(argv=None) -> None:
+    """First-class entrypoints (ticket 02). Each sweep is a named run so a user/agent can
+    launch it without editing source:
+
+        python -m simulation.scheme_comparison_sim segmented   # N x BER segmented sweep
+        python -m simulation.scheme_comparison_sim smoke       # quick smoke table
+        python -m simulation.scheme_comparison_sim hd          # HD-parity recovery sweep
+        python -m simulation.scheme_comparison_sim recovery    # random-error recovery sweep
+        python -m simulation.scheme_comparison_sim attack      # orthogonal vs HMAC attack
+
+    (no arg -> the default smoke + hd_sweep, preserving prior behaviour). See
+    docs/running_sims.md for the required LOG_FOLDER/PYTHONPATH env + venv."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Scheme comparison driver (ADR-0009/0011/0012).")
+    parser.add_argument("sweep", nargs="?", default=None,
+                        choices=["smoke", "hd", "recovery", "attack", "segmented"],
+                        help="which experiment to run (default: smoke + hd)")
+    parser.add_argument("--cell-time-budget-s", type=float, default=SEGMENTED_CELL_TIME_BUDGET_S,
+                        help="segmented sweep only: per-cell wall-time cap in seconds "
+                             "(0 or negative -> one trial/cell; use a large value to effectively disable)")
+    args = parser.parse_args(argv)
+
+    if args.sweep is None:
+        smoke_test()
+        run_hd_sweep()
+    elif args.sweep == "smoke":
+        smoke_test()
+    elif args.sweep == "hd":
+        run_hd_sweep()
+    elif args.sweep == "recovery":
+        run_recovery_sweep()
+    elif args.sweep == "attack":
+        run_attack_comparison()
+    elif args.sweep == "segmented":
+        run_segmented_n_sweep(cell_time_budget_s=args.cell_time_budget_s)
+
+
 if __name__ == "__main__":
-    smoke_test()
-    run_hd_sweep()
-    # run_recovery_sweep()
-    # run_attack_comparison()
+    main()
     # run_segmented_n_sweep()  # ADR-0012; slow at high BER, see its module comment
