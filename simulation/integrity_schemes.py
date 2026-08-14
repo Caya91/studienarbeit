@@ -353,12 +353,19 @@ class SegmentedInstrument:
     """CountingField for native op counting, plus IC-refinement bookkeeping (ADR-0012
     "Resolved": measure-only, not implemented -- pairs_failed is exactly the rate of
     same-bit-position overlapping errors this mechanism cannot split, reported per
-    (N, BER) rather than fixed)."""
+    (N, BER) rather than fixed).
+
+    pair_cache persists per-pair combined-search results across admit rounds within
+    one receiver lifetime (run_recovery_trial builds one instrument per trial and
+    reuses it every round). A pair whose bytes and trusted set are unchanged since
+    its last search is not searched again -- ticket 01, ADR-0012's deferred
+    "per-pair persistence"."""
     field: CountingField
     pairs_recovered: int = 0
     pairs_failed: int = 0
     unpaired_recovered: int = 0
     unpaired_failed: int = 0
+    pair_cache: dict = field(default_factory=dict)
 
 
 def _strip_to_code(packet: bytearray, segments) -> bytearray:
@@ -424,14 +431,13 @@ class SegmentedScheme(IntegrityScheme):
         if len(wire_pool) < max(gen_size, cfg.min_pool_size):
             return None
 
-        # KNOWN COST, DEFERRED (2026-08-12): once the gates above pass, every broken
-        # pair still gets re-searched from scratch each round even when neither
-        # packet's bytes nor the trusted set changed since the last failed attempt --
-        # this is why high-BER cells stay slow (see SEGMENTED_PAIR_BUDGET). Persisting
-        # per-pair search state across rounds (skip a pair whose inputs haven't
-        # changed since it last failed) was deliberately deferred: the priority right
-        # now is seeing the mechanism run end-to-end, not optimizing it. Do this before
-        # trusting wall-clock/op-count numbers from a high-BER sweep cell.
+        # Per-pair persistence (ticket 01, was ADR-0012's deferred cost): once the
+        # gates above pass, a broken pair is combined-searched only when its bytes or
+        # the trusted set changed since its last attempt -- instrument.pair_cache
+        # returns the prior result otherwise, instead of re-spending up to
+        # SEGMENTED_PAIR_BUDGET candidates per round. This is what makes high-BER
+        # cells terminate in feasible time and the op-count/wall-clock numbers
+        # trustworthy rather than pessimistic.
 
         segments = layout_segments(gen_size, self.data_fields, self.num_data_segments)
         field = instrument.field
@@ -448,11 +454,13 @@ class SegmentedScheme(IntegrityScheme):
 
         if self.strategy == "uniform_hd":
             report = recover_uniform_hd(field, wire_pool, segments, max_combined_hd=cfg.hamming_distance,
-                                        candidates_budget=SEGMENTED_PAIR_BUDGET)
+                                        candidates_budget=SEGMENTED_PAIR_BUDGET,
+                                        pair_cache=instrument.pair_cache)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,
-                                               candidates_budget=SEGMENTED_PAIR_BUDGET)
+                                               candidates_budget=SEGMENTED_PAIR_BUDGET,
+                                               pair_cache=instrument.pair_cache)
 
         for outcome in report.per_segment:
             instrument.pairs_recovered += outcome.pairs_recovered

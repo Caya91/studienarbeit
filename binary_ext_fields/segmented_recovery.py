@@ -163,10 +163,26 @@ class PairRecoveryResult:
     candidates_tried: int
 
 
+def _pair_cache_key(slice_a: bytearray, slice_b: bytearray, trusted_slices: list[bytearray],
+                    candidate_columns: list[int], max_combined_hd: int,
+                    candidates_budget: int | None):
+    """Canonical, hashable key over everything the search's output depends on.
+    Trusted slices are sorted because they enter only through order-independent
+    orthogonality checks -- so the same trusted *set* must key the same result
+    regardless of the order classify_segment_trust happened to list them in.
+    candidate_columns is kept in order: it drives the combination-iteration
+    order, so it genuinely affects which split is found first."""
+    return (
+        bytes(slice_a), bytes(slice_b),
+        tuple(sorted(bytes(t) for t in trusted_slices)),
+        tuple(candidate_columns), max_combined_hd, candidates_budget,
+    )
+
+
 def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice_b: bytearray,
                                      trusted_slices: list[bytearray], candidate_columns: list[int],
-                                     max_combined_hd: int, candidates_budget: int | None = None
-                                     ) -> PairRecoveryResult:
+                                     max_combined_hd: int, candidates_budget: int | None = None,
+                                     pair_cache: dict | None = None) -> PairRecoveryResult:
     """
     Search low-Hamming-distance corrections to the XOR-combined row of two
     broken same-segment packets, restricted to `candidate_columns` (payload-local
@@ -189,7 +205,37 @@ def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     demo. A budget give-up returns ok=False exactly like exhausting max_combined_hd
     honestly (this IS a search-budget give-up, not a "provably unrecoverable"
     result -- a larger budget might still find it).
+
+    `pair_cache` (None = no caching) persists results across calls keyed by this
+    pair's exact inputs. This search is a pure function of (slice_a, slice_b,
+    trusted set, candidate_columns, max_combined_hd, budget), so a cache hit
+    returns a result identical to recomputing it -- but without re-spending the
+    (up to `candidates_budget`) field operations. That is the whole point: a
+    broken pair the sim re-examines every round with unchanged bytes and an
+    unchanged trusted set (the common high-BER case) is searched once, not once
+    per round. A change to either packet or to the trusted set changes the key
+    and forces a fresh search (ADR-0012; ticket 01 "per-pair persistence").
     """
+    if pair_cache is not None:
+        key = _pair_cache_key(slice_a, slice_b, trusted_slices, candidate_columns,
+                              max_combined_hd, candidates_budget)
+        cached = pair_cache.get(key)
+        if cached is not None:
+            return cached
+        result = _search_pair_by_combined_search(field, slice_a, slice_b, trusted_slices,
+                                                  candidate_columns, max_combined_hd, candidates_budget)
+        pair_cache[key] = result
+        return result
+    return _search_pair_by_combined_search(field, slice_a, slice_b, trusted_slices,
+                                           candidate_columns, max_combined_hd, candidates_budget)
+
+
+def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice_b: bytearray,
+                                     trusted_slices: list[bytearray], candidate_columns: list[int],
+                                     max_combined_hd: int, candidates_budget: int | None
+                                     ) -> PairRecoveryResult:
+    """The actual combined search, extracted so recover_pair_by_combined_search can
+    wrap it with the per-pair cache. Pure and deterministic in its inputs."""
     bits_per_symbol = field.bit_lenght
     bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
     combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
@@ -248,7 +294,8 @@ class SegmentRepairOutcome:
 
 def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedSegment,
                     candidate_columns_for, max_combined_hd: int = 4,
-                    candidates_budget: int | None = None) -> SegmentRepairOutcome:
+                    candidates_budget: int | None = None,
+                    pair_cache: dict | None = None) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -263,6 +310,11 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     candidates_budget: forwarded to recover_pair_by_combined_search per pair
     (None = unbounded). Does not apply to the unpaired linear solve, which is
     polynomial, not a search.
+
+    pair_cache: forwarded to recover_pair_by_combined_search (None = no caching);
+    persists per-pair search results across rounds. The unpaired linear solve is
+    not cached -- it is polynomial, not a budgeted search, so it is not the cost
+    the persistence is aimed at.
     """
     trust = classify_segment_trust(field, packets, segment)
     plan = plan_pairing(trust)
@@ -281,7 +333,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         slice_a = segment_slice(packets[pair.packet_a], segment)
         slice_b = segment_slice(packets[pair.packet_b], segment)
         result = recover_pair_by_combined_search(field, slice_a, slice_b, trusted_slices, columns,
-                                                  max_combined_hd, candidates_budget=candidates_budget)
+                                                  max_combined_hd, candidates_budget=candidates_budget,
+                                                  pair_cache=pair_cache)
 
         if result.ok:
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
@@ -316,18 +369,22 @@ class SegmentedRecoveryReport:
 
 
 def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
-                        max_combined_hd: int = 4, candidates_budget: int | None = None
-                        ) -> SegmentedRecoveryReport:
+                        max_combined_hd: int = 4, candidates_budget: int | None = None,
+                        pair_cache: dict | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
     data-segment, which is the point: closing the coefficient blind spot the
     whole-packet scheme's ARC-based recovery (playground/new_recovery.py modes
-    C/D) has always had."""
+    C/D) has always had.
+
+    pair_cache (None = no caching) persists per-pair combined-search results
+    across calls; see recover_pair_by_combined_search."""
     tmp = [bytearray(p) for p in packets]
     per_segment = [
         repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
-                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                       pair_cache=pair_cache)
         for segment in segments
     ]
     ok = all(check_orth_segmented(field, tmp, segments).values())
@@ -399,20 +456,26 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
 
 
 def recover_coefficient_first(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
-                               gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None
-                               ) -> SegmentedRecoveryReport:
+                               gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None,
+                               pair_cache: dict | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
     columns before repairing them, restricting the same pairing/search machinery
-    to a much smaller column set."""
+    to a much smaller column set.
+
+    pair_cache (None = no caching) persists per-pair combined-search results
+    across calls; see recover_pair_by_combined_search. The ARC-narrowed
+    candidate_columns are part of the cache key, so a data-segment pair is only
+    reused when its localization also came out identical."""
     tmp = [bytearray(p) for p in packets]
     coeff_segment = next(s for s in segments if s.kind == "coeff")
     data_segments = [s for s in segments if s.kind == "data"]
 
     per_segment = [
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
-                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                       pair_cache=pair_cache)
     ]
 
     coeff_trust = classify_segment_trust(field, tmp, coeff_segment)
@@ -423,7 +486,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
         )
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
-                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                           pair_cache=pair_cache)
         )
 
     ok = all(check_orth_segmented(field, tmp, segments).values())

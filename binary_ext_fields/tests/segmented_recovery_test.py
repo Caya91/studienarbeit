@@ -12,7 +12,7 @@ the exact same bit position) fails honestly instead of silently.
 """
 import random
 
-from binary_ext_fields.custom_field import create_field
+from binary_ext_fields.custom_field import create_field, CountingField
 from binary_ext_fields.generate_symbols import (
     generate_identity_coefficients,
     code_with_given_coefficients,
@@ -361,6 +361,114 @@ def test_recover_coefficient_first_narrows_via_arc_once_recoded_packets_have_acc
     assert report.packets == original
 
 
+# ── Per-pair search persistence (ticket 01, ADR-0012's deferred cost) ────────
+#
+# The cache is an exact memo of a pure function: a hit must return a result
+# identical to recomputing, but WITHOUT re-spending the search's field ops. A
+# CountingField makes "was it actually re-searched?" observable -- zero new muls
+# on a hit, nonzero on a genuine miss.
+
+def _failed_pair_inputs(seed):
+    """A recoverable-only-at-hd>=2 pair; searched at max_combined_hd=1 it is an
+    honest budget give-up (ok=False) that still spends field ops filtering
+    candidates -- the exact stale-but-unchanged pair the sim re-hits every round."""
+    random.seed(seed)
+    result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
+    segment = next(s for s in result.segments if s.name == "data-0")
+    sl = lambda i: bytearray(result.packets[i][segment.start:segment.start + segment.total_length])
+    broken_a = error_into_packet_chosen_bit(sl(0), 0, chosen_bit=2)
+    broken_b = error_into_packet_chosen_bit(sl(1), 1, chosen_bit=6)
+    trusted = [sl(2), sl(3)]
+    columns = list(range(segment.payload_length))
+    return broken_a, broken_b, trusted, columns
+
+
+def test_pair_cache_skips_the_search_on_an_unchanged_failed_pair():
+    '''Second call with the same inputs and the same cache returns the identical
+    give-up result and spends ZERO additional field multiplications -- the pair
+    is not re-searched.'''
+    broken_a, broken_b, trusted, columns = _failed_pair_inputs(20)
+    cnt = CountingField(FIELD)
+    cache = {}
+
+    first = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
+                                            max_combined_hd=1, candidates_budget=10_000, pair_cache=cache)
+    assert first.ok is False
+    muls_after_first = cnt.mul_count
+    assert muls_after_first > 0, "the first search must actually do field work"
+    assert len(cache) == 1
+
+    second = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
+                                             max_combined_hd=1, candidates_budget=10_000, pair_cache=cache)
+    assert second == first
+    assert cnt.mul_count == muls_after_first, "a cache hit must not re-spend any field ops"
+
+
+def test_pair_cache_reuses_a_successful_repair_without_researching():
+    '''A recoverable disjoint pair is searched once; the cached hit returns the
+    same byte-for-byte fix with no further field ops.'''
+    random.seed(21)
+    result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
+    segment = next(s for s in result.segments if s.name == "data-0")
+    original_a = bytearray(result.packets[0][segment.start:segment.start + segment.total_length])
+    original_b = bytearray(result.packets[1][segment.start:segment.start + segment.total_length])
+    broken_a = error_into_packet_chosen_bit(original_a, 0, chosen_bit=2)
+    broken_b = error_into_packet_chosen_bit(original_b, 1, chosen_bit=6)
+    trusted = [result.packets[i][segment.start:segment.start + segment.total_length] for i in (2, 3)]
+    columns = list(range(segment.payload_length))
+
+    cnt = CountingField(FIELD)
+    cache = {}
+    first = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
+                                            max_combined_hd=2, pair_cache=cache)
+    assert first.ok and first.fixed_a == original_a and first.fixed_b == original_b
+    muls_after_first = cnt.mul_count
+
+    second = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
+                                             max_combined_hd=2, pair_cache=cache)
+    assert second == first
+    assert cnt.mul_count == muls_after_first, "a cache hit must not re-spend any field ops"
+
+
+def test_pair_cache_miss_when_the_trusted_set_changes():
+    '''Changing the trusted set changes the key -- the pair is genuinely
+    re-searched (new field ops, a second cache entry), never a stale hit.'''
+    broken_a, broken_b, trusted, columns = _failed_pair_inputs(22)
+    cnt = CountingField(FIELD)
+    cache = {}
+
+    recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
+                                    max_combined_hd=1, pair_cache=cache)
+    muls_after_first = cnt.mul_count
+
+    recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted[:1], columns,
+                                    max_combined_hd=1, pair_cache=cache)
+    assert cnt.mul_count > muls_after_first, "a changed trusted set must force a fresh search"
+    assert len(cache) == 2
+
+
+def test_pair_cache_does_not_change_recovery_output():
+    '''End-to-end: recover_uniform_hd with a cache produces exactly the same
+    repaired packets and per-segment outcome as without one -- the cache is a
+    pure speed-up, never a behaviour change.'''
+    random.seed(23)
+    result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
+    segment = next(s for s in result.segments if s.name == "data-1")
+
+    def broken_pool():
+        pool = [bytearray(p) for p in result.packets]
+        pool[0] = error_into_packet_chosen_bit(pool[0], segment.start, chosen_bit=2)
+        pool[2] = error_into_packet_chosen_bit(pool[2], segment.start + 1, chosen_bit=5)
+        return pool
+
+    uncached = recover_uniform_hd(FIELD, broken_pool(), result.segments, max_combined_hd=2)
+    cached = recover_uniform_hd(FIELD, broken_pool(), result.segments, max_combined_hd=2, pair_cache={})
+
+    assert cached.ok == uncached.ok
+    assert cached.packets == uncached.packets
+    assert cached.per_segment == uncached.per_segment
+
+
 if __name__ == "__main__":
     tests = [
         test_classify_segment_trust_marks_only_the_corrupted_packet_broken,
@@ -374,6 +482,10 @@ if __name__ == "__main__":
         test_arc_localizer_narrows_to_the_true_corrupted_column_given_a_full_rank_basis,
         test_recover_coefficient_first_falls_back_when_pool_has_no_recoding_headroom_yet,
         test_recover_coefficient_first_narrows_via_arc_once_recoded_packets_have_accumulated,
+        test_pair_cache_skips_the_search_on_an_unchanged_failed_pair,
+        test_pair_cache_reuses_a_successful_repair_without_researching,
+        test_pair_cache_miss_when_the_trusted_set_changes,
+        test_pair_cache_does_not_change_recovery_output,
     ]
     for test in tests:
         test()
