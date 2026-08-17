@@ -29,9 +29,9 @@ matplotlib.use("Agg")  # headless: don't try to open a window overnight
 from simulation.scheme_comparison_sim import run_segmented_n_sweep
 
 # ── Knobs (edit these) ───────────────────────────────────────────────────────
-NUM_TRIALS = 200      # per (scheme, BER) cell, capped by time below
+NUM_TRIALS = 10      # per (scheme, BER) cell, capped by time below
 CELL_BUDGET_S = 1800  # 30 min max per cell; a hot cell gets fewer than NUM_TRIALS
 
 if __name__ == "__main__":
-    run_dir = run_segmented_n_sweep(num_trials=NUM_TRIALS, cell_time_budget_s=CELL_BUDGET_S)
+    run_dir = run_segmented_n_sweep(num_trials=NUM_TRIALS, cell_time_budget_s=None)
     print(f"\nOVERNIGHT RUN COMPLETE -> {run_dir}")

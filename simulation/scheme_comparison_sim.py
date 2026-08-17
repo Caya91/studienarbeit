@@ -53,7 +53,7 @@ FIELD_M = 8
 GEN_SIZE = 10
 DATA_FIELDS = 10
 NUM_TRIALS = 100
-BIT_ERROR_RATES = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
+BIT_ERROR_RATES = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] # 5e-3, 1e-2
 MAX_PACKETS_FACTOR = 12
 # Recovery comparison (ADR-0011 phase 3): the orthogonal self-tag against the CRC
 # baseline in both its localized (fair-fight) and whole-packet (bare floor) forms.
@@ -114,6 +114,7 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
 
     start = time.perf_counter()
     while received < max_packets:
+        print("sending 10 packets packet")
         clean = recode_rlnc_without_coeffs(base_field, source, gen_size, count=1)
         wire = scheme.attach(instrument, bytearray(clean))
         polluted = pollute_generation(base_field, [wire], bit_error_rate, pollute_random)[0]
@@ -145,6 +146,7 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
 def _run_trial(name: str, base_field, data_fields, gen_size, bit_error_rate,
               cfg: AdmitConfig) -> SchemeTrialResult:
     """Every scheme goes through the generic IntegrityScheme path (ADR-0011)."""
+    ic(SCHEMES)
     return run_recovery_trial(base_field, SCHEMES[name], data_fields, gen_size, bit_error_rate, cfg)
 
 
@@ -305,7 +307,7 @@ def run_hd_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
 # than NUM_TRIALS/BIT_ERROR_RATES for a feasible exploratory run, not the "right" final
 # numbers -- tune num_trials/bit_error_rates for a headline run.
 SEGMENTED_NUM_TRIALS = 20
-SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3, 5e-3)
+SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3) # , 5e-3
 SEGMENTED_MAX_PACKETS_FACTOR = 8
 # Per-cell wall-time budget (ticket 02): even with ticket 01's per-pair memo, the
 # highest-BER cells can still be slow. A cell runs up to SEGMENTED_NUM_TRIALS trials
@@ -346,8 +348,9 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     disable the cap."""
     run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
     base_field = create_field(field_m)
-    cfg = AdmitConfig()
+    cfg = AdmitConfig(hamming_distance=2) # if this is less than 2, combined reovery wont work at all
     sweep_schemes = _segmented_sweep_schemes(n_values, strategies)
+    ic(sweep_schemes)
 
     raw_rows, summary_rows = [], []
     for name, n, strategy in sweep_schemes:

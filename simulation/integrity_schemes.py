@@ -61,7 +61,7 @@ HMAC_TAG_BYTES = 16        # HMAC-SHA-256 truncated to 128 bits
 CRC_WIDTH = 16             # comparison CRC width -- CRC-16, the PRAC/S-PRAC/QPPR anchor
 CRC_TAG_BYTES = 2          # 16-bit tag = 2 bytes
 CRC_WHOLE_BUDGET = 100_000 # whole-packet (no-localization) per-packet candidate cap
-SEGMENTED_PAIR_BUDGET = 50_000  # recover_pair_by_combined_search candidate cap, per pair (ADR-0012)
+SEGMENTED_PAIR_BUDGET = 100_000  # recover_pair_by_combined_search candidate cap, per pair (ADR-0012)
 
 
 @dataclass
@@ -499,8 +499,8 @@ class SegmentedScheme(IntegrityScheme):
 # num_data_segments in {0, 1, 2, 4}. N=1 is the existing OrthogonalScheme (no
 # segmentation, registered above) -- only N>=2 needs a SegmentedScheme instance.
 SEGMENTED_DATA_FIELDS = 48
-SEGMENTED_N_VALUES = (2, 3, 5)  # total segments; num_data_segments = N - 1
-SEGMENTED_STRATEGIES = ("uniform_hd", "coefficient_first")
+SEGMENTED_N_VALUES = ([2]) # , 3, 5  # total segments; num_data_segments = N - 1
+SEGMENTED_STRATEGIES = (["uniform_hd"])   # , "coefficient_first"
 
 SEGMENTED_SCHEMES = {
     f"segmented_{strategy}_n{n}": SegmentedScheme(
