@@ -498,7 +498,7 @@ class SegmentedScheme(IntegrityScheme):
 # N sweep resolved in ADR-0012 (2026-08-11): {1, 2, 3, 5} total segments, i.e.
 # num_data_segments in {0, 1, 2, 4}. N=1 is the existing OrthogonalScheme (no
 # segmentation, registered above) -- only N>=2 needs a SegmentedScheme instance.
-SEGMENTED_DATA_FIELDS = 48
+SEGMENTED_DATA_FIELDS = 10    # NEEDS to fulfill: data_fields ≥ (N_max − 1) · (gen_size − 1)
 SEGMENTED_N_VALUES = ([2]) # , 3, 5  # total segments; num_data_segments = N - 1
 SEGMENTED_STRATEGIES = (["uniform_hd"])   # , "coefficient_first"
 

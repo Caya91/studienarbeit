@@ -114,7 +114,6 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
 
     start = time.perf_counter()
     while received < max_packets:
-        print("sending 10 packets packet")
         clean = recode_rlnc_without_coeffs(base_field, source, gen_size, count=1)
         wire = scheme.attach(instrument, bytearray(clean))
         polluted = pollute_generation(base_field, [wire], bit_error_rate, pollute_random)[0]
@@ -146,7 +145,6 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
 def _run_trial(name: str, base_field, data_fields, gen_size, bit_error_rate,
               cfg: AdmitConfig) -> SchemeTrialResult:
     """Every scheme goes through the generic IntegrityScheme path (ADR-0011)."""
-    ic(SCHEMES)
     return run_recovery_trial(base_field, SCHEMES[name], data_fields, gen_size, bit_error_rate, cfg)
 
 
@@ -350,7 +348,6 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     base_field = create_field(field_m)
     cfg = AdmitConfig(hamming_distance=2) # if this is less than 2, combined reovery wont work at all
     sweep_schemes = _segmented_sweep_schemes(n_values, strategies)
-    ic(sweep_schemes)
 
     raw_rows, summary_rows = [], []
     for name, n, strategy in sweep_schemes:

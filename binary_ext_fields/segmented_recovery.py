@@ -237,8 +237,15 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     """The actual combined search, extracted so recover_pair_by_combined_search can
     wrap it with the per-pair cache. Pure and deterministic in its inputs."""
     bits_per_symbol = field.bit_lenght
-    bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
     combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
+    # This method only ever recovers DISJOINT errors (module docstring), and a disjoint
+    # split's flipped bits live exactly where the two packets differ -- i.e. where the
+    # combined row is nonzero. Restricting the search to those candidate columns is
+    # behaviour-preserving for every recoverable case, and is what keeps whole-segment
+    # candidate_columns (payload+salt+tags) feasible instead of blowing the budget on
+    # columns that provably can't be part of a disjoint split.
+    diff_columns = [c for c in candidate_columns if combined[c] != 0]
+    bit_positions = _bit_positions_for_columns(diff_columns, bits_per_symbol)
 
     candidates_tried = 0
     for hd in range(1, max_combined_hd + 1):
@@ -269,16 +276,52 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
 
 # ── Unpaired fallback: the existing ADR-0002 single-packet linear solve ─────
 
+def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, trusted_slices: list[bytearray],
+                               candidate_columns: list[int], max_hd: int,
+                               candidates_budget: int | None) -> bytearray | None:
+    """Single-packet analogue of _search_pair_by_combined_search: flip up to `max_hd`
+    bits across `candidate_columns`, accept the first candidate that passes the
+    acceptance oracle (self- AND cross-orthogonal to the trusted pool). Unlike the pair
+    search there is no partner to XOR against, so there is no differing-column shortcut
+    to localize the error -- it searches candidate_columns directly. Budget-bounded for
+    the same reason the pair search is; None on give-up. Callers still hold the HD bound
+    small, which is what keeps a salt/tag flip from silently masking a data error."""
+    bits_per_symbol = field.bit_lenght
+    bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
+    tried = 0
+    for hd in range(1, max_hd + 1):
+        for combo in combinations(bit_positions, hd):
+            if candidates_budget is not None and tried >= candidates_budget:
+                return None
+            tried += 1
+            candidate = _flip_bits(broken_slice, combo, bits_per_symbol)
+            if is_orthogonal_to_trusted(field, candidate, trusted_slices):
+                return candidate
+    return None
+
+
 def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candidate_columns: list[int],
-                              trusted_slices: list[bytearray]) -> bytearray | None:
-    """ADR-0012's fallback for a broken segment with no pairing partner: reuse
-    ADR-0002's linear solve unmodified, since a segment slice has exactly the
-    [payload+salt | tags] shape recover_packet_linear already expects. Returns
-    None if underdetermined or the solved candidate fails the acceptance oracle."""
+                              trusted_slices: list[bytearray], whole_segment_columns: list[int] | None = None,
+                              max_hd: int = 2, candidates_budget: int | None = None) -> bytearray | None:
+    """ADR-0012's fallback for a broken segment with no pairing partner.
+
+    Two-stage, mirroring the whole-packet pipeline (playground/new_recovery.py
+    recover_generation): first ADR-0002's exact linear solve over candidate_columns
+    (cheap and exact when ARC has narrowed the unknown set small enough to be
+    determined, K <= #trusted); if that is underdetermined/rejected, fall back to a
+    bounded whole-segment bit-flip search.
+
+    The fallback is the unpaired analogue of the pair path's whole-segment fix: the
+    linear solve can only ever touch payload columns it was given, so a salt/tag flip
+    -- or a uniform_hd packet whose K exceeds the trusted count -- is unsolvable and
+    used to return None (dropping the packet). The bit-flip search covers the whole
+    segment (payload+salt+tags via whole_segment_columns), bounded by max_hd and
+    candidates_budget. Returns None only if BOTH stages give up."""
     fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
-    if fixed is None:
-        return None
-    return fixed if is_orthogonal_to_trusted(field, fixed, trusted_slices) else None
+    if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices):
+        return fixed
+    cols = whole_segment_columns if whole_segment_columns is not None else candidate_columns
+    return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget)
 
 
 # ── One segment, either strategy ─────────────────────────────────────────────
@@ -319,16 +362,26 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     trust = classify_segment_trust(field, packets, segment)
     plan = plan_pairing(trust)
     trusted_slices = [segment_slice(packets[i], segment) for i in trust.trusted]
-    all_columns = list(range(segment.payload_length))
+    all_columns = list(range(segment.payload_length))  # payload cols for the exact linear solve stage
+    # Pair search covers the WHOLE segment -- payload + salt + tags (ADR-0012 blind-spot
+    # fix). A flip in a salt/tag byte otherwise makes a packet unrepairable, and when
+    # that packet is paired with one carrying a genuinely recoverable payload error, it
+    # drags the recoverable one down too (confirmed: scripts/segmented_inspect_failure.py,
+    # seed 3: coeff payload[3] flip in one packet + tag[2] flip in its partner -> both
+    # dropped, though the payload error alone was HD-1 recoverable). The max_combined_hd
+    # bound keeps this safe: masking a data error by bending redundancy bytes would take
+    # far more than that many flips. The unpaired odd-one-out path below reuses these
+    # same whole-segment columns for its bit-flip fallback stage.
+    pair_columns = list(range(segment.total_length))
 
     pairs_recovered = pairs_failed = unpaired_recovered = unpaired_failed = 0
 
     for pair in plan.pairs:
         cols_a = candidate_columns_for(pair.packet_a)
         cols_b = candidate_columns_for(pair.packet_b)
-        # Either side missing localization -> search the whole payload for the pair,
+        # Either side missing localization -> search the whole segment for the pair,
         # rather than silently narrowing to only the side that did localize.
-        columns = all_columns if (cols_a is None or cols_b is None) else sorted(set(cols_a) | set(cols_b))
+        columns = pair_columns if (cols_a is None or cols_b is None) else sorted(set(cols_a) | set(cols_b))
 
         slice_a = segment_slice(packets[pair.packet_a], segment)
         slice_b = segment_slice(packets[pair.packet_b], segment)
@@ -348,7 +401,13 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         if columns is None:
             columns = all_columns
         broken_slice = segment_slice(packets[unpaired.packet_index], segment)
-        fixed = recover_unpaired_segment(field, broken_slice, columns, trusted_slices)
+        # Linear solve over `columns` (ARC-narrowed payload if available), then a
+        # bounded whole-segment bit-flip fallback so an unpaired salt/tag flip -- or a
+        # uniform_hd packet the solve can't determine -- is still recoverable instead
+        # of dropped (mirrors the pair path's whole-segment fix).
+        fixed = recover_unpaired_segment(field, broken_slice, columns, trusted_slices,
+                                         whole_segment_columns=pair_columns,
+                                         max_hd=max_combined_hd, candidates_budget=candidates_budget)
 
         if fixed is not None:
             _write_segment(packets[unpaired.packet_index], segment, fixed)

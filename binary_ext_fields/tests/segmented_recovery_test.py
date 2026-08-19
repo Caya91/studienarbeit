@@ -37,6 +37,45 @@ from binary_ext_fields.segmented_recovery import (
 from playground.arc_pl import error_into_packet_chosen_bit
 
 
+# ── Read-along print helpers ─────────────────────────────────────────────────
+# These exist purely so a human running the test can *see* what happens to the
+# packets: the bytes before corruption, exactly where a bit was flipped, and
+# what recovery gave back. They do no work the assertions depend on.
+
+def _hex(buf):
+    """A byte buffer as space-separated 2-digit hex, e.g. '0a ff 00'."""
+    return " ".join(f"{b:02x}" for b in buf)
+
+
+def _seg_slice(packet, segment):
+    """The bytes of one segment (payload+salt+tag) out of a full packet."""
+    return packet[segment.start:segment.start + segment.total_length]
+
+
+def _show_segment(label, packets, segment, indices=None):
+    """Print the chosen segment of each packet so its contents are visible."""
+    indices = range(len(packets)) if indices is None else indices
+    print(f"    {label} -- segment {segment.name!r} "
+          f"(start={segment.start}, payload_length={segment.payload_length}):")
+    for i in indices:
+        print(f"      packet[{i}]: {_hex(_seg_slice(packets[i], segment))}")
+
+
+def _show_diff(label, before, after):
+    """Print two byte buffers and mark the columns that differ."""
+    # Each byte is 2 hex chars + 1 separating space -> a 3-char column; put the
+    # "^^" under the byte itself (first two chars), keeping every column aligned.
+    marks = "".join("^^ " if x != y else "   " for x, y in zip(before, after))
+    print(f"    {label}:")
+    print(f"      before: {_hex(before)}")
+    print(f"      after:  {_hex(after)}")
+    print(f"              {marks.rstrip()}")
+
+
+def _banner(name):
+    print(f"\n=== {name} ===")
+
+
 def _random_data_rows(field, data_fields, gen_size):
     return [
         bytearray(random.randint(0, field.max_value) for _ in range(data_fields))
@@ -63,14 +102,21 @@ NUM_DATA_SEGMENTS = 3
 def test_classify_segment_trust_marks_only_the_corrupted_packet_broken():
     '''A single corrupted packet fails its own self-check; everyone else, still
     pairwise cross-orthogonal, is trusted.'''
+    _banner("classify_segment_trust: one corrupt packet, rest trusted")
     random.seed(10)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-1")
+    print(f"  built {GEN_SIZE} tagged packets; watching segment {segment.name!r}")
+    _show_segment("clean pool", result.packets, segment)
 
     packets = [bytearray(p) for p in result.packets]
+    before = _seg_slice(packets[2], segment)
     packets[2] = error_into_packet_chosen_bit(packets[2], segment.start, chosen_bit=1)
+    print("  flipping bit 1 of segment column 0 in packet[2]:")
+    _show_diff("packet[2] segment", before, _seg_slice(packets[2], segment))
 
     trust = classify_segment_trust(FIELD, packets, segment)
+    print(f"  -> classified broken={trust.broken}, trusted={trust.trusted}")
 
     assert trust.broken == [2]
     assert trust.trusted == [0, 1, 3]
@@ -80,8 +126,12 @@ def test_plan_pairing_pairs_fifo_and_leaves_odd_one_out():
     '''Pure unit test of the pairing rule: ascending index, pairs of two, last
     leftover (if any) becomes the unpaired fallback case. No field/tagging
     needed -- this only exercises the FIFO grouping logic.'''
+    _banner("plan_pairing: FIFO pairs, odd one left over")
     even = SegmentTrust(segment_name="data-0", broken=[5, 1, 3, 0], trusted=[])
+    print(f"  broken (as given): {even.broken}  -> sorted, paired two-by-two")
     plan = plan_pairing(even)
+    print(f"  pairs:    {[(p.packet_a, p.packet_b) for p in plan.pairs]}")
+    print(f"  unpaired: {[u.packet_index for u in plan.unpaired]}")
     assert plan.pairs == [
         SegmentPair("data-0", 0, 1),
         SegmentPair("data-0", 3, 5),
@@ -89,7 +139,10 @@ def test_plan_pairing_pairs_fifo_and_leaves_odd_one_out():
     assert plan.unpaired == []
 
     odd = SegmentTrust(segment_name="data-0", broken=[4, 0, 2], trusted=[])
+    print(f"  broken (odd count): {odd.broken}  -> one packet has no partner")
     plan = plan_pairing(odd)
+    print(f"  pairs:    {[(p.packet_a, p.packet_b) for p in plan.pairs]}")
+    print(f"  unpaired: {[u.packet_index for u in plan.unpaired]}  (falls back to linear solve)")
     assert [(p.packet_a, p.packet_b) for p in plan.pairs] == [(0, 2)]
     assert [(u.packet_index) for u in plan.unpaired] == [4]
 
@@ -98,6 +151,7 @@ def test_recover_pair_by_combined_search_fixes_two_disjoint_single_bit_errors():
     '''The core mechanism, exercised directly (not through the full pipeline):
     two packets broken at different columns of the same segment, each by one
     flipped bit. The combined search must recover BOTH exactly, byte-for-byte.'''
+    _banner("recover_pair_by_combined_search: two disjoint single-bit errors")
     random.seed(11)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-0")
@@ -106,10 +160,18 @@ def test_recover_pair_by_combined_search_fixes_two_disjoint_single_bit_errors():
 
     broken_a = error_into_packet_chosen_bit(original_a, 0, chosen_bit=2)
     broken_b = error_into_packet_chosen_bit(original_b, 1, chosen_bit=6)
+    print("  packet a broken at column 0 bit 2; packet b broken at column 1 bit 6 (disjoint):")
+    _show_diff("packet a segment", original_a, broken_a)
+    _show_diff("packet b segment", original_b, broken_b)
     trusted_slices = [result.packets[i][segment.start:segment.start + segment.total_length] for i in (2, 3)]
 
     columns = list(range(segment.payload_length))
+    print(f"  searching columns {columns} with max_combined_hd=2 against 2 trusted rows...")
     out = recover_pair_by_combined_search(FIELD, broken_a, broken_b, trusted_slices, columns, max_combined_hd=2)
+    print(f"  -> ok={out.ok}")
+    if out.ok:
+        print(f"     fixed a matches original: {out.fixed_a == original_a}  ({_hex(out.fixed_a)})")
+        print(f"     fixed b matches original: {out.fixed_b == original_b}  ({_hex(out.fixed_b)})")
 
     assert out.ok, "expected the disjoint two-error pair to be recoverable"
     assert out.fixed_a == original_a
@@ -119,6 +181,7 @@ def test_recover_pair_by_combined_search_fixes_two_disjoint_single_bit_errors():
 def test_recover_pair_by_combined_search_gives_up_within_budget_not_forever():
     '''A combined weight-2 correction needs max_combined_hd >= 2; capped at 1 it
     must report ok=False (an honest budget give-up), not loop or crash.'''
+    _banner("recover_pair_by_combined_search: honest give-up under budget")
     random.seed(12)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-0")
@@ -130,7 +193,9 @@ def test_recover_pair_by_combined_search_gives_up_within_budget_not_forever():
     trusted_slices = [result.packets[i][segment.start:segment.start + segment.total_length] for i in (2, 3)]
 
     columns = list(range(segment.payload_length))
+    print("  same weight-2 pair as before, but capping max_combined_hd=1 (too small):")
     out = recover_pair_by_combined_search(FIELD, broken_a, broken_b, trusted_slices, columns, max_combined_hd=1)
+    print(f"  -> ok={out.ok}, fixed_a={out.fixed_a}, fixed_b={out.fixed_b}  (budget exhausted, no guess)")
 
     assert out.ok is False
     assert out.fixed_a is None and out.fixed_b is None
@@ -140,6 +205,7 @@ def test_recover_uniform_hd_repairs_two_broken_packets_in_a_data_segment():
     '''Full pipeline (Option 1): two packets broken in the same data segment at
     disjoint columns must both come back byte-for-byte identical to the
     original clean generation, and the whole pool must check out afterwards.'''
+    _banner("recover_uniform_hd: full pipeline repairs a data segment")
     random.seed(13)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     original = [bytearray(p) for p in result.packets]
@@ -148,13 +214,21 @@ def test_recover_uniform_hd_repairs_two_broken_packets_in_a_data_segment():
     broken = [bytearray(p) for p in result.packets]
     broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=2)
     broken[2] = error_into_packet_chosen_bit(broken[2], segment.start + 1, chosen_bit=5)
-    assert check_orth_segmented(FIELD, broken, result.segments)["data-1"] is False
+    print("  corrupting packet[0] (col 0) and packet[2] (col 1) in segment 'data-1':")
+    _show_segment("broken pool", broken, segment)
+    orth_ok = check_orth_segmented(FIELD, broken, result.segments)["data-1"]
+    print(f"  orthogonality check for 'data-1' now: {orth_ok}  (False = corruption detected)")
+    assert orth_ok is False
 
+    print("  running recover_uniform_hd(max_combined_hd=2)...")
     report = recover_uniform_hd(FIELD, broken, result.segments, max_combined_hd=2)
+    outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
+    print(f"  -> ok={report.ok}, packets restored to original: {report.packets == original}")
+    print(f"     'data-1' outcome: pairs_recovered={outcome.pairs_recovered}, "
+          f"pairs_failed={outcome.pairs_failed}")
 
     assert report.ok is True
     assert report.packets == original
-    outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
     assert outcome.pairs_recovered == 1
     assert outcome.pairs_failed == 0
 
@@ -165,6 +239,7 @@ def test_recover_uniform_hd_repairs_coefficient_segment_corruption():
     documented "intrinsic blind spot"). Here, corrupting TWO packets' coeff
     segments must still recover exactly, via the exact same pairing/search
     mechanism used for any data segment -- no special-casing needed.'''
+    _banner("recover_uniform_hd: repairs the COEFFICIENT segment (ADR-0012 gap)")
     random.seed(14)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     original = [bytearray(p) for p in result.packets]
@@ -173,8 +248,12 @@ def test_recover_uniform_hd_repairs_coefficient_segment_corruption():
     broken = [bytearray(p) for p in result.packets]
     broken[1] = error_into_packet_chosen_bit(broken[1], segment.start, chosen_bit=1)
     broken[3] = error_into_packet_chosen_bit(broken[3], segment.start + 2, chosen_bit=4)
+    print("  corrupting the coeff block of packet[1] (col 0) and packet[3] (col 2)")
+    print("  -- the whole-packet ARC scheme's documented blind spot:")
+    _show_segment("broken pool", broken, segment)
 
     report = recover_uniform_hd(FIELD, broken, result.segments, max_combined_hd=2)
+    print(f"  -> ok={report.ok}, coeff block restored to original: {report.packets == original}")
 
     assert report.ok is True
     assert report.packets == original
@@ -184,6 +263,7 @@ def test_recover_uniform_hd_single_broken_packet_uses_unpaired_fallback():
     '''One broken packet has no pairing partner: plan_pairing must route it to
     the ADR-0002 linear solve, and (with enough trusted rows to fully determine
     the K=payload_length unknowns) recover it exactly.'''
+    _banner("recover_uniform_hd: lone broken packet uses linear-solve fallback")
     random.seed(15)
     field = create_field(8)
     gen_size = 6
@@ -193,15 +273,21 @@ def test_recover_uniform_hd_single_broken_packet_uses_unpaired_fallback():
     result = _build_tagged_pool(field, gen_size, data_fields, num_data_segments)
     original = [bytearray(p) for p in result.packets]
     segment = next(s for s in result.segments if s.kind == "data")
+    print(f"  gen_size={gen_size}, single data segment {segment.name!r} of length {segment.payload_length}")
 
     broken = [bytearray(p) for p in result.packets]
+    before = _seg_slice(broken[0], segment)
     broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=3)
+    print("  only packet[0] corrupted -> no pairing partner -> ADR-0002 linear solve:")
+    _show_diff("packet[0] segment", before, _seg_slice(broken[0], segment))
 
     report = recover_uniform_hd(field, broken, result.segments, max_combined_hd=2)
+    outcome = next(o for o in report.per_segment if o.segment_name == segment.name)
+    print(f"  -> ok={report.ok}, restored: {report.packets == original}, "
+          f"unpaired_recovered={outcome.unpaired_recovered}, pairs_recovered={outcome.pairs_recovered}")
 
     assert report.ok is True
     assert report.packets == original
-    outcome = next(o for o in report.per_segment if o.segment_name == segment.name)
     assert outcome.unpaired_recovered == 1
     assert outcome.pairs_recovered == 0
 
@@ -213,6 +299,7 @@ def test_recover_uniform_hd_cannot_split_overlapping_errors():
     (now zero-weight, at that position) combined delta can separate them.
     This must fail honestly -- reported as a failed pair, ok=False -- not
     silently produce a wrong "fix".'''
+    _banner("recover_uniform_hd: overlapping errors fail HONESTLY (known limit)")
     random.seed(16)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-1")
@@ -220,11 +307,16 @@ def test_recover_uniform_hd_cannot_split_overlapping_errors():
     broken = [bytearray(p) for p in result.packets]
     broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=2)
     broken[2] = error_into_packet_chosen_bit(broken[2], segment.start, chosen_bit=2)  # identical column+bit
+    print("  packet[0] and packet[2] flipped at the SAME column 0, SAME bit 2:")
+    _show_segment("broken pool", broken, segment, indices=[0, 2])
+    print("  the two flips cancel in the XOR-combined row -> cannot be split")
 
     report = recover_uniform_hd(FIELD, broken, result.segments, max_combined_hd=2)
+    outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
+    print(f"  -> ok={report.ok} (expected False), "
+          f"pairs_failed={outcome.pairs_failed}, pairs_recovered={outcome.pairs_recovered}")
 
     assert report.ok is False
-    outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
     assert outcome.pairs_failed == 1
     assert outcome.pairs_recovered == 0
 
@@ -241,6 +333,7 @@ def test_arc_localizer_narrows_to_the_true_corrupted_column_given_a_full_rank_ba
     gen_size trusted basis with identity coefficients, and a 5th packet coded
     with different (recoded) coefficients and one corrupted data byte.
     '''
+    _banner("_make_arc_localizer: narrows to the true corrupted column")
     random.seed(17)
     field = create_field(8)
     gen_size = 4
@@ -265,14 +358,19 @@ def test_arc_localizer_narrows_to_the_true_corrupted_column_given_a_full_rank_ba
     broken_data = bytearray(true_data)
     broken_data[2] ^= 0x04
     packets.append(synthetic_packet(recode_coeffs, broken_data))
+    print(f"  {gen_size} identity-coded trusted packets + 1 recoded 5th packet")
+    print("  corrupting data column 2 of the 5th (recoded) packet:")
+    _show_diff("packet[4] data", true_data, broken_data)
 
     localizer = _make_arc_localizer(
         field, packets, coeff_segment, data_segment, gen_size,
         coeff_trusted_idx=[0, 1, 2, 3, 4],  # coefficients are clean on every packet, including the broken one
         data_trusted_idx=[0, 1, 2, 3],
     )
+    located = localizer(4)
+    print(f"  -> localizer(4) = {located}  (expected [2], the true corrupted column)")
 
-    assert localizer(4) == [2]
+    assert located == [2]
 
 
 def test_recover_coefficient_first_falls_back_when_pool_has_no_recoding_headroom_yet():
@@ -289,6 +387,7 @@ def test_recover_coefficient_first_falls_back_when_pool_has_no_recoding_headroom
     for the realistic case (a receiver almost always has more than gen_size
     packets on hand by the time recovery runs, per the real send-until-decoded
     network/sim behaviour), where narrowing does engage.'''
+    _banner("recover_coefficient_first: no recoding headroom -> ARC falls back")
     random.seed(18)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     original = [bytearray(p) for p in result.packets]
@@ -300,12 +399,16 @@ def test_recover_coefficient_first_falls_back_when_pool_has_no_recoding_headroom
     broken[2] = error_into_packet_chosen_bit(broken[2], coeff_segment.start + 2, chosen_bit=3)
     broken[1] = error_into_packet_chosen_bit(broken[1], data_segment.start, chosen_bit=5)
     broken[3] = error_into_packet_chosen_bit(broken[3], data_segment.start + 1, chosen_bit=6)
+    print(f"  bare {GEN_SIZE}-packet pool (no recoded spares): coeff broken on [0,2], data on [1,3]")
+    print("  -> no spare packet for an ARC basis; localizer returns None, combined-search fallback runs")
 
     report = recover_coefficient_first(FIELD, broken, result.segments, GEN_SIZE, max_combined_hd=2)
+    coeff_outcome = next(o for o in report.per_segment if o.segment_name == "coeff")
+    print(f"  -> ok={report.ok}, restored: {report.packets == original}, "
+          f"coeff pairs_recovered={coeff_outcome.pairs_recovered}")
 
     assert report.ok is True
     assert report.packets == original
-    coeff_outcome = next(o for o in report.per_segment if o.segment_name == "coeff")
     assert coeff_outcome.pairs_recovered == 1
 
 
@@ -321,12 +424,16 @@ def test_recover_coefficient_first_narrows_via_arc_once_recoded_packets_have_acc
     special-casing needed. With that headroom, ARC narrowing must actually
     engage and pin each broken packet down to its true, single corrupted
     column -- not just fall back to a full-payload search.'''
+    _banner("recover_coefficient_first: ARC narrowing engages with recoded spares")
     random.seed(19)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     recoded = recode_rlnc_without_coeffs(FIELD, result.packets, GEN_SIZE, count=5)
     pool = [bytearray(p) for p in result.packets] + [bytearray(p) for p in recoded]
     original = [bytearray(p) for p in pool]
-    assert all(check_orth_segmented(FIELD, pool, result.segments).values()), (
+    print(f"  pool = {GEN_SIZE} originals + {len(recoded)} recoded = {len(pool)} packets (realistic receiver state)")
+    orth = check_orth_segmented(FIELD, pool, result.segments)
+    print(f"  every segment orthogonal before corruption: {all(orth.values())}  ({orth})")
+    assert all(orth.values()), (
         "recoded packets must stay orthogonal in every segment before any corruption"
     )
 
@@ -352,10 +459,13 @@ def test_recover_coefficient_first_narrows_via_arc_once_recoded_packets_have_acc
     localizer = _make_arc_localizer(
         FIELD, coeff_fixed_probe, coeff_segment, data_segment, GEN_SIZE, coeff_trust.trusted, data_trust.trusted,
     )
-    assert localizer(2) == [0], "ARC should pin packet 2's error to exactly its true corrupted column"
-    assert localizer(3) == [1], "ARC should pin packet 3's error to exactly its true corrupted column"
+    loc2, loc3 = localizer(2), localizer(3)
+    print(f"  ARC localizer(2) = {loc2} (expect [0]); localizer(3) = {loc3} (expect [1])")
+    assert loc2 == [0], "ARC should pin packet 2's error to exactly its true corrupted column"
+    assert loc3 == [1], "ARC should pin packet 3's error to exactly its true corrupted column"
 
     report = recover_coefficient_first(FIELD, broken, result.segments, GEN_SIZE, max_combined_hd=2)
+    print(f"  -> ok={report.ok}, whole {len(pool)}-packet pool restored: {report.packets == original}")
 
     assert report.ok is True
     assert report.packets == original
@@ -387,19 +497,23 @@ def test_pair_cache_skips_the_search_on_an_unchanged_failed_pair():
     '''Second call with the same inputs and the same cache returns the identical
     give-up result and spends ZERO additional field multiplications -- the pair
     is not re-searched.'''
+    _banner("pair_cache: unchanged failed pair is not re-searched")
     broken_a, broken_b, trusted, columns = _failed_pair_inputs(20)
     cnt = CountingField(FIELD)
     cache = {}
 
     first = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
                                             max_combined_hd=1, candidates_budget=10_000, pair_cache=cache)
-    assert first.ok is False
     muls_after_first = cnt.mul_count
+    print(f"  first call:  ok={first.ok}, field muls spent={muls_after_first}, cache entries={len(cache)}")
+    assert first.ok is False
     assert muls_after_first > 0, "the first search must actually do field work"
     assert len(cache) == 1
 
     second = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
                                              max_combined_hd=1, candidates_budget=10_000, pair_cache=cache)
+    print(f"  second call: same result={second == first}, "
+          f"total muls now={cnt.mul_count} (should equal {muls_after_first}, i.e. +0)")
     assert second == first
     assert cnt.mul_count == muls_after_first, "a cache hit must not re-spend any field ops"
 
@@ -407,6 +521,7 @@ def test_pair_cache_skips_the_search_on_an_unchanged_failed_pair():
 def test_pair_cache_reuses_a_successful_repair_without_researching():
     '''A recoverable disjoint pair is searched once; the cached hit returns the
     same byte-for-byte fix with no further field ops.'''
+    _banner("pair_cache: successful repair reused without re-searching")
     random.seed(21)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-0")
@@ -421,11 +536,14 @@ def test_pair_cache_reuses_a_successful_repair_without_researching():
     cache = {}
     first = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
                                             max_combined_hd=2, pair_cache=cache)
-    assert first.ok and first.fixed_a == original_a and first.fixed_b == original_b
     muls_after_first = cnt.mul_count
+    print(f"  first call:  ok={first.ok}, exact fix={first.fixed_a == original_a and first.fixed_b == original_b}, "
+          f"muls spent={muls_after_first}")
+    assert first.ok and first.fixed_a == original_a and first.fixed_b == original_b
 
     second = recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
                                              max_combined_hd=2, pair_cache=cache)
+    print(f"  second call: same result={second == first}, total muls now={cnt.mul_count} (should be +0)")
     assert second == first
     assert cnt.mul_count == muls_after_first, "a cache hit must not re-spend any field ops"
 
@@ -433,6 +551,7 @@ def test_pair_cache_reuses_a_successful_repair_without_researching():
 def test_pair_cache_miss_when_the_trusted_set_changes():
     '''Changing the trusted set changes the key -- the pair is genuinely
     re-searched (new field ops, a second cache entry), never a stale hit.'''
+    _banner("pair_cache: changed trusted set forces a fresh search")
     broken_a, broken_b, trusted, columns = _failed_pair_inputs(22)
     cnt = CountingField(FIELD)
     cache = {}
@@ -440,9 +559,12 @@ def test_pair_cache_miss_when_the_trusted_set_changes():
     recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted, columns,
                                     max_combined_hd=1, pair_cache=cache)
     muls_after_first = cnt.mul_count
+    print(f"  first call (2 trusted rows): muls spent={muls_after_first}, cache entries={len(cache)}")
 
     recover_pair_by_combined_search(cnt, broken_a, broken_b, trusted[:1], columns,
                                     max_combined_hd=1, pair_cache=cache)
+    print(f"  second call (1 trusted row): total muls now={cnt.mul_count} (> {muls_after_first}), "
+          f"cache entries={len(cache)} (a new key)")
     assert cnt.mul_count > muls_after_first, "a changed trusted set must force a fresh search"
     assert len(cache) == 2
 
@@ -451,6 +573,7 @@ def test_pair_cache_does_not_change_recovery_output():
     '''End-to-end: recover_uniform_hd with a cache produces exactly the same
     repaired packets and per-segment outcome as without one -- the cache is a
     pure speed-up, never a behaviour change.'''
+    _banner("pair_cache: cache never changes recovery output (pure speed-up)")
     random.seed(23)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
     segment = next(s for s in result.segments if s.name == "data-1")
@@ -463,6 +586,9 @@ def test_pair_cache_does_not_change_recovery_output():
 
     uncached = recover_uniform_hd(FIELD, broken_pool(), result.segments, max_combined_hd=2)
     cached = recover_uniform_hd(FIELD, broken_pool(), result.segments, max_combined_hd=2, pair_cache={})
+    print(f"  ok:          uncached={uncached.ok}, cached={cached.ok}  (match: {uncached.ok == cached.ok})")
+    print(f"  packets:     identical={cached.packets == uncached.packets}")
+    print(f"  per_segment: identical={cached.per_segment == uncached.per_segment}")
 
     assert cached.ok == uncached.ok
     assert cached.packets == uncached.packets
