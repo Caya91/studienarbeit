@@ -326,13 +326,30 @@ SEGMENTED_STRATEGY_COLORS = {"orthogonal": SCHEME_COLORS["orthogonal"],
                              # keyed homomorphic-MAC benchmark arm (its own strategy labels)
                              "mac_uniform_hd": "#8338ec", "mac_coefficient_first": "#fb8500"}
 
+# CRC baseline arms folded into the segmented sweep so CRC overhead + recovery sit on
+# the SAME axes as the segmented scheme (the user's compare-CRC-to-segmented ask). Both
+# flow through run_recovery_trial unchanged -- like orthogonal they are non-segmented
+# (N=1) reference arms, not (N, strategy) grid points, so the plotter draws them as
+# flat lines keyed by scheme name (see _flat_reference_schemes / _plot_by_n_strategy).
+SEGMENTED_CRC_SCHEMES = ("crc_localized", "crc_whole")
+# Colour + legend label for every flat (N=1) reference arm the segmented plots draw.
+FLAT_ARM_COLOR = {"orthogonal": SEGMENTED_STRATEGY_COLORS["orthogonal"],
+                  "crc_localized": SCHEME_COLORS["crc_localized"],
+                  "crc_whole": SCHEME_COLORS["crc_whole"]}
+FLAT_ARM_LABEL = {"orthogonal": "orthogonal (N=1)",
+                  "crc_localized": "CRC (localized)", "crc_whole": "CRC (whole-packet)"}
+FLAT_ARM_MARKER = {"orthogonal": "o", "crc_localized": "^", "crc_whole": "D"}
+
 
 def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
-                             mac_strategies=MAC_STRATEGIES):
-    """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline plus every
-    (N, strategy) combination in the segmented sweep -- the keyless orthogonal arm
-    AND the keyed homomorphic-MAC benchmark arm (strategy label prefixed 'mac_')."""
+                             mac_strategies=MAC_STRATEGIES, crc_schemes=SEGMENTED_CRC_SCHEMES):
+    """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline, the CRC
+    baseline arms, plus every (N, strategy) combination in the segmented sweep -- the
+    keyless orthogonal arm AND the keyed homomorphic-MAC benchmark arm (strategy label
+    prefixed 'mac_'). CRC arms are non-segmented references: N=1, strategy == scheme
+    name, so the (N, strategy) plot loop skips them and they draw as flat lines."""
     rows = [("orthogonal", 1, "orthogonal")]
+    rows += [(name, 1, name) for name in crc_schemes]
     for n in n_values:
         for strategy in strategies:
             rows.append((f"segmented_{strategy}_n{n}", n, strategy))
@@ -344,7 +361,7 @@ def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_S
 def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMENTED_DATA_FIELDS,
                           num_trials=SEGMENTED_NUM_TRIALS, bit_error_rates=SEGMENTED_BIT_ERROR_RATES,
                           n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
-                          mac_strategies=MAC_STRATEGIES,
+                          mac_strategies=MAC_STRATEGIES, crc_schemes=SEGMENTED_CRC_SCHEMES,
                           max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR,
                           cell_time_budget_s=SEGMENTED_CELL_TIME_BUDGET_S) -> Path:
     """N x BER sweep for the segmented scheme (ADR-0012), against the N=1 orthogonal
@@ -361,7 +378,7 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
     base_field = create_field(field_m)
     cfg = AdmitConfig(hamming_distance=2) # if this is less than 2, combined reovery wont work at all
-    sweep_schemes = _segmented_sweep_schemes(n_values, strategies, mac_strategies)
+    sweep_schemes = _segmented_sweep_schemes(n_values, strategies, mac_strategies, crc_schemes)
     # strategy labels to draw one line each (orthogonal baseline is drawn separately)
     plot_strategies = list(strategies) + [f"mac_{s}" for s in mac_strategies]
 
@@ -627,14 +644,22 @@ def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, outp
     dropped from that line rather than plotted as a gap."""
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    baseline_points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
-                             if row["n"] == 1 and not np.isnan(row[metric]))
-    if baseline_points:
-        xs = [p[0] for p in baseline_points]
-        ys = [p[1] for p in baseline_points]
-        ax.plot(xs, ys, SEGMENTED_N_LINESTYLE.get(1, "-"), marker="o",
-                color=SEGMENTED_STRATEGY_COLORS["orthogonal"], linewidth=2, markersize=6,
-                label="orthogonal (N=1)")
+    # Flat (non-segmented, N=1) reference arms -- orthogonal + the CRC baselines -- each
+    # drawn as its own solid line keyed by scheme, so CRC recovery/overhead sits on the
+    # same axes as the segmented (N, strategy) lines below. Draw in registration order.
+    flat_schemes = [s for s in ("orthogonal",) + tuple(SEGMENTED_CRC_SCHEMES)
+                    if any(row["scheme"] == s and row["n"] == 1 for row in summary_rows)]
+    for scheme in flat_schemes:
+        points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
+                        if row["scheme"] == scheme and not np.isnan(row[metric]))
+        if not points:
+            continue
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        ax.plot(xs, ys, "-", marker=FLAT_ARM_MARKER.get(scheme, "o"),
+                color=FLAT_ARM_COLOR.get(scheme), linewidth=2, markersize=6,
+                markerfacecolor="none" if scheme != "orthogonal" else FLAT_ARM_COLOR.get(scheme),
+                markeredgewidth=1.6, label=FLAT_ARM_LABEL.get(scheme, scheme))
 
     for strategy in strategies:
         for n in n_values:
