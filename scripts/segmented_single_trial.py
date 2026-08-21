@@ -27,10 +27,18 @@ def main() -> None:
                    help=f"one of: {', '.join(k for k in SCHEMES if 'segmented' in k)} (or orthogonal baseline)")
     p.add_argument("--ber", type=float, default=5e-4)
     p.add_argument("--repeat", type=int, default=1, help="run N trials and show each + a mean")
+    p.add_argument("--hd", type=int, default=2,
+                   help="max combined Hamming distance the repair searches (cfg.hamming_distance); "
+                        "<2 disables combined recovery, higher recovers more at higher cost")
+    p.add_argument("--budget", type=int, default=None,
+                   help="per-pair combined-search candidate cap (cfg.pair_budget); default = AdmitConfig's. "
+                        "Must scale with --hd, or higher-HD corrections past the cap are wasted search")
     args = p.parse_args()
 
     base_field = create_field(FIELD_M)
-    cfg = AdmitConfig(hamming_distance=2)  # matches run_segmented_n_sweep; <2 disables combined recovery
+    cfg = AdmitConfig(hamming_distance=args.hd)  # matches run_segmented_n_sweep at hd=2
+    if args.budget is not None:
+        cfg.pair_budget = args.budget
     scheme = SCHEMES[args.scheme]
 
     keys = ("wall_time_s", "correct", "decoded", "silent_decode", "overhead",
@@ -41,8 +49,8 @@ def main() -> None:
                                max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR)
         d = asdict(r)
         rows.append(d)
-        print(f"\n--- trial {i} (scheme={args.scheme} BER={args.ber:g} "
-              f"gen_size={GEN_SIZE} data_fields={SEGMENTED_DATA_FIELDS}) ---")
+        print(f"\n--- trial {i} (scheme={args.scheme} BER={args.ber:g} hd={args.hd} "
+              f"budget={cfg.pair_budget} gen_size={GEN_SIZE} data_fields={SEGMENTED_DATA_FIELDS}) ---")
         for k in keys:
             print(f"  {k:18} {d[k]}")
 

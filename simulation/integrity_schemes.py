@@ -74,6 +74,10 @@ class AdmitConfig:
     min_trust_count: int = 4
     min_pool_size: int = 10
     decode_verify_count: int = 2      # ADR default V=2 (silent-decode fix)
+    # Segmented scheme only (ADR-0012): per-pair combined-search candidate cap. Must
+    # scale WITH hamming_distance -- a higher HD whose corrections sit past this budget
+    # is pure wasted search (measured: HD3 at 100k = same recovery as HD2, 4.4x wall).
+    pair_budget: int = SEGMENTED_PAIR_BUDGET
 
 
 # ── Native op-count instruments ───────────────────────────────────────────────
@@ -454,12 +458,12 @@ class SegmentedScheme(IntegrityScheme):
 
         if self.strategy == "uniform_hd":
             report = recover_uniform_hd(field, wire_pool, segments, max_combined_hd=cfg.hamming_distance,
-                                        candidates_budget=SEGMENTED_PAIR_BUDGET,
+                                        candidates_budget=cfg.pair_budget,
                                         pair_cache=instrument.pair_cache)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,
-                                               candidates_budget=SEGMENTED_PAIR_BUDGET,
+                                               candidates_budget=cfg.pair_budget,
                                                pair_cache=instrument.pair_cache)
 
         for outcome in report.per_segment:

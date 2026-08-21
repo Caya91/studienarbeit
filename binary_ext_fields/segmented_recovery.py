@@ -237,15 +237,8 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     """The actual combined search, extracted so recover_pair_by_combined_search can
     wrap it with the per-pair cache. Pure and deterministic in its inputs."""
     bits_per_symbol = field.bit_lenght
+    bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
     combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
-    # This method only ever recovers DISJOINT errors (module docstring), and a disjoint
-    # split's flipped bits live exactly where the two packets differ -- i.e. where the
-    # combined row is nonzero. Restricting the search to those candidate columns is
-    # behaviour-preserving for every recoverable case, and is what keeps whole-segment
-    # candidate_columns (payload+salt+tags) feasible instead of blowing the budget on
-    # columns that provably can't be part of a disjoint split.
-    diff_columns = [c for c in candidate_columns if combined[c] != 0]
-    bit_positions = _bit_positions_for_columns(diff_columns, bits_per_symbol)
 
     candidates_tried = 0
     for hd in range(1, max_combined_hd + 1):

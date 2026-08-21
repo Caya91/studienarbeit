@@ -95,8 +95,8 @@ def _render_pair(field, rec, payload_len, segs):
     seg = rec["segment"]
     pa, pb = rec["pair"].packet_a, rec["pair"].packet_b
     print(f"\n  FAILED pair: segment={seg.name!r}  packets ({pa}, {pb})")
-    print(f"    columns searched : {rec['columns']}  (payload_len={payload_len}; "
-          f"salt+tag columns NOT searched)")
+    print(f"    columns searched : {rec['columns']}  "
+          f"({len(rec['columns'])} cols; payload=0..{payload_len - 1}, then salt+tag = whole segment)")
     print(f"    trusted refs      : {rec['trusted_n']}   hd_found={rec['hd_found']}   "
           f"candidates_tried={rec['candidates_tried']}")
     # Ground truth: where did pollution actually flip bytes in each packet?
@@ -119,10 +119,18 @@ def main() -> None:
     p.add_argument("--ber", type=float, default=5e-4)
     p.add_argument("--seed", type=int, default=None, help="fix the trial; omit to scan for a failing one")
     p.add_argument("--max-seeds", type=int, default=200)
+    p.add_argument("--hd", type=int, default=2,
+                   help="max combined Hamming distance the repair searches (cfg.hamming_distance); "
+                        "raise to recover higher-HD errors at higher search cost")
+    p.add_argument("--budget", type=int, default=None,
+                   help="per-pair combined-search candidate cap (cfg.pair_budget); default = AdmitConfig's. "
+                        "A higher --hd needs a higher budget or its corrections sit past the cap (wasted)")
     args = p.parse_args()
 
     base_field = create_field(FIELD_M)
-    cfg = AdmitConfig(hamming_distance=2)
+    cfg = AdmitConfig(hamming_distance=args.hd)
+    if args.budget is not None:
+        cfg.pair_budget = args.budget
     scheme = SCHEMES[args.scheme]
 
     sr.repair_segment = _repair_wrap
@@ -143,8 +151,8 @@ def main() -> None:
         sr.recover_pair_by_combined_search = _orig_search
         scs.pollute_generation = _orig_pollute
 
-    print(f"=== seed={seed} scheme={args.scheme} BER={args.ber:g} "
-          f"gen_size={GEN_SIZE} data_fields={SEGMENTED_DATA_FIELDS} ===")
+    print(f"=== seed={seed} scheme={args.scheme} BER={args.ber:g} hd={args.hd} "
+          f"budget={cfg.pair_budget} gen_size={GEN_SIZE} data_fields={SEGMENTED_DATA_FIELDS} ===")
     print(f"  status={r.status} correct={r.correct} overhead={r.overhead} "
           f"pairs_recovered={r.pairs_recovered} pairs_failed={r.pairs_failed}")
     if not _captured:
