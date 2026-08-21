@@ -1,0 +1,336 @@
+"""
+Combined Recovery for the segmented homomorphic-MAC benchmark arm
+(Fathi & Pahlevani; ADR-0012's deferred benchmark MAC arm).
+
+segmented_mac_tagging.py builds and verifies the MAC segments; this module
+repairs them. It mirrors segmented_recovery.py 1:1 -- same pairing + combined
+search machinery, same two strategies -- so the MAC arm and the orthogonal arm
+differ ONLY in the tag/oracle, never in the recovery structure:
+
+- recover_uniform_hd_mac (Option 1): every segment repaired the same way,
+  combined search over the whole segment, no ARC.
+- recover_coefficient_first_mac (Option 2): repair the coeff-segment first, then
+  use the now-trusted coefficients to ARC-localize (localize_errors) each
+  data-segment's candidate columns before repairing -- the exact same
+  _make_arc_localizer glue the orthogonal arm uses.
+
+The decisive difference from the orthogonal arm (segmented_recovery.py): here the
+tag is a linear MAC with ONE fixed key vector per symbol, so the paper's literal
+trick ports verbatim. The XOR-combined row's tag Tc = T1 XOR T2 is a real,
+verifiable tag, and verification is SELF-SUFFICIENT: a slice is trusted iff its
+own MAC tag recomputes to its transmitted tag (mac_verify_segment). There is NO
+trusted pool, NO cross-check, and NO mutual-orthogonality test between the two
+split halves -- each half is accepted on its own MAC alone.
+
+Combined filter (the paper's Correct step, ported): mac(Sc_candidate) == Tc is a
+NECESSARY condition for any valid disjoint split (linearity: if mac(a)==Ta and
+mac(b)==Tb then mac(a^b)==Ta^Tb), so it prunes the search cheaply and safely. It
+can still be satisfied by two candidates that are both wrong but collide (prob
+~q^-V) -- the false-repair analogue -- so every combined pass is still followed by
+verifying each split half against its OWN tag before acceptance.
+
+Known limitation, DEFERRED and measure-only (ADR-0012 "Resolved"; benchmark
+ticket #6): the paper's IC-refinement / single-position-swap (Case 2, overlapping
+same-position errors that cancel in the XOR-combine) is NOT implemented here. Such
+a pair fails honestly and is counted as a failed pair (pairs_failed), never
+silently mishandled -- see test_recover_uniform_hd_mac_cannot_split_overlapping_errors.
+"""
+
+from itertools import chain, combinations
+
+from binary_ext_fields.custom_field import TableField
+from binary_ext_fields.segmented_mac_tagging import MacSegment, mac_verify_segment, check_mac_segmented
+from binary_ext_fields.segmented_recovery import (
+    SegmentTrust, PairingPlan, plan_pairing,
+    PairRecoveryResult, SegmentRepairOutcome, SegmentedRecoveryReport,
+)
+from playground.arc_pl import localize_errors
+
+
+def segment_slice(packet: bytearray, segment: MacSegment) -> bytearray:
+    """The [payload | tags] bytes belonging to one segment of one packet."""
+    return packet[segment.start: segment.start + segment.total_length]
+
+
+def _write_segment(packet: bytearray, segment: MacSegment, fixed_slice: bytearray) -> None:
+    packet[segment.start: segment.start + segment.total_length] = fixed_slice
+
+
+# ── Segment-scoped MAC trust (self-sufficient -- no cross-check) ──────────────
+
+def classify_segment_trust_mac(field: TableField, keys: list[bytearray], packets: list[bytearray],
+                               segment: MacSegment) -> SegmentTrust:
+    """A packet is broken iff its MAC tag mismatches in this segment, trusted
+    otherwise. Unlike classify_segment_trust (orthogonal), there is no cross-check
+    middle ground: a MAC verification is conclusive on its own, so every packet
+    lands in exactly one of broken/trusted."""
+    trusted, broken = [], []
+    for i, p in enumerate(packets):
+        if mac_verify_segment(field, keys, segment_slice(p, segment), segment):
+            trusted.append(i)
+        else:
+            broken.append(i)
+    return SegmentTrust(segment.name, broken=broken, trusted=trusted)
+
+
+# ── Combined-pair recovery (the paper's Combined Recovery, ported literally) ──
+
+def _bit_positions_for_columns(columns, bits_per_symbol: int) -> list[int]:
+    positions = []
+    for c in columns:
+        positions.extend(range(c * bits_per_symbol, (c + 1) * bits_per_symbol))
+    return positions
+
+
+def _flip_bits(data: bytearray, bit_positions, bits_per_symbol: int) -> bytearray:
+    out = bytearray(data)
+    for pos in bit_positions:
+        column, bit = divmod(pos, bits_per_symbol)
+        out[column] ^= (1 << bit)
+    return out
+
+
+def _powerset(items):
+    return chain.from_iterable(combinations(items, r) for r in range(len(items) + 1))
+
+
+def _pair_cache_key(slice_a: bytearray, slice_b: bytearray, candidate_columns: list[int],
+                    max_combined_hd: int, candidates_budget):
+    """Hashable key over everything the search depends on. The keyset is constant
+    for a trial (the pair_cache lives on the per-trial instrument), so it is not
+    part of the key -- unlike the orthogonal cache, which keys on the trusted set
+    because its oracle depends on it. A MAC oracle depends only on the fixed key,
+    so (a, b, columns, hd, budget) fully determines the result."""
+    return (bytes(slice_a), bytes(slice_b), tuple(candidate_columns), max_combined_hd, candidates_budget)
+
+
+def recover_pair_by_combined_search_mac(field: TableField, keys: list[bytearray], slice_a: bytearray,
+                                        slice_b: bytearray, candidate_columns: list[int], segment: MacSegment,
+                                        max_combined_hd: int, candidates_budget: int | None = None,
+                                        pair_cache: dict | None = None) -> PairRecoveryResult:
+    """Combined Recovery on one broken pair (paper Algorithm 1, Case-1 part).
+
+    Sc = slice_a XOR slice_b, Tc = T1 XOR T2 (both fall out of XORing the whole
+    slices, since the tag bytes are the slice suffix). Search low-Hamming-distance
+    corrections to Sc, restricted to `candidate_columns` (slice-local byte indices;
+    the pair path passes the WHOLE segment -- payload + tags -- so a BER hit in a
+    tag byte is repairable, mirroring the orthogonal arm's blind-spot fix). For each
+    combined candidate that satisfies the combined MAC filter, try every split of
+    its flipped bits between A and B, and accept the first split where BOTH halves
+    verify against their own MAC (mac_verify_segment). Only disjoint errors recover;
+    overlapping same-position errors legitimately exhaust the search (ok=False).
+
+    candidates_budget caps combined-candidate attempts (the orthogonal arm's
+    pair_budget knob). pair_cache memoises results per pair across admit rounds --
+    a pure function of (slice_a, slice_b, columns, hd, budget), so a hit returns an
+    identical result without re-spending field ops."""
+    if pair_cache is not None:
+        key = _pair_cache_key(slice_a, slice_b, candidate_columns, max_combined_hd, candidates_budget)
+        cached = pair_cache.get(key)
+        if cached is not None:
+            return cached
+        result = _search_pair_mac(field, keys, slice_a, slice_b, candidate_columns, segment,
+                                  max_combined_hd, candidates_budget)
+        pair_cache[key] = result
+        return result
+    return _search_pair_mac(field, keys, slice_a, slice_b, candidate_columns, segment,
+                            max_combined_hd, candidates_budget)
+
+
+def _search_pair_mac(field: TableField, keys: list[bytearray], slice_a: bytearray, slice_b: bytearray,
+                     candidate_columns: list[int], segment: MacSegment, max_combined_hd: int,
+                     candidates_budget: int | None) -> PairRecoveryResult:
+    """The actual combined search, extracted so the public wrapper can cache it.
+    Pure and deterministic in its inputs (keys constant per trial)."""
+    bits_per_symbol = field.bit_lenght
+    bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
+    combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
+
+    candidates_tried = 0
+    for hd in range(1, max_combined_hd + 1):
+        for combo in combinations(bit_positions, hd):
+            if candidates_budget is not None and candidates_tried >= candidates_budget:
+                return PairRecoveryResult(False, None, None, None, candidates_tried)
+            candidates_tried += 1
+            combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
+            if not mac_verify_segment(field, keys, combined_candidate, segment):
+                continue  # combined MAC filter: cannot be a valid disjoint split, skip cheaply
+
+            for a_bits in _powerset(combo):
+                b_bits = [pos for pos in combo if pos not in a_bits]
+                candidate_a = _flip_bits(slice_a, a_bits, bits_per_symbol)
+                candidate_b = _flip_bits(slice_b, b_bits, bits_per_symbol)
+                if not mac_verify_segment(field, keys, candidate_a, segment):
+                    continue
+                if not mac_verify_segment(field, keys, candidate_b, segment):
+                    continue
+                return PairRecoveryResult(True, candidate_a, candidate_b, hd, candidates_tried)
+
+    return PairRecoveryResult(False, None, None, None, candidates_tried)
+
+
+# ── Unpaired fallback: single-packet bit-flip search against the MAC ──────────
+
+def _search_single_by_bitflip_mac(field: TableField, broken_slice: bytearray, keys: list[bytearray],
+                                  candidate_columns: list[int], segment: MacSegment, max_hd: int,
+                                  candidates_budget: int | None) -> bytearray | None:
+    """Single-packet analogue of _search_pair_mac for an odd-one-out broken segment
+    with no partner: flip up to max_hd bits across candidate_columns, accept the
+    first candidate whose MAC verifies. (The orthogonal arm can also try an exact
+    linear solve here; the MAC has no equally cheap closed form, so this is a
+    bit-flip search only -- kept small by max_hd, budget-bounded.)"""
+    bits_per_symbol = field.bit_lenght
+    bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
+    tried = 0
+    for hd in range(1, max_hd + 1):
+        for combo in combinations(bit_positions, hd):
+            if candidates_budget is not None and tried >= candidates_budget:
+                return None
+            tried += 1
+            candidate = _flip_bits(broken_slice, combo, bits_per_symbol)
+            if mac_verify_segment(field, keys, candidate, segment):
+                return candidate
+    return None
+
+
+# ── One segment, either strategy ─────────────────────────────────────────────
+
+def repair_segment_mac(field: TableField, keys: list[bytearray], packets: list[bytearray], segment: MacSegment,
+                       candidate_columns_for, max_combined_hd: int = 4, candidates_budget: int | None = None,
+                       pair_cache: dict | None = None) -> SegmentRepairOutcome:
+    """Repair one segment across the generation, mutating `packets` in place: pair
+    broken packets (plan_pairing, reused from the orthogonal arm -- it is tag-
+    agnostic) and combined-search each pair, then bit-flip whatever is left unpaired.
+
+    candidate_columns_for(packet_index) -> list[int] | None supplies per-packet
+    ARC-narrowed payload columns (None = whole segment). The one hook that differs
+    between Option 1 (always None) and Option 2 (ARC-narrowed for data segments)."""
+    trust = classify_segment_trust_mac(field, keys, packets, segment)
+    plan = plan_pairing(trust)
+    all_columns = list(range(segment.payload_length))          # payload cols (narrowed default set)
+    pair_columns = list(range(segment.total_length))           # whole segment: payload + tags
+
+    pairs_recovered = pairs_failed = unpaired_recovered = unpaired_failed = 0
+
+    for pair in plan.pairs:
+        cols_a = candidate_columns_for(pair.packet_a)
+        cols_b = candidate_columns_for(pair.packet_b)
+        # Either side missing localization -> search the whole segment for the pair.
+        columns = pair_columns if (cols_a is None or cols_b is None) else sorted(set(cols_a) | set(cols_b))
+
+        slice_a = segment_slice(packets[pair.packet_a], segment)
+        slice_b = segment_slice(packets[pair.packet_b], segment)
+        result = recover_pair_by_combined_search_mac(field, keys, slice_a, slice_b, columns, segment,
+                                                     max_combined_hd, candidates_budget=candidates_budget,
+                                                     pair_cache=pair_cache)
+        if result.ok:
+            _write_segment(packets[pair.packet_a], segment, result.fixed_a)
+            _write_segment(packets[pair.packet_b], segment, result.fixed_b)
+            pairs_recovered += 1
+        else:
+            pairs_failed += 1
+
+    for unpaired in plan.unpaired:
+        columns = candidate_columns_for(unpaired.packet_index)
+        if columns is None:
+            columns = pair_columns   # whole segment (payload + tags) when unlocalized
+        broken_slice = segment_slice(packets[unpaired.packet_index], segment)
+        fixed = _search_single_by_bitflip_mac(field, broken_slice, keys, columns, segment,
+                                              max_hd=max_combined_hd, candidates_budget=candidates_budget)
+        if fixed is not None:
+            _write_segment(packets[unpaired.packet_index], segment, fixed)
+            unpaired_recovered += 1
+        else:
+            unpaired_failed += 1
+
+    return SegmentRepairOutcome(segment.name, pairs_recovered, pairs_failed, unpaired_recovered, unpaired_failed)
+
+
+# ── Top level: the two strategies ─────────────────────────────────────────────
+
+def recover_uniform_hd_mac(field: TableField, keyset: list[list[bytearray]], packets: list[bytearray],
+                           segments: list[MacSegment], max_combined_hd: int = 4,
+                           candidates_budget: int | None = None,
+                           pair_cache: dict | None = None) -> SegmentedRecoveryReport:
+    """Option 1: every segment, coeff and data alike, repaired via pairing + combined
+    search. No ARC anywhere."""
+    tmp = [bytearray(p) for p in packets]
+    per_segment = [
+        repair_segment_mac(field, keyset[s], tmp, segment, candidate_columns_for=lambda i: None,
+                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                           pair_cache=pair_cache)
+        for s, segment in enumerate(segments)
+    ]
+    ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
+
+
+def _make_arc_localizer_mac(field: TableField, packets: list[bytearray], coeff_segment: MacSegment,
+                            data_segment: MacSegment, gen_size: int, coeff_trusted_idx: list[int],
+                            data_trusted_idx: list[int]):
+    """Builds candidate_columns_for(packet_index) that ARC-localizes a broken
+    packet's corrupted columns within `data_segment`, exactly like the orthogonal
+    arm's _make_arc_localizer: a gen_size trusted [coefficients | data-payload]
+    basis + the broken packet as a (gen_size+1)-th row, fed to localize_errors.
+
+    ARC is tag-scheme-independent (it re-derives expected data from trusted
+    coefficients), so nothing MAC-specific enters here except how trust is
+    determined (MAC verification). Falls back to no-localization (None) when fewer
+    than gen_size packets are trusted in BOTH segments, or the basis is rank-
+    deficient (localize_errors raises)."""
+    basis_indices = sorted(set(coeff_trusted_idx) & set(data_trusted_idx))[:gen_size]
+    if len(basis_indices) < gen_size:
+        return lambda i: None
+
+    def synthetic(i):
+        coeffs = segment_slice(packets[i], coeff_segment)[:gen_size]
+        data = segment_slice(packets[i], data_segment)[:data_segment.payload_length]
+        return bytearray(coeffs) + bytearray(data)
+
+    trusted_basis = [synthetic(i) for i in basis_indices]
+    coeff_trusted_set = set(coeff_trusted_idx)
+
+    def localizer(i):
+        if i not in coeff_trusted_set:
+            return None  # this packet's own coefficients aren't trustworthy yet
+        try:
+            columns = localize_errors(field, [bytearray(p) for p in trusted_basis], synthetic(i), gen_size)
+        except (ValueError, ZeroDivisionError):
+            return None
+        return sorted(c - gen_size for c in columns)
+
+    return localizer
+
+
+def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray]], packets: list[bytearray],
+                                  segments: list[MacSegment], gen_size: int, max_combined_hd: int = 4,
+                                  candidates_budget: int | None = None,
+                                  pair_cache: dict | None = None) -> SegmentedRecoveryReport:
+    """Option 2: repair the coeff-segment first (same combined search -- it can never
+    ARC-localize itself), then ARC-narrow each data-segment's candidate columns from
+    the now-trusted coefficients before repairing them."""
+    tmp = [bytearray(p) for p in packets]
+    seg_index = {segment.name: s for s, segment in enumerate(segments)}
+    coeff_segment = next(s for s in segments if s.kind == "coeff")
+    data_segments = [s for s in segments if s.kind == "data"]
+
+    per_segment = [
+        repair_segment_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment,
+                           candidate_columns_for=lambda i: None, max_combined_hd=max_combined_hd,
+                           candidates_budget=candidates_budget, pair_cache=pair_cache)
+    ]
+
+    coeff_trust = classify_segment_trust_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment)
+    for segment in data_segments:
+        keys = keyset[seg_index[segment.name]]
+        data_trust = classify_segment_trust_mac(field, keys, tmp, segment)
+        localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
+                                            coeff_trust.trusted, data_trust.trusted)
+        per_segment.append(
+            repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
+                               max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                               pair_cache=pair_cache)
+        )
+
+    ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)

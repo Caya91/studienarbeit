@@ -50,6 +50,12 @@ from binary_ext_fields.segmented_tagging import layout_segments, tag_generation_
 from binary_ext_fields.segmented_recovery import (
     classify_segment_trust, recover_coefficient_first, recover_uniform_hd,
 )
+from binary_ext_fields.segmented_mac_tagging import (
+    layout_mac_segments, generate_keyset, tag_generation_mac,
+)
+from binary_ext_fields.segmented_mac_recovery import (
+    classify_segment_trust_mac, recover_coefficient_first_mac, recover_uniform_hd_mac,
+)
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
 from simulation.crc_recovery import CrcInstrument, recover as crc_recover
 from playground.arc_pl import localize_errors
@@ -499,6 +505,138 @@ class SegmentedScheme(IntegrityScheme):
         return instrument.field.mul_count
 
 
+# ── Segmented homomorphic-MAC benchmark arm (Fathi & Pahlevani Combined Recovery) ─
+# ADR-0012 line 11's deferred "benchmark homomorphic-MAC arm": the KEYED competitor
+# to the keyless orthogonal segmented scheme, segmented identically so overhead and
+# structure match and only the tag/oracle differs. The thesis argues the keyless
+# orthogonal self-tag is a viable alternative to THIS scheme. Faithful port:
+# homomorphic MAC t_j = XOR_i(p_i . k_ij) over GF(2^m), V = gen_size key vectors per
+# segment (overhead-matched to the orthogonal per-segment tag width), no salt (a MAC
+# tag of 0 is valid -- no zero-tag problem). Keys fresh per trial, held by source +
+# receiver; relays recode WITHOUT the key (the tag is homomorphic). IC-refinement /
+# Case-2 single-position-swap is DEFERRED (measure-only): an overlapping-error pair
+# is counted in pairs_failed, never silently mishandled.
+
+@dataclass
+class SegmentedMacInstrument:
+    """CountingField for native op counting (same primitive as the orthogonal arm),
+    the per-trial secret keyset (V key vectors per segment), and the same per-pair
+    persistence cache + IC-refinement bookkeeping as SegmentedInstrument."""
+    field: CountingField
+    keyset: list = field(default_factory=list)
+    pairs_recovered: int = 0
+    pairs_failed: int = 0
+    unpaired_recovered: int = 0
+    unpaired_failed: int = 0
+    pair_cache: dict = field(default_factory=dict)
+
+
+class SegmentedMacScheme(IntegrityScheme):
+    """The keyed homomorphic-MAC benchmark, segmented exactly like SegmentedScheme.
+    attach is free (homomorphic per segment -- recoding preserves each segment's tag,
+    verified in binary_ext_fields/tests/segmented_mac_recovery_test.py). admit repairs
+    via pairing + combined search (recover_uniform_hd_mac / recover_coefficient_first_mac),
+    then admits a packet only if EVERY segment's MAC verifies for it post-repair.
+
+    The keyset is generated fresh in make_source (which needs it to tag the source) and
+    handed to new_instrument via self._pending_keyset -- run_recovery_trial always calls
+    make_source immediately before new_instrument, sequentially, so this hand-off is safe
+    (a MAC needs the same secret key at both sender tagging and receiver verification,
+    unlike the orthogonal self-tag which the receiver checks with no key)."""
+
+    def __init__(self, num_data_segments: int, data_fields: int, strategy: str, name: str):
+        assert strategy in ("uniform_hd", "coefficient_first")
+        self.num_data_segments = num_data_segments
+        self.data_fields = data_fields
+        self.strategy = strategy
+        self.name = name
+        self._pending_keyset = None
+
+    def _num_keys(self, gen_size: int) -> int:
+        return gen_size  # V = gen_size: overhead-matched to the orthogonal per-segment tag width
+
+    def make_source(self, base_field, data_fields, gen_size):
+        assert data_fields == self.data_fields, (
+            f"{self.name} is fixed to data_fields={self.data_fields} (segment layout / rank floor "
+            f"depends on it), got {data_fields}"
+        )
+        num_keys = self._num_keys(gen_size)
+        max_int = base_field.max_value
+        data_rows = [bytearray(random.randint(0, max_int) for _ in range(data_fields))
+                     for _ in range(gen_size)]
+        plain = generate_identity_coefficients(base_field, data_rows)
+        segments = layout_mac_segments(gen_size, data_fields, self.num_data_segments, num_keys)
+        keyset = generate_keyset(base_field, segments, random)   # fresh secret keyset per trial
+        packets = tag_generation_mac(base_field, plain, gen_size, self.num_data_segments, keyset, num_keys)
+        self._pending_keyset = keyset
+        return packets, [bytearray(row) for row in data_rows]
+
+    def new_instrument(self, base_field):
+        assert self._pending_keyset is not None, "new_instrument must follow make_source (keyset hand-off)"
+        keyset, self._pending_keyset = self._pending_keyset, None
+        return SegmentedMacInstrument(field=CountingField(base_field), keyset=keyset)
+
+    def attach(self, instrument, code_packet: bytearray) -> bytearray:
+        return bytearray(code_packet)
+
+    def admit(self, instrument, wire_pool, gen_size, cfg: AdmitConfig):
+        # Below gen_size packets decode is impossible -- don't pay for the search.
+        if len(wire_pool) < max(gen_size, cfg.min_pool_size):
+            return None
+
+        num_keys = self._num_keys(gen_size)
+        segments = layout_mac_segments(gen_size, self.data_fields, self.num_data_segments, num_keys)
+        field = instrument.field
+        keyset = instrument.keyset
+
+        # Cheap pre-check: packets already MAC-good in every segment need no repair.
+        # If that alone reaches gen_size, skip the expensive combined search entirely.
+        already_good = set(range(len(wire_pool)))
+        for s, segment in enumerate(segments):
+            already_good &= set(classify_segment_trust_mac(field, keyset[s], wire_pool, segment).trusted)
+        if len(already_good) >= gen_size:
+            return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
+
+        if self.strategy == "uniform_hd":
+            report = recover_uniform_hd_mac(field, keyset, wire_pool, segments,
+                                            max_combined_hd=cfg.hamming_distance,
+                                            candidates_budget=cfg.pair_budget,
+                                            pair_cache=instrument.pair_cache)
+        else:
+            report = recover_coefficient_first_mac(field, keyset, wire_pool, segments, gen_size,
+                                                   max_combined_hd=cfg.hamming_distance,
+                                                   candidates_budget=cfg.pair_budget,
+                                                   pair_cache=instrument.pair_cache)
+
+        for outcome in report.per_segment:
+            instrument.pairs_recovered += outcome.pairs_recovered
+            instrument.pairs_failed += outcome.pairs_failed
+            instrument.unpaired_recovered += outcome.unpaired_recovered
+            instrument.unpaired_failed += outcome.unpaired_failed
+
+        # A packet enters the decode basis only if EVERY segment MAC-verifies for it
+        # (intersect, not union). No min_trust warm-up gate: a MAC is self-sufficient.
+        good = set(range(len(report.packets)))
+        for s, segment in enumerate(segments):
+            good &= set(classify_segment_trust_mac(field, keyset[s], report.packets, segment).trusted)
+
+        return [_strip_to_code(report.packets[i], segments) for i in sorted(good)]
+
+    def tag_overhead_bits(self, gen_size, m) -> int:
+        n = 1 + self.num_data_segments
+        return n * gen_size * m  # N segments, each gen_size MAC tag symbols (no salt)
+
+    def op_counts(self, instrument) -> dict:
+        return {
+            "field_mul": instrument.field.mul_count, "field_add": instrument.field.add_count,
+            "pairs_recovered": instrument.pairs_recovered, "pairs_failed": instrument.pairs_failed,
+            "unpaired_recovered": instrument.unpaired_recovered, "unpaired_failed": instrument.unpaired_failed,
+        }
+
+    def primary_ops(self, instrument) -> int:
+        return instrument.field.mul_count
+
+
 # N sweep resolved in ADR-0012 (2026-08-11): {1, 2, 3, 5} total segments, i.e.
 # num_data_segments in {0, 1, 2, 4}. N=1 is the existing OrthogonalScheme (no
 # segmentation, registered above) -- only N>=2 needs a SegmentedScheme instance.
@@ -514,12 +652,26 @@ SEGMENTED_SCHEMES = {
     for n in SEGMENTED_N_VALUES for strategy in SEGMENTED_STRATEGIES
 }
 
+# Homomorphic-MAC benchmark arm: both strategies registered, over the same N set as
+# the orthogonal segmented arm (mirror of the block above). N=1 (a whole-packet MAC)
+# has no counterpart here, exactly as N=1 orthogonal is the plain OrthogonalScheme
+# rather than a SegmentedScheme.
+MAC_STRATEGIES = ("uniform_hd", "coefficient_first")
+SEGMENTED_MAC_SCHEMES = {
+    f"mac_{strategy}_n{n}": SegmentedMacScheme(
+        num_data_segments=n - 1, data_fields=SEGMENTED_DATA_FIELDS,
+        strategy=strategy, name=f"mac_{strategy}_n{n}",
+    )
+    for n in SEGMENTED_N_VALUES for strategy in MAC_STRATEGIES
+}
+
 
 SCHEMES = {s.name: s for s in (
     OrthogonalScheme(), HmacScheme(),
     CrcScheme(localized=True, name="crc_localized"),
     CrcScheme(localized=False, name="crc_whole"),
     *SEGMENTED_SCHEMES.values(),
+    *SEGMENTED_MAC_SCHEMES.values(),
 )}
 
 

@@ -42,7 +42,7 @@ from binary_ext_fields.pollution import pollute_generation, pollute_random
 from simulation.recovery_decode_sim import _try_decode
 from simulation.integrity_schemes import (
     SCHEMES, AdmitConfig, HmacScheme, forge_hmac,
-    SEGMENTED_DATA_FIELDS, SEGMENTED_N_VALUES, SEGMENTED_STRATEGIES,
+    SEGMENTED_DATA_FIELDS, SEGMENTED_N_VALUES, SEGMENTED_STRATEGIES, MAC_STRATEGIES,
 )
 from simulation.intelligent_attack_sim import run_attack_trial
 from utils.log_helpers import get_run_log_dir
@@ -70,6 +70,12 @@ SCHEME_OP_UNIT = {"orthogonal": "field muls", "hmac": "HMAC block-ops",
 SCHEME_OP_UNIT.update({
     f"segmented_{strategy}_n{n}": "field muls"
     for n in SEGMENTED_N_VALUES for strategy in SEGMENTED_STRATEGIES
+})
+# Homomorphic-MAC benchmark arm -- same native primitive (field muls), one entry per
+# registered N/strategy so _print_op_table can look any of them up by name.
+SCHEME_OP_UNIT.update({
+    f"mac_{strategy}_n{n}": "field muls"
+    for n in SEGMENTED_N_VALUES for strategy in MAC_STRATEGIES
 })
 # HD-parity sweep: same bit-flip repair reach (HD 1/2/3) for both schemes, so the
 # comparison is fair. Colour = scheme, linestyle = Hamming distance.
@@ -316,27 +322,35 @@ SEGMENTED_CELL_TIME_BUDGET_S = 120.0
 
 SEGMENTED_N_LINESTYLE = {1: "-", 2: "--", 3: "-.", 5: ":"}
 SEGMENTED_STRATEGY_COLORS = {"orthogonal": SCHEME_COLORS["orthogonal"],
-                             "uniform_hd": "#588157", "coefficient_first": "#bc4749"}
+                             "uniform_hd": "#588157", "coefficient_first": "#bc4749",
+                             # keyed homomorphic-MAC benchmark arm (its own strategy labels)
+                             "mac_uniform_hd": "#8338ec", "mac_coefficient_first": "#fb8500"}
 
 
-def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES):
+def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
+                             mac_strategies=MAC_STRATEGIES):
     """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline plus every
-    (N, strategy) combination in the segmented sweep."""
+    (N, strategy) combination in the segmented sweep -- the keyless orthogonal arm
+    AND the keyed homomorphic-MAC benchmark arm (strategy label prefixed 'mac_')."""
     rows = [("orthogonal", 1, "orthogonal")]
     for n in n_values:
         for strategy in strategies:
             rows.append((f"segmented_{strategy}_n{n}", n, strategy))
+        for strategy in mac_strategies:
+            rows.append((f"mac_{strategy}_n{n}", n, f"mac_{strategy}"))
     return rows
 
 
 def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMENTED_DATA_FIELDS,
                           num_trials=SEGMENTED_NUM_TRIALS, bit_error_rates=SEGMENTED_BIT_ERROR_RATES,
                           n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
+                          mac_strategies=MAC_STRATEGIES,
                           max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR,
                           cell_time_budget_s=SEGMENTED_CELL_TIME_BUDGET_S) -> Path:
     """N x BER sweep for the segmented scheme (ADR-0012), against the N=1 orthogonal
-    baseline at the same data_fields. Reuses run_recovery_trial unchanged -- SegmentedScheme
-    is just another IntegrityScheme, so the driver doesn't know or care it's different.
+    baseline at the same data_fields, alongside the keyed homomorphic-MAC benchmark arm
+    (mac_strategies). Reuses run_recovery_trial unchanged -- every arm is just another
+    IntegrityScheme, so the driver doesn't know or care they differ.
 
     Per-cell runtime cap (ticket 02): each (scheme, BER) cell runs up to num_trials trials
     but stops adding new ones once cell_time_budget_s of wall time has elapsed, so a slow
@@ -347,7 +361,9 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
     base_field = create_field(field_m)
     cfg = AdmitConfig(hamming_distance=2) # if this is less than 2, combined reovery wont work at all
-    sweep_schemes = _segmented_sweep_schemes(n_values, strategies)
+    sweep_schemes = _segmented_sweep_schemes(n_values, strategies, mac_strategies)
+    # strategy labels to draw one line each (orthogonal baseline is drawn separately)
+    plot_strategies = list(strategies) + [f"mac_{s}" for s in mac_strategies]
 
     raw_rows, summary_rows = [], []
     for name, n, strategy in sweep_schemes:
@@ -395,16 +411,16 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     _write_csv(run_dir / "raw_results.csv", raw_rows)
     _write_csv(run_dir / "summary.csv", summary_rows)
 
-    _plot_by_n_strategy(summary_rows, n_values, strategies, "correct_rate",
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "correct_rate",
                         "Recovery rate (decoded to correct source)",
                         run_dir / "recovery_rate_vs_ber_by_n.png", ylim=(-0.02, 1.02))
-    _plot_by_n_strategy(summary_rows, n_values, strategies, "mean_overhead_decoded",
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "mean_overhead_decoded",
                         "Mean transmission overhead (packets / gen_size)",
                         run_dir / "overhead_vs_ber_by_n.png", ylim=None, hline=1.0)
-    _plot_by_n_strategy(summary_rows, n_values, strategies, "ic_refinement_failure_rate",
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "ic_refinement_failure_rate",
                         "IC-refinement failure rate (overlapping-error pairs, measure-only)",
                         run_dir / "ic_refinement_failure_vs_ber_by_n.png", ylim=(-0.02, 1.02))
-    _plot_by_n_strategy(summary_rows, n_values, strategies, "time_per_packet_s_mean",
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "time_per_packet_s_mean",
                         "Mean completion time per received packet (s)",
                         run_dir / "time_per_packet_vs_ber_by_n.png", ylim=None)
 
