@@ -495,10 +495,16 @@ class SegmentedScheme(IntegrityScheme):
         return n * (gen_size + 1) * m  # N segments, each: gen_size tag symbols + 1 salt symbol
 
     def op_counts(self, instrument) -> dict:
+        pm = instrument.field.phase_mul
         return {
             "field_mul": instrument.field.mul_count, "field_add": instrument.field.add_count,
             "pairs_recovered": instrument.pairs_recovered, "pairs_failed": instrument.pairs_failed,
             "unpaired_recovered": instrument.unpaired_recovered, "unpaired_failed": instrument.unpaired_failed,
+            # muls split by phase (segmented_recovery._count_phase): detection = self/cross
+            # orthogonality checks every scheme pays; recovery = the combined/bit-flip search
+            # -- the fair recovery-cost axis. "other" (mul_count - the two) is any unattributed
+            # mul, e.g. coefficient_first's ARC localization, and should be ~0 for uniform_hd.
+            "detection_mul": pm.get("detection", 0), "recovery_mul": pm.get("recovery", 0),
         }
 
     def primary_ops(self, instrument) -> int:

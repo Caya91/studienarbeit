@@ -61,6 +61,23 @@ from playground.arc_pl import localize_errors
 from playground.new_recovery import is_orthogonal_to_trusted, recover_packet_linear
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _count_phase(field: TableField, name: str):
+    """Attribute the field ops done in this block to `name` when `field` is a
+    CountingField that supports phase bucketing; a no-op for a plain field (tests,
+    non-counting callers). Keeps the detection/recovery split contained here rather
+    than threading a second counter through every recovery signature."""
+    fn = getattr(field, "phase", None)
+    if fn is None:
+        yield
+    else:
+        with fn(name):
+            yield
+
+
 def segment_slice(packet: bytearray, segment: TaggedSegment) -> bytearray:
     """The [payload | salt | tags] bytes belonging to one segment of one packet."""
     return packet[segment.start: segment.start + segment.total_length]
@@ -94,12 +111,13 @@ def classify_segment_trust(field: TableField, packets: list[bytearray], segment:
     needed.
     """
     slices = [segment_slice(p, segment) for p in packets]
-    self_pass = [i for i, s in enumerate(slices) if check_orth_packet(field, s)]
-    broken = [i for i in range(len(packets)) if i not in self_pass]
-    trusted = [
-        i for i in self_pass
-        if all(inner_product_bytes(field, slices[i], slices[j]) == 0 for j in self_pass if j != i)
-    ]
+    with _count_phase(field, "detection"):
+        self_pass = [i for i, s in enumerate(slices) if check_orth_packet(field, s)]
+        broken = [i for i in range(len(packets)) if i not in self_pass]
+        trusted = [
+            i for i in self_pass
+            if all(inner_product_bytes(field, slices[i], slices[j]) == 0 for j in self_pass if j != i)
+        ]
     return SegmentTrust(segment.name, broken=broken, trusted=trusted)
 
 
@@ -241,28 +259,29 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
 
     candidates_tried = 0
-    for hd in range(1, max_combined_hd + 1):
-        for combo in combinations(bit_positions, hd):
-            if candidates_budget is not None and candidates_tried >= candidates_budget:
-                return PairRecoveryResult(False, None, None, None, candidates_tried)
-            candidates_tried += 1
-            combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
-            if not is_orthogonal_to_trusted(field, combined_candidate, trusted_slices):
-                continue  # combined filter: cannot be a valid disjoint split, skip cheaply
+    with _count_phase(field, "recovery"):
+        for hd in range(1, max_combined_hd + 1):
+            for combo in combinations(bit_positions, hd):
+                if candidates_budget is not None and candidates_tried >= candidates_budget:
+                    return PairRecoveryResult(False, None, None, None, candidates_tried)
+                candidates_tried += 1
+                combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
+                if not is_orthogonal_to_trusted(field, combined_candidate, trusted_slices):
+                    continue  # combined filter: cannot be a valid disjoint split, skip cheaply
 
-            for a_bits in _powerset(combo):
-                b_bits = [pos for pos in combo if pos not in a_bits]
-                candidate_a = _flip_bits(slice_a, a_bits, bits_per_symbol)
-                candidate_b = _flip_bits(slice_b, b_bits, bits_per_symbol)
+                for a_bits in _powerset(combo):
+                    b_bits = [pos for pos in combo if pos not in a_bits]
+                    candidate_a = _flip_bits(slice_a, a_bits, bits_per_symbol)
+                    candidate_b = _flip_bits(slice_b, b_bits, bits_per_symbol)
 
-                if not is_orthogonal_to_trusted(field, candidate_a, trusted_slices):
-                    continue
-                if not is_orthogonal_to_trusted(field, candidate_b, trusted_slices):
-                    continue
-                if inner_product_bytes(field, candidate_a, candidate_b) != 0:
-                    continue
+                    if not is_orthogonal_to_trusted(field, candidate_a, trusted_slices):
+                        continue
+                    if not is_orthogonal_to_trusted(field, candidate_b, trusted_slices):
+                        continue
+                    if inner_product_bytes(field, candidate_a, candidate_b) != 0:
+                        continue
 
-                return PairRecoveryResult(True, candidate_a, candidate_b, hd, candidates_tried)
+                    return PairRecoveryResult(True, candidate_a, candidate_b, hd, candidates_tried)
 
     return PairRecoveryResult(False, None, None, None, candidates_tried)
 
@@ -310,11 +329,12 @@ def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candida
     used to return None (dropping the packet). The bit-flip search covers the whole
     segment (payload+salt+tags via whole_segment_columns), bounded by max_hd and
     candidates_budget. Returns None only if BOTH stages give up."""
-    fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
-    if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices):
-        return fixed
-    cols = whole_segment_columns if whole_segment_columns is not None else candidate_columns
-    return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget)
+    with _count_phase(field, "recovery"):
+        fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
+        if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices):
+            return fixed
+        cols = whole_segment_columns if whole_segment_columns is not None else candidate_columns
+        return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget)
 
 
 # ── One segment, either strategy ─────────────────────────────────────────────
@@ -439,7 +459,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                        pair_cache=pair_cache)
         for segment in segments
     ]
-    ok = all(check_orth_segmented(field, tmp, segments).values())
+    with _count_phase(field, "detection"):
+        ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
 
 
@@ -542,5 +563,6 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                            pair_cache=pair_cache)
         )
 
-    ok = all(check_orth_segmented(field, tmp, segments).values())
+    with _count_phase(field, "detection"):
+        ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)

@@ -101,6 +101,13 @@ class SchemeTrialResult:
     pairs_failed: int = 0    # segmented scheme's IC-refinement gap (measure-only, ADR-0012
                               # "Resolved"): same-bit-position overlapping errors this
                               # mechanism cannot split. 0 for every other scheme.
+    unpaired_recovered: int = 0  # segmented odd-one-out broken segment repaired via the
+                                  # unpaired linear-solve/bit-flip fallback; 0 for others.
+    unpaired_failed: int = 0     # unpaired broken segment neither stage could fix; 0 for others.
+    detection_ops: int = 0   # segmented: field muls in orthogonality/self-check (finding
+                              # corruption) -- the cost any tag scheme pays. 0 for others.
+    recovery_ops: int = 0    # segmented: field muls in the combined/bit-flip search (fixing
+                              # corruption) -- the fair recovery-cost axis. 0 for others.
 
 
 def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate,
@@ -142,6 +149,8 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
         packets_to_decode=received, overhead=received / gen_size,
         scheme_ops=scheme.primary_ops(instrument), decode_ops=cnt_decode.mul_count,
         pairs_recovered=op_counts.get("pairs_recovered", 0), pairs_failed=op_counts.get("pairs_failed", 0),
+        unpaired_recovered=op_counts.get("unpaired_recovered", 0), unpaired_failed=op_counts.get("unpaired_failed", 0),
+        detection_ops=op_counts.get("detection_mul", 0), recovery_ops=op_counts.get("recovery_mul", 0),
         status=status,
         wall_time_s=wall_time_s,
         time_per_packet_s=wall_time_s / received if received else float("nan"),
@@ -417,6 +426,15 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
                 "time_per_packet_s_mean": float(np.mean([r.time_per_packet_s for r in results])),
                 "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
                 "scheme_ops_mean": float(np.mean([r.scheme_ops for r in results])),
+                # scheme_ops split by phase (segmented_recovery._count_phase): detection =
+                # orthogonality/self-checks (finding corruption, paid by any tag scheme);
+                # recovery = the combined/bit-flip search (fixing it) -- the fair
+                # recovery-cost axis for the N comparison. Sum to scheme_ops for uniform_hd;
+                # coefficient_first's ARC localization is the unattributed remainder.
+                "detection_ops_mean": float(np.mean([r.detection_ops for r in results])),
+                "recovery_ops_mean": float(np.mean([r.recovery_ops for r in results])),
+                "unpaired_recovered_mean": float(np.mean([r.unpaired_recovered for r in results])),
+                "unpaired_failed_mean": float(np.mean([r.unpaired_failed for r in results])),
                 # ADR-0012 "Resolved": IC-refinement is measure-only -- this IS that
                 # measurement. NaN (not 0) when no pair was ever attempted this cell,
                 # so it's visibly distinct from "attempted and always succeeded".
@@ -440,6 +458,14 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "time_per_packet_s_mean",
                         "Mean completion time per received packet (s)",
                         run_dir / "time_per_packet_vs_ber_by_n.png", ylim=None)
+    # The recovery-cost curve the detection/recovery split is for: search muls only,
+    # excluding the detection baseline every tag scheme pays, so N arms compare fairly.
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "recovery_ops_mean",
+                        "Mean recovery field-muls (combined/bit-flip search only)",
+                        run_dir / "recovery_ops_vs_ber_by_n.png", ylim=None, draw_flat_arms=False)
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "detection_ops_mean",
+                        "Mean detection field-muls (orthogonality/self-checks)",
+                        run_dir / "detection_ops_vs_ber_by_n.png", ylim=None, draw_flat_arms=False)
 
     _print_op_table(summary_rows, [name for name, _, _ in sweep_schemes], bit_error_rates)
     print(f"\nDone. Results written to: {run_dir}")
@@ -637,18 +663,23 @@ def _plot_by_scheme_hd(summary_rows, scheme_names, hds, metric, ylabel, output_p
 
 
 def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, output_path,
-                        ylim=(-0.02, 1.02), hline=None) -> None:
+                        ylim=(-0.02, 1.02), hline=None, draw_flat_arms=True) -> None:
     """One line per (N, strategy), plus the N=1 orthogonal baseline: colour =
     strategy (orthogonal counts as its own "strategy" here), linestyle = N.
     NaN points (e.g. ic_refinement_failure_rate with zero pairs attempted) are
-    dropped from that line rather than plotted as a gap."""
+    dropped from that line rather than plotted as a gap.
+
+    draw_flat_arms=False suppresses the orthogonal/CRC reference lines -- used for the
+    detection/recovery-op plots, where those arms have no phase-split instrumentation
+    and would otherwise draw a misleading flat line at 0 (not "zero cost", just
+    un-bucketed)."""
     fig, ax = plt.subplots(figsize=(9, 6))
 
     # Flat (non-segmented, N=1) reference arms -- orthogonal + the CRC baselines -- each
     # drawn as its own solid line keyed by scheme, so CRC recovery/overhead sits on the
     # same axes as the segmented (N, strategy) lines below. Draw in registration order.
     flat_schemes = [s for s in ("orthogonal",) + tuple(SEGMENTED_CRC_SCHEMES)
-                    if any(row["scheme"] == s and row["n"] == 1 for row in summary_rows)]
+                    if draw_flat_arms and any(row["scheme"] == s and row["n"] == 1 for row in summary_rows)]
     for scheme in flat_schemes:
         points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
                         if row["scheme"] == scheme and not np.isnan(row[metric]))

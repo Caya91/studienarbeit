@@ -41,18 +41,26 @@ def main() -> None:
         cfg.pair_budget = args.budget
     scheme = SCHEMES[args.scheme]
 
+    # scheme_ops = detection_ops + recovery_ops + "other" (unattributed, ~0 for uniform_hd;
+    # coefficient_first's ARC localization lands here). detection = orthogonality/self-checks
+    # (finding corruption, paid by any tag scheme); recovery = the combined/bit-flip search
+    # (fixing it) -- the fair recovery-cost axis. pairs_* count pair splits, unpaired_* the
+    # odd-one-out fallback; both are real repairs.
     keys = ("wall_time_s", "correct", "decoded", "silent_decode", "overhead",
-            "packets_to_decode", "scheme_ops", "pairs_recovered", "pairs_failed", "status")
+            "packets_to_decode", "scheme_ops", "detection_ops", "recovery_ops",
+            "pairs_recovered", "pairs_failed", "unpaired_recovered", "unpaired_failed", "status")
     rows = []
     for i in range(args.repeat):
         r = run_recovery_trial(base_field, scheme, SEGMENTED_DATA_FIELDS, GEN_SIZE, args.ber, cfg,
                                max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR)
         d = asdict(r)
+        d["other_ops"] = d["scheme_ops"] - d["detection_ops"] - d["recovery_ops"]
         rows.append(d)
         print(f"\n--- trial {i} (scheme={args.scheme} BER={args.ber:g} hd={args.hd} "
               f"budget={cfg.pair_budget} gen_size={GEN_SIZE} data_fields={SEGMENTED_DATA_FIELDS}) ---")
         for k in keys:
             print(f"  {k:18} {d[k]}")
+        print(f"  {'other_ops':18} {d['other_ops']}")
 
     if args.repeat > 1:
         n = len(rows)
@@ -61,6 +69,10 @@ def main() -> None:
         print(f"  recovery (correct) {sum(x['correct'] for x in rows)/n:.3f}")
         print(f"  overhead           {sum(x['overhead'] for x in rows)/n:.3f}")
         print(f"  scheme_ops         {sum(x['scheme_ops'] for x in rows)/n:.0f}")
+        print(f"  detection_ops      {sum(x['detection_ops'] for x in rows)/n:.0f}")
+        print(f"  recovery_ops       {sum(x['recovery_ops'] for x in rows)/n:.0f}")
+        print(f"  pairs_recovered    {sum(x['pairs_recovered'] for x in rows)/n:.2f}")
+        print(f"  unpaired_recovered {sum(x['unpaired_recovered'] for x in rows)/n:.2f}")
 
 
 if __name__ == "__main__":

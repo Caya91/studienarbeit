@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from icecream import ic
 from pprint import pprint
 import random
@@ -117,18 +118,48 @@ class CountingField(TableField):
         super().__init__(base._add, base._mul, base.prime)
         self.mul_count = 0
         self.add_count = 0
+        # Phase attribution (ADR-0007 extension): every op is charged to `mul_count`/
+        # `add_count` as before AND, when a phase context is active, to that phase's
+        # bucket. Lets a caller split e.g. detection (self/cross-orthogonality checks)
+        # from recovery (the combined/bit-flip search) for a fair recovery-cost
+        # comparison. The stack makes nesting exact: a detection call inside a recovery
+        # search is charged to detection, not recovery. Ops outside any phase are
+        # unattributed -- (mul_count - sum(phase_mul)) is the "other" remainder.
+        self.phase_mul: dict[str, int] = {}
+        self.phase_add: dict[str, int] = {}
+        self._phase_stack: list[str] = []
 
     def mul(self, a, b):
         self.mul_count += 1
+        if self._phase_stack:
+            p = self._phase_stack[-1]
+            self.phase_mul[p] = self.phase_mul.get(p, 0) + 1
         return super().mul(a, b)
 
     def add(self, a, b):
         self.add_count += 1
+        if self._phase_stack:
+            p = self._phase_stack[-1]
+            self.phase_add[p] = self.phase_add.get(p, 0) + 1
         return super().add(a, b)
+
+    @contextmanager
+    def phase(self, name: str):
+        """Charge every op done inside this block to phase `name` (in addition to the
+        running totals). Re-entrant/nesting-safe via a stack: the innermost active
+        phase wins, so ops in a nested block are attributed to the inner phase only."""
+        self._phase_stack.append(name)
+        try:
+            yield
+        finally:
+            self._phase_stack.pop()
 
     def reset(self):
         self.mul_count = 0
         self.add_count = 0
+        self.phase_mul.clear()
+        self.phase_add.clear()
+        self._phase_stack.clear()
 
         
 def build_tables_gf2m(m: int, poly: int):
