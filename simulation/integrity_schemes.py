@@ -640,9 +640,10 @@ class SegmentedMacScheme(IntegrityScheme):
 # N sweep resolved in ADR-0012 (2026-08-11): {1, 2, 3, 5} total segments, i.e.
 # num_data_segments in {0, 1, 2, 4}. N=1 is the existing OrthogonalScheme (no
 # segmentation, registered above) -- only N>=2 needs a SegmentedScheme instance.
-SEGMENTED_DATA_FIELDS = 10    # NEEDS to fulfill: data_fields ≥ (N_max − 1) · (gen_size − 1)
-SEGMENTED_N_VALUES = ([2]) # , 3, 5  # total segments; num_data_segments = N - 1
-SEGMENTED_STRATEGIES = (["uniform_hd"])   # , "coefficient_first"
+SEGMENTED_DATA_FIELDS = 48    # NEEDS to fulfill: data_fields ≥ (N_max − 1) · (gen_size − 1)
+                              # N=5 → 4 data-segs of 12 ≥ gen_size-1=9 (ADR-0012 resolved value)
+SEGMENTED_N_VALUES = ([2, 3, 5])  # total segments; num_data_segments = N - 1
+SEGMENTED_STRATEGIES = (["uniform_hd", "coefficient_first"])
 
 SEGMENTED_SCHEMES = {
     f"segmented_{strategy}_n{n}": SegmentedScheme(

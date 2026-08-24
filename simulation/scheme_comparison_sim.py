@@ -311,7 +311,7 @@ def run_hd_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
 # than NUM_TRIALS/BIT_ERROR_RATES for a feasible exploratory run, not the "right" final
 # numbers -- tune num_trials/bit_error_rates for a headline run.
 SEGMENTED_NUM_TRIALS = 20
-SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3) # , 5e-3
+SEGMENTED_BIT_ERROR_RATES = (1e-4, 5e-4, 1e-3, 5e-3)  # 1e-2 available but noise-dominated + very slow at data_fields=48
 SEGMENTED_MAX_PACKETS_FACTOR = 8
 # Per-cell wall-time budget (ticket 02): even with ticket 01's per-pair memo, the
 # highest-BER cells can still be slow. A cell runs up to SEGMENTED_NUM_TRIALS trials
