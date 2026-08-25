@@ -76,6 +76,12 @@ class AdmitConfig:
     HMAC ignore all of it (a MAC is self-sufficient -- no cross-verify, no warm-up)."""
     hamming_distance: int = 1
     mode: str = "per_column"
+    # Number of trusted witness packets each self-passing packet is cross-checked
+    # against before it is trusted; None = check against the whole trusted core.
+    # Drives BOTH the orthogonal scheme's repair oracle AND (ADR-0012) the segmented
+    # scheme's poisoner-tolerant classify_segment_trust -- the security/cost dial:
+    # more witnesses = harder for a forged packet to be admitted, fewer = cheaper.
+    # 0 disables the cross-check (self-check only). See classify_segment_trust.
     verify_count: int | None = 4
     min_trust_count: int = 4
     min_pool_size: int = 10
@@ -458,19 +464,20 @@ class SegmentedScheme(IntegrityScheme):
         # skip the expensive combined search entirely.
         already_good = set(range(len(wire_pool)))
         for segment in segments:
-            already_good &= set(classify_segment_trust(field, wire_pool, segment).trusted)
+            already_good &= set(classify_segment_trust(field, wire_pool, segment,
+                                                       verify_count=cfg.verify_count).trusted)
         if len(already_good) >= gen_size:
             return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
 
         if self.strategy == "uniform_hd":
             report = recover_uniform_hd(field, wire_pool, segments, max_combined_hd=cfg.hamming_distance,
                                         candidates_budget=cfg.pair_budget,
-                                        pair_cache=instrument.pair_cache)
+                                        pair_cache=instrument.pair_cache, verify_count=cfg.verify_count)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,
                                                candidates_budget=cfg.pair_budget,
-                                               pair_cache=instrument.pair_cache)
+                                               pair_cache=instrument.pair_cache, verify_count=cfg.verify_count)
 
         for outcome in report.per_segment:
             instrument.pairs_recovered += outcome.pairs_recovered
@@ -483,7 +490,7 @@ class SegmentedScheme(IntegrityScheme):
         # segments, not union, since one broken segment still corrupts the packet.
         good = set(range(len(report.packets)))
         for segment in segments:
-            trust = classify_segment_trust(field, report.packets, segment)
+            trust = classify_segment_trust(field, report.packets, segment, verify_count=cfg.verify_count)
             if len(trust.trusted) < cfg.min_trust_count:
                 return None  # not enough trust yet in this segment -- keep waiting
             good &= set(trust.trusted)

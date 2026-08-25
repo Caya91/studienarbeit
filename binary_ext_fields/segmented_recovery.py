@@ -97,28 +97,74 @@ class SegmentTrust:
                          # to every other self-check-passing packet in this segment
 
 
-def classify_segment_trust(field: TableField, packets: list[bytearray], segment: TaggedSegment) -> SegmentTrust:
+def classify_segment_trust(field: TableField, packets: list[bytearray], segment: TaggedSegment,
+                           verify_count: int | None = None) -> SegmentTrust:
     """
-    Self-check failure -> broken (conclusive, ADR-0004). Self-check success ->
-    trusted only if also cross-orthogonal to every other self-check-passing
-    packet in this segment. A packet that passes self-check but fails a
-    cross-check is left out of both lists: a rare self-tag collision (ADR-0010),
-    known-suspect rather than provably broken or safely trustworthy.
+    Self-check failure -> broken (conclusive, ADR-0004). Among the self-check
+    passers, decide who is *trusted* (cross-consistent) via a POISONER-TOLERANT
+    rule, not the old all-or-nothing unanimity.
 
-    Unlike sniff_pool's streaming min_trust_count/min_pool_size gate, this
-    generation is a closed pool of `gen_size` packets, so the full pairwise
-    cross-check among self-check-passers is cheap and exact -- no threshold
-    needed.
-    """
+    Why not unanimity: a corrupted packet can slip past its own self-check (a
+    rare self-tag collision, ~1/q per segment, ADR-0010) yet be non-orthogonal to
+    the clean packets. Under "trusted iff orthogonal to EVERY other self-passer",
+    that single poisoner is non-orthogonal to all the clean packets, so *every*
+    clean packet fails its cross-check against it and the whole segment's trusted
+    set collapses to zero -- the N=5 starvation-timeout root cause (a poisoner in
+    the coeff/data segment zeroes trust, nothing is ever admissible).
+
+    Poisoner-tolerant rule, two stages:
+      1. CORE by greedy peel: among self-passers, repeatedly drop the one that
+         disagrees with (is non-orthogonal to) the most others, until the
+         survivors all mutually agree. A lone poisoner disagrees with everyone,
+         so it has the highest disagreement count and is peeled first, leaving
+         the clean mutually-orthogonal group intact.
+      2. WITNESS CHECK: each self-passer is trusted iff it agrees with the core
+         witnesses it is checked against. `verify_count` (None = check against
+         the whole core) caps how many core witnesses each packet is verified
+         against -- the security/cost dial: more witnesses = harder for a forged
+         packet to be accepted (it must agree with every one checked), fewer =
+         cheaper. verify_count=0 disables the cross-check entirely (self-check
+         only). Core members trivially agree with each other, so the core is
+         always trusted; the dial only governs how strictly non-core self-passers
+         are admitted.
+
+    All field ops (self-checks + the one-time pairwise agreement matrix) are
+    charged to the "detection" phase; the peel and witness check operate on the
+    cached boolean matrix, so they cost no field ops. The O(m^2) matrix build is
+    the same order as the old check -- an O(m*verify_count) incremental build is a
+    deferred optimization, not done here (correctness first)."""
     slices = [segment_slice(p, segment) for p in packets]
     with _count_phase(field, "detection"):
         self_pass = [i for i, s in enumerate(slices) if check_orth_packet(field, s)]
         broken = [i for i in range(len(packets)) if i not in self_pass]
-        trusted = [
-            i for i in self_pass
-            if all(inner_product_bytes(field, slices[i], slices[j]) == 0 for j in self_pass if j != i)
-        ]
-    return SegmentTrust(segment.name, broken=broken, trusted=trusted)
+        m = len(self_pass)
+        # One-time pairwise agreement among self-passers (True == disagree == not
+        # orthogonal). Everything below reads this matrix -- no more field ops.
+        disagree = [[False] * m for _ in range(m)]
+        for a in range(m):
+            for b in range(a + 1, m):
+                bad = inner_product_bytes(field, slices[self_pass[a]], slices[self_pass[b]]) != 0
+                disagree[a][b] = disagree[b][a] = bad
+
+    # Stage 1: greedy-peel the core (indices into self_pass).
+    alive = set(range(m))
+    while alive:
+        counts = {a: sum(1 for b in alive if b != a and disagree[a][b]) for a in alive}
+        worst = max(alive, key=lambda a: counts[a])
+        if counts[worst] == 0:
+            break  # survivors are fully mutually orthogonal
+        alive.discard(worst)
+    core = sorted(alive)
+
+    # Stage 2: witness check against up to `verify_count` core members.
+    trusted = []
+    for a in range(m):
+        witnesses = [c for c in core if c != a]
+        if verify_count is not None:
+            witnesses = witnesses[:verify_count]
+        if all(not disagree[a][c] for c in witnesses):
+            trusted.append(self_pass[a])
+    return SegmentTrust(segment.name, broken=broken, trusted=sorted(trusted))
 
 
 # ── Pairing (ADR-0012's "Pairing model") ─────────────────────────────────────
@@ -351,7 +397,8 @@ class SegmentRepairOutcome:
 def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedSegment,
                     candidate_columns_for, max_combined_hd: int = 4,
                     candidates_budget: int | None = None,
-                    pair_cache: dict | None = None) -> SegmentRepairOutcome:
+                    pair_cache: dict | None = None,
+                    verify_count: int | None = None) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -372,7 +419,7 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     not cached -- it is polynomial, not a budgeted search, so it is not the cost
     the persistence is aimed at.
     """
-    trust = classify_segment_trust(field, packets, segment)
+    trust = classify_segment_trust(field, packets, segment, verify_count=verify_count)
     plan = plan_pairing(trust)
     trusted_slices = [segment_slice(packets[i], segment) for i in trust.trusted]
     all_columns = list(range(segment.payload_length))  # payload cols for the exact linear solve stage
@@ -442,7 +489,8 @@ class SegmentedRecoveryReport:
 
 def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
                         max_combined_hd: int = 4, candidates_budget: int | None = None,
-                        pair_cache: dict | None = None) -> SegmentedRecoveryReport:
+                        pair_cache: dict | None = None,
+                        verify_count: int | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -456,7 +504,7 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
     per_segment = [
         repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache)
+                       pair_cache=pair_cache, verify_count=verify_count)
         for segment in segments
     ]
     with _count_phase(field, "detection"):
@@ -530,7 +578,8 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
 
 def recover_coefficient_first(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
                                gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None,
-                               pair_cache: dict | None = None) -> SegmentedRecoveryReport:
+                               pair_cache: dict | None = None,
+                               verify_count: int | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -548,19 +597,19 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
     per_segment = [
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache)
+                       pair_cache=pair_cache, verify_count=verify_count)
     ]
 
-    coeff_trust = classify_segment_trust(field, tmp, coeff_segment)
+    coeff_trust = classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
     for segment in data_segments:
-        data_trust = classify_segment_trust(field, tmp, segment)
+        data_trust = classify_segment_trust(field, tmp, segment, verify_count=verify_count)
         localizer = _make_arc_localizer(
             field, tmp, coeff_segment, segment, gen_size, coeff_trust.trusted, data_trust.trusted,
         )
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                           pair_cache=pair_cache)
+                           pair_cache=pair_cache, verify_count=verify_count)
         )
 
     with _count_phase(field, "detection"):
