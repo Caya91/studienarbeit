@@ -458,6 +458,18 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "time_per_packet_s_mean",
                         "Mean completion time per received packet (s)",
                         run_dir / "time_per_packet_vs_ber_by_n.png", ylim=None)
+    # Silent-decode (false-repair) rate -- one of the four headline metrics. Expected
+    # ~0 for MAC (q^-V collision) and for orthogonal cross-verify; a non-zero line is a
+    # scheme silently accepting a corrupted decode, the worst failure mode.
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "silent_decode_rate",
+                        "Silent-decode rate (accepted a corrupted decode)",
+                        run_dir / "silent_decode_vs_ber_by_n.png", ylim=(-0.02, 1.02))
+    # Wall-clock completion time per trial -- the pure-Python wall figure alongside the
+    # per-packet metric. Incommensurable with C/SHA-NI implementations (see
+    # comparison_methodology_notes), so it is a secondary, same-substrate comparison only.
+    _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "wall_time_s_mean",
+                        "Mean wall-clock time per trial (s)",
+                        run_dir / "wall_time_vs_ber_by_n.png", ylim=None)
     # The recovery-cost curve the detection/recovery split is for: search muls only,
     # excluding the detection baseline every tag scheme pays, so N arms compare fairly.
     _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "recovery_ops_mean",

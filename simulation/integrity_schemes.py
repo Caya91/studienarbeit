@@ -499,7 +499,13 @@ class SegmentedScheme(IntegrityScheme):
 
     def tag_overhead_bits(self, gen_size, m) -> int:
         n = 1 + self.num_data_segments
-        return n * (gen_size + 1) * m  # N segments, each: gen_size tag symbols + 1 salt symbol
+        # Tag-only overhead for the parity comparison: N segments x gen_size tag symbols,
+        # matching the MAC arm's N*gen_size keyed tags exactly. The scheme ALSO spends 1
+        # salt symbol per segment on the wire (a zero self-tag is degenerate, ADR-0010),
+        # a real keyless cost -- but by decision it is EXCLUDED here so the two arms report
+        # identical tag overhead and the figure compares tag-for-tag cleanly. Add back
+        # n*m bits if/when the salt is put back on the overhead axis.
+        return n * gen_size * m
 
     def op_counts(self, instrument) -> dict:
         pm = instrument.field.phase_mul
