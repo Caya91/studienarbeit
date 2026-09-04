@@ -435,9 +435,14 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
                 "recovery_ops_mean": float(np.mean([r.recovery_ops for r in results])),
                 "unpaired_recovered_mean": float(np.mean([r.unpaired_recovered for r in results])),
                 "unpaired_failed_mean": float(np.mean([r.unpaired_failed for r in results])),
-                # ADR-0012 "Resolved": IC-refinement is measure-only -- this IS that
-                # measurement. NaN (not 0) when no pair was ever attempted this cell,
-                # so it's visibly distinct from "attempted and always succeeded".
+                # Failed-pair rate = pairs combined-recovery could not split. On the
+                # MAC arm IC-refinement is now PORTED (ticket 07), so this is the
+                # RESIDUAL after that fallback (multi-position overlap / budget-capped),
+                # not the raw same-position count it used to be; on the orthogonal
+                # segmented arm IC-refinement is not yet ported, so there it is still
+                # the raw overlapping-error drop (measure-only). NaN (not 0) when no
+                # pair was ever attempted this cell, so it's visibly distinct from
+                # "attempted and always succeeded".
                 "ic_refinement_failure_rate": (
                     sum(r.pairs_failed for r in results) / total_pairs if total_pairs else float("nan")
                 ),
@@ -453,7 +458,7 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
                         "Mean transmission overhead (packets / gen_size)",
                         run_dir / "overhead_vs_ber_by_n.png", ylim=None, hline=1.0)
     _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "ic_refinement_failure_rate",
-                        "IC-refinement failure rate (overlapping-error pairs, measure-only)",
+                        "Failed-pair rate (residual after IC-refinement on MAC arm; pre-IC on orthogonal)",
                         run_dir / "ic_refinement_failure_vs_ber_by_n.png", ylim=(-0.02, 1.02))
     _plot_by_n_strategy(summary_rows, n_values, plot_strategies, "time_per_packet_s_mean",
                         "Mean completion time per received packet (s)",

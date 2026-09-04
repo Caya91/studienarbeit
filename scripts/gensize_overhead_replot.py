@@ -17,7 +17,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-SCHEME_COLOR = {"hmac": "#3d405b", "segmented": "#588157"}
+# Covers both the current keyless/keyed keys and the legacy hmac/segmented keys so this
+# tool re-plots any run. Order below is the draw/legend order for whichever keys exist.
+SCHEME_ORDER = ("keyless", "keyed", "segmented", "hmac")
+SCHEME_COLOR = {"keyless": "#588157", "keyed": "#3d405b",
+                "segmented": "#588157", "hmac": "#3d405b"}
+SCHEME_LABEL = {"keyless": "keyless HMAC", "keyed": "keyed HMAC",
+                "hmac": "keyed HMAC (detect-drop, legacy)"}  # "segmented" filled from seg_label
 BER_LINESTYLE = {1e-3: "-", 1e-5: "--"}
 
 
@@ -46,7 +52,9 @@ def _series(rows, key, ber, gmin, gmax):
 def replot(run_dir: Path, gmin: float, gmax: float, seg_label: str) -> None:
     rows = _load(run_dir / "summary.csv")
     bers = sorted({r["bit_error_rate"] for r in rows})
-    label = {"hmac": "keyed HMAC", "segmented": seg_label}
+    label = {**SCHEME_LABEL, "segmented": seg_label}
+    present = {r["scheme_key"] for r in rows}
+    keys = [k for k in SCHEME_ORDER if k in present]
     # Full range (default) writes the canonical filenames; a real window gets a _zoom tag.
     gens = [r["gen_size"] for r in rows]
     full_range = gmin <= (min(gens) if gens else 0) and gmax >= (max(gens) if gens else 0)
@@ -55,7 +63,7 @@ def replot(run_dir: Path, gmin: float, gmax: float, seg_label: str) -> None:
 
     for ber in bers:
         fig, ax = plt.subplots(figsize=(8, 5.5))
-        for key in ("hmac", "segmented"):
+        for key in keys:
             xs, ys = _series(rows, key, ber, gmin, gmax)
             if xs:
                 ax.plot(xs, ys, "-", marker="o", color=SCHEME_COLOR[key], linewidth=2,
@@ -77,7 +85,7 @@ def replot(run_dir: Path, gmin: float, gmax: float, seg_label: str) -> None:
 
     # Combined zoom.
     fig, ax = plt.subplots(figsize=(9, 6))
-    for key in ("hmac", "segmented"):
+    for key in keys:
         for ber in bers:
             xs, ys = _series(rows, key, ber, gmin, gmax)
             if xs:

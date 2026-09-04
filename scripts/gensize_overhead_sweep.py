@@ -46,14 +46,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from binary_ext_fields.custom_field import create_field
-from simulation.integrity_schemes import AdmitConfig, HmacScheme, SegmentedScheme
+from simulation.integrity_schemes import AdmitConfig, SegmentedScheme, SegmentedMacScheme
 from simulation.scheme_comparison_sim import run_recovery_trial, _run_capped_cell
 from utils.log_helpers import get_run_log_dir
 
 FIELD_M = 8
 
-# Colours for the two arms.
-SCHEME_COLOR = {"hmac": "#3d405b", "segmented": "#588157"}
+# The two arms of the like-for-like comparison (agreed vocabulary, 2026-09-01):
+#   keyed HMAC   = SegmentedMacScheme -- segmented keyed homomorphic MAC, WITH combined
+#                  recovery (repairs segments). "HMAC"/"keyed HMAC" always means THIS.
+#   keyless HMAC = SegmentedScheme    -- segmented orthogonal self-tag, WITH combined
+#                  recovery (repairs segments). Same segmentation + same recovery, no key.
+# Both repair via the identical pairing/bit-flip combined search, segmented identically,
+# so this is a fair keyed-vs-keyless comparison (only the tag/oracle differs), unlike the
+# earlier run whose "HMAC" was plain detect-and-drop HmacScheme (no recovery).
+SCHEME_ORDER = ("keyless", "keyed")
+SCHEME_COLOR = {"keyless": "#588157", "keyed": "#3d405b"}
+SCHEME_LABEL = {"keyless": "keyless HMAC (N=5)", "keyed": "keyed HMAC (N=5)"}
 BER_LINESTYLE = {1e-3: "-", 1e-5: "--"}
 
 
@@ -87,15 +96,19 @@ def run_sweep(gen_sizes, bit_error_rates, num_trials, segmented_n, strategy,
     # BERs ascending. hmac (detect-and-drop, no search) always precedes segmented.
     bers_cheap_first = sorted(bit_error_rates)
 
+    keyed_name = f"mac_{strategy}_n{segmented_n}"
     raw_rows, summary_rows = [], []
     for gen_size in gen_sizes:
         data_fields = _data_fields_for(gen_size, segmented_n)
         eff_min_pool = min(base_min_pool, gen_size)   # drop the warm-up floor for small gens
         cfg = AdmitConfig(hamming_distance=hd, min_pool_size=eff_min_pool)
-        hmac = HmacScheme()
-        segmented = SegmentedScheme(num_data_segments=segmented_n - 1, data_fields=data_fields,
-                                    strategy=strategy, name=seg_name)
-        for scheme_key, scheme in (("hmac", hmac), ("segmented", segmented)):
+        # Both arms: N=segmented_n segments, same strategy, same combined recovery, same
+        # data_fields -> identical packet layout, only keyed-MAC vs keyless-orthogonal tag.
+        keyless = SegmentedScheme(num_data_segments=segmented_n - 1, data_fields=data_fields,
+                                  strategy=strategy, name=seg_name)
+        keyed = SegmentedMacScheme(num_data_segments=segmented_n - 1, data_fields=data_fields,
+                                   strategy=strategy, name=keyed_name)
+        for scheme_key, scheme in (("keyless", keyless), ("keyed", keyed)):
             for ber in bers_cheap_first:
                 print(f"=== scheme={scheme.name} gen_size={gen_size} "
                       f"data_fields={data_fields} BER={ber:g} ===", flush=True)
@@ -155,14 +168,14 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 
 def _plot_overhead(summary_rows, bit_error_rates, seg_name, run_dir) -> None:
-    """One figure per BER (overhead vs gen_size, hmac vs segmented) plus a combined
+    """One figure per BER (keyless vs keyed, overhead vs gen_size) plus a combined
     figure overlaying all BERs (linestyle = BER)."""
-    label = {"hmac": "keyed HMAC", "segmented": seg_name}
+    label = SCHEME_LABEL
 
     # Per-BER figures.
     for ber in bit_error_rates:
         fig, ax = plt.subplots(figsize=(8, 5.5))
-        for key in ("hmac", "segmented"):
+        for key in SCHEME_ORDER:
             pts = sorted((row["gen_size"], row["mean_overhead_decoded"]) for row in summary_rows
                          if row["scheme_key"] == key and row["bit_error_rate"] == ber
                          and not np.isnan(row["mean_overhead_decoded"]))
@@ -186,7 +199,7 @@ def _plot_overhead(summary_rows, bit_error_rates, seg_name, run_dir) -> None:
 
     # Combined figure: colour = scheme, linestyle = BER.
     fig, ax = plt.subplots(figsize=(9, 6))
-    for key in ("hmac", "segmented"):
+    for key in SCHEME_ORDER:
         for ber in bit_error_rates:
             pts = sorted((row["gen_size"], row["mean_overhead_decoded"]) for row in summary_rows
                          if row["scheme_key"] == key and row["bit_error_rate"] == ber
@@ -200,7 +213,7 @@ def _plot_overhead(summary_rows, bit_error_rates, seg_name, run_dir) -> None:
     ax.axhline(1.0, color="grey", linestyle="-.", alpha=0.6, label="ideal = 1")
     ax.set_xlabel("Generation size", fontsize=12, fontweight="bold")
     ax.set_ylabel("Mean overhead (packets sent / gen_size)", fontsize=12, fontweight="bold")
-    ax.set_title("Overhead vs generation size: HMAC vs segmented", fontsize=13, fontweight="bold")
+    ax.set_title("Overhead vs generation size: keyless vs keyed HMAC", fontsize=13, fontweight="bold")
     ax.yaxis.grid(True, linestyle="--", alpha=0.3)
     ax.legend(fontsize=9)
     plt.tight_layout()

@@ -7,8 +7,10 @@ a genuinely disjoint two-packet corruption is repaired byte-for-byte back to
 the original (not just "some" orthogonal value), that the coefficient block
 -- the whole-packet scheme's documented blind spot -- is repaired exactly like
 any data segment, that an odd one out correctly falls back to the ADR-0002
-linear solve, and that the ONE thing this mechanism cannot do (two errors at
-the exact same bit position) fails honestly instead of silently.
+linear solve, that a same-bit-position overlap the combined search cannot split
+is recovered by the IC-refinement fallback (ticket 07 -- each half routed into
+the ADR-0002 linear solve), and that anything genuinely beyond that fallback's
+reach still fails honestly instead of silently.
 """
 import random
 
@@ -292,33 +294,78 @@ def test_recover_uniform_hd_single_broken_packet_uses_unpaired_fallback():
     assert outcome.pairs_recovered == 0
 
 
-def test_recover_uniform_hd_cannot_split_overlapping_errors():
-    '''The documented, expected limitation (ADR-0012's deferred "IC-refinement
-    Case 2"): if both paired packets are corrupted at the SAME bit position,
-    the two flips cancel inside the XOR-combined row, so no split of the
-    (now zero-weight, at that position) combined delta can separate them.
-    This must fail honestly -- reported as a failed pair, ok=False -- not
-    silently produce a wrong "fix".'''
-    _banner("recover_uniform_hd: overlapping errors fail HONESTLY (known limit)")
-    random.seed(16)
+def test_recover_coefficient_first_recovers_overlapping_errors_via_ic_refinement():
+    '''Ticket 07 (IC-refinement, Case 2 -- keyless arm): two packets corrupted at the
+    SAME bit position of a data segment cancel in the XOR-combined row, so the combined
+    search alone cannot split them. IC-refinement routes each half into the ADR-0002
+    EXACT single-packet linear solve over its ARC-narrowed column -- the keyless analog
+    of the MAC arm's per-half tag brute-force -- and recovers BOTH byte-for-byte with no
+    silent wrong fix. ARC (coefficient_first + recoded spares) is what makes the solve
+    exact: it pins each broken packet to its single corrupted column (K=1 <= #trusted).
+    With ic_refinement disabled the same pair fails honestly, proving the fallback is
+    what recovers it.'''
+    _banner("recover_coefficient_first: overlapping errors recovered by IC-refinement (Case 2)")
+    random.seed(19)
     result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
+    recoded = recode_rlnc_without_coeffs(FIELD, result.packets, GEN_SIZE, count=5)
+    pool = [bytearray(p) for p in result.packets] + [bytearray(p) for p in recoded]
+    original = [bytearray(p) for p in pool]
+    data_segment = next(s for s in result.segments if s.name == "data-0")
+
+    broken = [bytearray(p) for p in pool]
+    broken[0] = error_into_packet_chosen_bit(broken[0], data_segment.start, chosen_bit=2)
+    broken[2] = error_into_packet_chosen_bit(broken[2], data_segment.start, chosen_bit=2)  # SAME column+bit
+    print("  packet[0] and packet[2] flipped at the SAME column 0, SAME bit 2 of data-0;")
+    print("  coefficients clean, recoded spares present -> ARC pins the column, solve is exact.")
+
+    # Without the fallback -> honest failure (the pre-ticket-07 behaviour).
+    off = recover_coefficient_first(FIELD, [bytearray(p) for p in broken], result.segments,
+                                    GEN_SIZE, max_combined_hd=2, ic_refinement=False)
+    off_outcome = next(o for o in off.per_segment if o.segment_name == "data-0")
+    print(f"  ic_refinement=False: ok={off.ok} (expect False), pairs_failed={off_outcome.pairs_failed}")
+    assert off.ok is False
+    assert off_outcome.pairs_failed == 1
+    assert off_outcome.pairs_recovered == 0
+
+    # With the fallback (default on) -> both halves recovered, byte-for-byte exact.
+    report = recover_coefficient_first(FIELD, broken, result.segments, GEN_SIZE, max_combined_hd=2)
+    outcome = next(o for o in report.per_segment if o.segment_name == "data-0")
+    print(f"  ic_refinement=True:  ok={report.ok} (expect True), "
+          f"pairs_recovered={outcome.pairs_recovered}, restored exactly={report.packets == original}")
+    assert report.ok is True
+    assert outcome.pairs_recovered == 1
+    assert outcome.pairs_failed == 0
+    assert report.packets == original  # no silent wrong repair -- exact originals back
+
+
+def test_ic_refinement_uniform_hd_overlap_fails_honestly_without_arc():
+    '''The safe no-op case: in uniform_hd there is no ARC narrowing, so a same-position
+    overlap leaves the per-half linear solve with K=payload_length unknowns and only a
+    couple of trusted rows -- underdetermined. IC-refinement (exact-solve only, never a
+    blind bit-flip that would risk a collision fix) therefore recovers nothing here and
+    the pair fails HONESTLY, rather than trading recovery for a silent decode. This is
+    the deliberate keyless-arm scoping: IC-refinement lifts recovery where ARC makes the
+    solve exact and is a no-op where it cannot.'''
+    _banner("IC-refinement (uniform_hd, no ARC): same-position overlap fails honestly")
+    random.seed(23)
+    result = _build_tagged_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS)
+    original = [bytearray(p) for p in result.packets]
     segment = next(s for s in result.segments if s.name == "data-1")
 
     broken = [bytearray(p) for p in result.packets]
     broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=2)
     broken[2] = error_into_packet_chosen_bit(broken[2], segment.start, chosen_bit=2)  # identical column+bit
-    print("  packet[0] and packet[2] flipped at the SAME column 0, SAME bit 2:")
-    _show_segment("broken pool", broken, segment, indices=[0, 2])
-    print("  the two flips cancel in the XOR-combined row -> cannot be split")
 
     report = recover_uniform_hd(FIELD, broken, result.segments, max_combined_hd=2)
     outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
-    print(f"  -> ok={report.ok} (expected False), "
-          f"pairs_failed={outcome.pairs_failed}, pairs_recovered={outcome.pairs_recovered}")
-
+    print(f"  -> ok={report.ok} (expect False), pairs_failed={outcome.pairs_failed}, "
+          f"pairs_recovered={outcome.pairs_recovered}")
     assert report.ok is False
     assert outcome.pairs_failed == 1
     assert outcome.pairs_recovered == 0
+    # The overlapping packets are left broken, not silently mutated into a wrong "fix".
+    assert report.packets[0] != original[0]
+    assert report.packets[2] != original[2]
 
 
 def test_arc_localizer_narrows_to_the_true_corrupted_column_given_a_full_rank_basis():
@@ -604,7 +651,8 @@ if __name__ == "__main__":
         test_recover_uniform_hd_repairs_two_broken_packets_in_a_data_segment,
         test_recover_uniform_hd_repairs_coefficient_segment_corruption,
         test_recover_uniform_hd_single_broken_packet_uses_unpaired_fallback,
-        test_recover_uniform_hd_cannot_split_overlapping_errors,
+        test_recover_coefficient_first_recovers_overlapping_errors_via_ic_refinement,
+        test_ic_refinement_uniform_hd_overlap_fails_honestly_without_arc,
         test_arc_localizer_narrows_to_the_true_corrupted_column_given_a_full_rank_basis,
         test_recover_coefficient_first_falls_back_when_pool_has_no_recoding_headroom_yet,
         test_recover_coefficient_first_narrows_via_arc_once_recoded_packets_have_accumulated,

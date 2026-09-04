@@ -85,18 +85,24 @@ wrong** (graded against ground truth). Not "the packet merely passed the check."
 
 **Blocked by:** 04 (need the matched homomorphic-MAC arm to attack — done/available now).
 
-**Status:** ready-for-agent
+**Status:** DONE (2026-08-31). `simulation/segmented_attack_sim.py`.
 
 **Done when:**
-- [ ] Both key settings (secret / compromised) run against the segmented MAC; the
+- [x] Both key settings (secret / compromised) run against the segmented MAC; the
       orthogonal scheme is attacked white-box in both.
-- [ ] Per scheme × setting: silently-accepted pollution rate + attacker forge-work
-      (field-ops to one accepted forgery), reported side by side.
-- [ ] The forge targets a SINGLE segment of a copied valid packet (not all N).
-- [ ] Forge-work and silent-accept shown vs N, demonstrating they are ~flat (N is not
+- [x] Per scheme × setting: silently-accepted pollution rate + attacker forge-work
+      (field-ops to one accepted forgery), reported side by side (summary.csv:
+      `silent_accept_rate`, `attacker_mul_per_admit`).
+- [x] The forge targets a SINGLE segment of a copied valid packet (the coeff-segment:
+      independent coeff row + valid/bogus tag; N-1 data segments stay genuine).
+- [x] Forge-work and silent-accept shown vs N, demonstrating they are ~flat (N is not
       a security knob); the real per-segment dial is V (tags/segment = gen_size).
-- [ ] A figure/table that makes the "MAC secrecy-cliff vs orthogonal flat work floor"
-      shape obvious.
-- [ ] The secret-key setting honestly shows the MAC winning forgery resistance; the
-      orthogonal argument is stated as key-freedom + compromise-resilience.
-- [ ] Conclusion recorded (ADR update) for the keyless-alternative claim.
+      Result at gen=6, 60 trials: orthogonal silent=1.0 @ ~76.6 muls flat over
+      N∈{2,3,5}; MAC-secret silent=0.0 (nothing admitted); MAC-compromised silent=1.0
+      @ 36 muls flat.
+- [x] A figure making the "MAC secrecy-cliff vs orthogonal flat work floor" shape
+      obvious (`silent_accept_vs_n.png`, `attacker_work_vs_n.png`).
+- [x] The secret-key setting honestly shows the MAC winning forgery resistance
+      (silent 0 vs orthogonal's 1.0); the orthogonal argument is stated as key-freedom
+      + compromise-resilience, NOT harder-to-forge (see `_print_shape_summary`).
+- [x] Conclusion recorded (ADR update) for the keyless-alternative claim — ADR-0008.

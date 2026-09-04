@@ -42,12 +42,21 @@ accepted. That verification is the actual acceptance oracle (ADR-0001); the
 combined filter is only ever a speed-up, never the thing that decides
 correctness.
 
-Known, documented limitation (ADR-0012's deferred "IC-refinement Case 2"):
-this only recovers *disjoint* errors -- if both paired packets have a bit
-flipped at the very same bit position, the two flips cancel inside the
-XOR-combined row and no split can recover them. That case is expected to
-surface as a failed pairing (recorded, not silently mishandled) -- see
-test_recover_uniform_hd_cannot_split_overlapping_errors.
+IC-refinement / Case 2 (ADR-0012, ticket 07 -- keyless analog of the MAC arm's
+port): the combined search only recovers *disjoint* errors -- if both paired
+packets have a bit flipped at the very same bit position, the two flips cancel
+inside the XOR-combined row and no split can see them. Rather than drop such a
+pair, when the combined search exhausts (and ic_refinement is on) each half is
+routed into the single-packet ADR-0002 linear solve (recover_unpaired_segment)
+over its own narrowed columns -- the keyless analog of the MAC arm's per-half
+tag brute-force, since there is no per-packet keyed tag to solve against here.
+recover_unpaired_segment only ever returns a slice that passes the real
+acceptance oracle (self + cross-orthogonal to the trusted pool), so this fallback
+introduces NO silent decode -- a wrong "fix" would need a genuine orthogonality
+collision, exactly as for the combined path and the unpaired path. A genuinely
+unrecoverable pair (neither half solvable/searchable within budget) still fails
+honestly (pairs_failed). Toggle with ic_refinement=False. See
+test_recover_uniform_hd_recovers_overlapping_errors_via_ic_refinement.
 """
 
 from dataclasses import dataclass
@@ -394,11 +403,58 @@ class SegmentRepairOutcome:
     unpaired_failed: int
 
 
+def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: TaggedSegment,
+                    pair, cols_a, cols_b, all_columns, pair_columns, trusted_slices,
+                    max_combined_hd: int, candidates_budget: int | None) -> bool:
+    """IC-refinement (ticket 07) for one pair the combined search could not split --
+    the same-position overlap Case 2. The keyless analog of the MAC arm's per-half tag
+    brute-force is the ADR-0002 EXACT single-packet linear solve (recover_packet_linear)
+    over each half's NARROWED columns -- its ARC localization from coefficient_first.
+    Deliberately NOT the blind whole-segment bit-flip: with no keyed tag, that weak
+    search accepts collision fixes that pass the ~1/q-per-witness orthogonality oracle,
+    which measurably RAISES the silent-decode rate -- the one thing ticket 07 decision 4
+    forbids. The exact solve is deterministic: it recovers when the narrowed column set
+    pins the error (K <= #trusted, which ARC delivers) and returns None (-> honest
+    failure) when underdetermined. So IC-refinement lifts recovery for coefficient_first
+    (ARC-narrowed) and is a safe no-op for uniform_hd (no narrowing -> underdetermined),
+    never trading recovery for silent errors.
+
+    Both halves are solved and gated BEFORE either is written, so a pair where only one
+    half recovers stays untouched (failed, not half-repaired). Each half must be
+    self+cross-orthogonal to the trusted pool AND the two halves mutually orthogonal
+    (the joint constraint the combined-pair path enforces), so no silent decode enters.
+    Returns True iff both halves were recovered and written.
+
+    candidate_columns unused (candidates_budget/pair_columns/max_combined_hd kept in the
+    signature for symmetry with the MAC arm's budgeted fallback; the exact solve is
+    polynomial, not a budgeted search)."""
+    cols_a_solve = cols_a if cols_a is not None else all_columns
+    cols_b_solve = cols_b if cols_b is not None else all_columns
+    slice_a = segment_slice(packets[pair.packet_a], segment)
+    slice_b = segment_slice(packets[pair.packet_b], segment)
+    with _count_phase(field, "recovery"):
+        fixed_a = recover_packet_linear(field, slice_a, set(cols_a_solve), trusted_slices)
+        if fixed_a is None or not is_orthogonal_to_trusted(field, fixed_a, trusted_slices):
+            return False
+        fixed_b = recover_packet_linear(field, slice_b, set(cols_b_solve), trusted_slices)
+        if fixed_b is None or not is_orthogonal_to_trusted(field, fixed_b, trusted_slices):
+            return False
+        # Mutual-orthogonality: two genuinely-correct halves are orthogonal to each
+        # other; requiring it rejects the residual collision fixes a per-half solve
+        # could otherwise admit (the combined path enforces the same constraint).
+        if inner_product_bytes(field, fixed_a, fixed_b) != 0:
+            return False
+    _write_segment(packets[pair.packet_a], segment, fixed_a)
+    _write_segment(packets[pair.packet_b], segment, fixed_b)
+    return True
+
+
 def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedSegment,
                     candidate_columns_for, max_combined_hd: int = 4,
                     candidates_budget: int | None = None,
                     pair_cache: dict | None = None,
-                    verify_count: int | None = None) -> SegmentRepairOutcome:
+                    verify_count: int | None = None,
+                    ic_refinement: bool = True) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -453,6 +509,15 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
             _write_segment(packets[pair.packet_b], segment, result.fixed_b)
             pairs_recovered += 1
+        elif ic_refinement and _ic_refine_pair(field, packets, segment, pair, cols_a, cols_b,
+                                               all_columns, pair_columns, trusted_slices,
+                                               max_combined_hd, candidates_budget):
+            # Case-2 fallback (ticket 07, keyless analog): the combined search is
+            # blind to same-position overlaps, so repair each half on its own via the
+            # ADR-0002 single-packet linear solve. _ic_refine_pair writes both halves
+            # in place and returns True only if BOTH pass the real acceptance oracle
+            # (self+cross orthogonal to the trusted pool) -- so no silent decode.
+            pairs_recovered += 1
         else:
             pairs_failed += 1
 
@@ -490,7 +555,8 @@ class SegmentedRecoveryReport:
 def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
                         max_combined_hd: int = 4, candidates_budget: int | None = None,
                         pair_cache: dict | None = None,
-                        verify_count: int | None = None) -> SegmentedRecoveryReport:
+                        verify_count: int | None = None,
+                        ic_refinement: bool = True) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -504,7 +570,7 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
     per_segment = [
         repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
         for segment in segments
     ]
     with _count_phase(field, "detection"):
@@ -579,7 +645,8 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
 def recover_coefficient_first(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
                                gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None,
                                pair_cache: dict | None = None,
-                               verify_count: int | None = None) -> SegmentedRecoveryReport:
+                               verify_count: int | None = None,
+                               ic_refinement: bool = True) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -597,7 +664,7 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
     per_segment = [
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
     ]
 
     coeff_trust = classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
@@ -609,7 +676,7 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                           pair_cache=pair_cache, verify_count=verify_count)
+                           pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
         )
 
     with _count_phase(field, "detection"):

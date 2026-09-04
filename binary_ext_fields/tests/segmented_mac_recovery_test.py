@@ -7,8 +7,9 @@ hand-worked Combined Recovery example (teach_me lesson 0002) number for number
 over toy GF(2^4) -- keys, T1/T2, Sc, Tc, Sc_corrected, cross-reconstructed
 S1'/S2', refined IC, and the final recovered segments. The rest exercise the
 homomorphic property (tag survives recoding), Case-1 recovery through the
-production pipeline, the honest Case-2 failure this pass deliberately does not
-fix (IC-refinement deferred), and that coefficient_first's ARC narrowing engages.
+production pipeline, Case-2 recovery via the IC-refinement fallback (ticket 07 --
+same-position overlap, with an honest failure for anything beyond its single-
+position scope), and that coefficient_first's ARC narrowing engages.
 """
 import random
 
@@ -253,23 +254,67 @@ def test_recover_uniform_hd_mac_single_broken_packet_uses_unpaired_fallback():
     assert outcome.unpaired_recovered == 1
 
 
-def test_recover_uniform_hd_mac_cannot_split_overlapping_errors():
-    '''The deferred limitation (IC-refinement Case 2): two packets flipped at the
-    SAME column+bit cancel in the XOR-combine, so no split recovers them. This must
-    FAIL honestly -- counted as a failed pair, ok=False -- not silently guess.'''
-    _banner("recover_uniform_hd_mac: overlapping errors fail honestly (deferred Case 2)")
+def test_recover_uniform_hd_mac_recovers_overlapping_errors_via_ic_refinement():
+    '''Ticket 07 (IC-refinement, Case 2): two packets flipped at the SAME column+bit
+    cancel in the XOR-combine, so the combined search alone is blind to them. The
+    IC-refinement fallback correcting each half on its OWN MAC recovers BOTH exactly
+    -- and, crucially, restores them byte-for-byte (no silent wrong repair). With
+    ic_refinement disabled the same pair fails honestly, proving the fallback is what
+    recovers it, not a lucky combined split.'''
+    _banner("recover_uniform_hd_mac: overlapping errors recovered by IC-refinement (Case 2)")
     packets, keyset, segments, _ = _build_mac_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS, NUM_KEYS, seed=16)
+    original = [bytearray(p) for p in packets]
     segment = next(s for s in segments if s.name == "data-1")
     broken = [bytearray(p) for p in packets]
     broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=2)
     broken[2] = error_into_packet_chosen_bit(broken[2], segment.start, chosen_bit=2)  # identical col+bit
+
+    # Without the fallback -> honest failure (the pre-ticket-07 behaviour).
+    off = recover_uniform_hd_mac(FIELD, keyset, [bytearray(p) for p in broken], segments,
+                                 max_combined_hd=2, ic_refinement=False)
+    off_outcome = next(o for o in off.per_segment if o.segment_name == "data-1")
+    print(f"  ic_refinement=False: ok={off.ok} (expect False), pairs_failed={off_outcome.pairs_failed}")
+    assert off.ok is False
+    assert off_outcome.pairs_failed == 1
+    assert off_outcome.pairs_recovered == 0
+
+    # With the fallback (default on) -> both halves recovered, byte-for-byte exact.
     report = recover_uniform_hd_mac(FIELD, keyset, broken, segments, max_combined_hd=2)
+    outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
+    print(f"  ic_refinement=True:  ok={report.ok} (expect True), pairs_recovered={outcome.pairs_recovered}, "
+          f"restored exactly={report.packets == original}")
+    assert report.ok
+    assert outcome.pairs_recovered == 1
+    assert outcome.pairs_failed == 0
+    assert report.packets == original  # no silent wrong repair -- exact originals back
+
+
+def test_ic_refinement_leaves_genuinely_unrecoverable_pair_as_honest_failure():
+    '''IC-refinement is scoped to single-position overlap (ticket 07 decision 2). A
+    pair whose per-half correction needs MORE than max_combined_hd flips is still out
+    of reach: two errors per packet at distinct columns, run with max_combined_hd=1,
+    so neither the combined search (hd=1) nor the per-half fallback (hd=1) can fix a
+    2-error half. It must fail honestly (pairs_failed), never a silent guess.'''
+    _banner("IC-refinement: per-half error beyond max_hd still fails honestly")
+    packets, keyset, segments, _ = _build_mac_pool(FIELD, GEN_SIZE, DATA_FIELDS, NUM_DATA_SEGMENTS, NUM_KEYS, seed=23)
+    original = [bytearray(p) for p in packets]
+    segment = next(s for s in segments if s.name == "data-1")
+    broken = [bytearray(p) for p in packets]
+    # Two distinct-column errors in each of the two broken packets -> each half needs hd=2.
+    broken[0] = error_into_packet_chosen_bit(broken[0], segment.start, chosen_bit=2)
+    broken[0] = error_into_packet_chosen_bit(broken[0], segment.start + 1, chosen_bit=4)
+    broken[2] = error_into_packet_chosen_bit(broken[2], segment.start, chosen_bit=3)
+    broken[2] = error_into_packet_chosen_bit(broken[2], segment.start + 2, chosen_bit=5)
+    report = recover_uniform_hd_mac(FIELD, keyset, broken, segments, max_combined_hd=1)
     outcome = next(o for o in report.per_segment if o.segment_name == "data-1")
     print(f"  ok={report.ok} (expect False), pairs_failed={outcome.pairs_failed}, "
           f"pairs_recovered={outcome.pairs_recovered}")
     assert report.ok is False
     assert outcome.pairs_failed == 1
     assert outcome.pairs_recovered == 0
+    # The unrecoverable segment is left broken, not silently mutated into a wrong "fix".
+    assert report.packets[0] != original[0]
+    assert report.packets[2] != original[2]
 
 
 # ── (d) coefficient_first ARC narrowing engages ───────────────────────────────
@@ -353,7 +398,8 @@ if __name__ == "__main__":
         test_recover_uniform_hd_mac_repairs_a_data_segment,
         test_recover_uniform_hd_mac_repairs_the_coefficient_segment,
         test_recover_uniform_hd_mac_single_broken_packet_uses_unpaired_fallback,
-        test_recover_uniform_hd_mac_cannot_split_overlapping_errors,
+        test_recover_uniform_hd_mac_recovers_overlapping_errors_via_ic_refinement,
+        test_ic_refinement_leaves_genuinely_unrecoverable_pair_as_honest_failure,
         test_coefficient_first_mac_narrows_candidate_columns_via_arc,
         test_pair_cache_mac_skips_the_search_on_an_unchanged_pair,
     ]

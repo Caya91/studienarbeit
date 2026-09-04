@@ -70,21 +70,29 @@ is the keyless gap and the high-BER regime.
 
 **Blocked by:** — (implementable now). Supersedes ticket 05's "measure-only" option.
 
-**Status:** ready-for-agent
+**Status:** DONE — both arms (MAC 2026-08-31, orthogonal 2026-09-01).
 
 **Done when:**
-- [ ] MAC arm: overlap detected (combined search exhausts) → each half brute-forced over
+- [x] MAC arm: overlap detected (combined search exhausts) → each half brute-forced over
       the narrowed positions against its own MAC tag; done and tested first.
-- [ ] Orthogonal arm: same overlap detection → each half repaired by the single-packet
-      linear solve over the narrowed positions; done after the MAC arm.
-- [ ] Both use `pair_budget` for the fallback search, with an unlimited override.
-- [ ] `silent_decode_rate` stays 0 (every corrected half re-verified against its real
-      oracle).
-- [ ] The tests that currently assert honest failure on overlapping errors
-      (`test_recover_uniform_hd_mac_cannot_split_overlapping_errors` and its orthogonal
-      twin) are updated to assert RECOVERY instead; a same-position overlap case added.
-- [ ] A check run shows `ic_refinement_failure_rate` / `pairs_failed` drop and
-      `correct_rate` rise (especially the keyless arm), silent still 0. (Figure
-      non-final — see decision 5.)
-- [ ] ADR-0012's IC-refinement item updated: decision = ported (was leaning
-      measure-only; reversed because recovery is the priority).
+      (Stage-2 fallback in `_search_pair_mac`, `_bitflip_search_mac`; `ic_refinement` flag.)
+- [x] Orthogonal arm: same overlap detection → each half repaired by the single-packet
+      **EXACT** linear solve (`recover_packet_linear`) over the ARC-narrowed positions,
+      gated on self+cross + mutual orthogonality. `_ic_refine_pair` in `segmented_recovery.py`.
+      NOT the blind whole-segment bit-flip: that raised silent decodes (2→6 @BER=3e-3),
+      violating decision 4 — the keyless oracle is too weak (~1/q) for a broad search.
+- [x] MAC arm shares `candidates_budget` (None = unlimited) for its per-half search.
+      Orthogonal fallback is the polynomial exact solve, so no budget knob needed.
+- [x] `silent_decode_rate` stays 0 / non-increasing (every corrected half re-verified
+      against its real oracle). MAC sweep silent=0; keyless A/B silent NON-INCREASING
+      (uniform_hd 2→2, coefficient_first 1→1) — the exact-solve scoping is what secures
+      this (the blind bit-flip broke it, 2→6).
+- [x] Both arms' overlap tests flipped to assert RECOVERY
+      (`..._mac_recovers_overlapping_errors_via_ic_refinement`,
+      `test_recover_coefficient_first_recovers_overlapping_errors_via_ic_refinement`),
+      each with a beyond-scope honest-failure test.
+- [x] Check run: MAC `pairs_failed` 68→5, `pairs_recovered` 132→195 (silent 0);
+      keyless `pairs_failed` uniform_hd 47→42 / coefficient_first 126→121 (silent
+      non-increasing) at BER=3e-3.
+- [x] ADR-0012's IC-refinement item updated: both arms marked ported; keyless
+      exact-solve-vs-bit-flip correctness decision recorded.
