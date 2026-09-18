@@ -13,6 +13,9 @@ rather than crash -- the N at which construction dies is itself a data point.
 Reuses run_recovery_trial unchanged (same admit/decode loop as the real sweeps).
 
 Run (repo root, main venv):
+    set vars once
+    $env:LOG_FOLDER="./logs"; $env:PYTHONPATH=".";
+
     # smoke: fast, proves it runs + build-failure handling
     LOG_FOLDER=./logs PYTHONPATH=. python scripts/segmented_retransmit_sweep.py --smoke
     # full sweep + plot
