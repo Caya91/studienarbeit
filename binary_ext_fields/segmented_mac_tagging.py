@@ -168,6 +168,18 @@ def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, 
     return mac_tag_vector(field, keys[:n], payload) == recv_tags
 
 
+def mac_tag_overhead_symbols(segments: list[MacSegment]) -> int:
+    """Total tag symbols a MAC-tagged generation carries on the wire: the sum of
+    num_keys over segments, no salt (ADR-0013 overhead accounting, ticket 11).
+
+    At the isolated harness's num_keys = gen_size this is N*gen_size -- exactly the
+    keyless arm's tag columns. The keyless arm additionally spends one salt symbol
+    per segment (a zero self-tag is degenerate, ADR-0010; a zero MAC tag is valid so
+    the keyed arm needs none), so keyless redundancy = keyed tags + N salt. That one
+    salt/segment is the whole, and only, overhead gap between the arms."""
+    return sum(seg.num_keys for seg in segments)
+
+
 def check_mac_segmented(field: TableField, keyset: list[list[bytearray]], packets: list[bytearray],
                         segments: list[MacSegment]) -> dict[str, bool]:
     """Per-segment ground-truth check: True iff EVERY packet's tag verifies in that

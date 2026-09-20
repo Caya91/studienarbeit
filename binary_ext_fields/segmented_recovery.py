@@ -404,6 +404,11 @@ class SegmentRepairOutcome:
     pairs_failed: int
     unpaired_recovered: int
     unpaired_failed: int
+    # ADR-0013 ARC-only: broken packets that could NOT be ARC-localized (their own
+    # coefficients aren't trusted) and were dropped BEFORE pairing rather than
+    # blindly whole-segment-searched. 0 for every non-ARC-only caller (drop_unlocalized
+    # defaults off), so existing outcomes are unchanged.
+    dropped: int = 0
 
 
 def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: TaggedSegment,
@@ -458,7 +463,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
                     pair_cache: dict | None = None,
                     verify_count: int | None = None,
                     ic_refinement: bool = True,
-                    W: int | None = None) -> SegmentRepairOutcome:
+                    W: int | None = None,
+                    drop_unlocalized: bool = False) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -478,9 +484,28 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     persists per-pair search results across rounds. The unpaired linear solve is
     not cached -- it is polynomial, not a budgeted search, so it is not the cost
     the persistence is aimed at.
-    """
+
+    drop_unlocalized (ADR-0013 ARC-only, default off): when True, any broken packet
+    the localizer returns None for (its own coefficients aren't trusted, so ARC
+    cannot narrow it) is DROPPED before pairing -- removed from the broken set,
+    counted in `dropped`, and left untouched -- instead of the default behaviour of
+    falling back to a whole-segment blind search. This is what makes ARC-only's
+    coeff-corrupted targets drop *symmetrically* in both arms (the localizer's
+    None-verdict depends only on injected coeff-trust, not on the tag oracle), rather
+    than one arm's blind search half-repairing what the other drops. Off for every
+    coefficient_first / uniform_hd caller, so their None -> whole-segment fallback is
+    unchanged."""
     trust = classify_segment_trust(field, packets, segment, verify_count=verify_count)
-    plan = plan_pairing(trust)
+    if drop_unlocalized:
+        dropped_indices = [i for i in trust.broken if candidate_columns_for(i) is None]
+        dropped_set = set(dropped_indices)
+        pairing_trust = SegmentTrust(segment.name,
+                                     broken=[i for i in trust.broken if i not in dropped_set],
+                                     trusted=trust.trusted)
+    else:
+        dropped_indices = []
+        pairing_trust = trust
+    plan = plan_pairing(pairing_trust)
     trusted_slices = [segment_slice(packets[i], segment) for i in trust.trusted]
     all_columns = list(range(segment.payload_length))  # payload cols for the exact linear solve stage
     # Pair search covers the WHOLE segment -- payload + salt + tags (ADR-0012 blind-spot
@@ -544,7 +569,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         else:
             unpaired_failed += 1
 
-    return SegmentRepairOutcome(segment.name, pairs_recovered, pairs_failed, unpaired_recovered, unpaired_failed)
+    return SegmentRepairOutcome(segment.name, pairs_recovered, pairs_failed,
+                                unpaired_recovered, unpaired_failed, dropped=len(dropped_indices))
 
 
 # ── Top level: the two strategies ADR-0012 asks to measure against each other ─
@@ -578,6 +604,66 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                        pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
         for segment in segments
     ]
+    with _count_phase(field, "detection"):
+        ok = all(check_orth_segmented(field, tmp, segments).values())
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
+
+
+def recover_arc_only(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
+                     gen_size: int, basis_idx: list[int], coeff_clean_target_idx: list[int],
+                     max_combined_hd: int = 4, candidates_budget: int | None = None,
+                     pair_cache: dict | None = None,
+                     verify_count: int | None = None,
+                     ic_refinement: bool = True,
+                     W: int | None = None) -> SegmentedRecoveryReport:
+    """ADR-0013 ARC-only variant: skip the coeff-repair stage entirely and repair the
+    DATA segments only, ARC-localizing from an INJECTED helper basis instead of from
+    coefficient_first's repaired-then-classified coeff trust.
+
+    The point (ADR-0013): coefficient_first's coeff-repair success can differ between
+    the keyless and keyed arms and propagate into which packets become coeff-trusted
+    for ARC -- a confound. Here the ARC basis is *given* (clean helper packets the
+    harness never corrupts) and identical to both arms, so ARC availability is the
+    same on both sides and only the acceptance oracle can still differ.
+
+    - `basis_idx`: the injected clean helper indices (>= gen_size of them). They form
+      the ARC decoding basis AND, via classify_segment_trust below, the keyless
+      acceptance witnesses. Never repaired here.
+    - `coeff_clean_target_idx`: target indices whose coefficient block is clean (from
+      the harness's ground truth). A target is ARC-localizable iff its own coeffs are
+      trusted, so these plus the basis are the per-packet localization-eligible set.
+
+    Two error models (ADR-0013), both handled by construction:
+      (a) data-only BER -- no target's coeffs are corrupted, so every target is in
+          coeff_clean_target_idx and ARC always applies (nothing drops).
+      (b) whole-packet BER -- a coeff-corrupted target is NOT in coeff_clean_target_idx,
+          so its data-segment localizer returns None and drop_unlocalized drops it
+          (identically in both arms), never half-repairing it.
+
+    The coeff segment is deliberately left unrepaired (coeffs assumed clean for the
+    targets we keep); `ok` still checks every segment, so a kept-but-coeff-broken pool
+    reports ok=False honestly."""
+    tmp = [bytearray(p) for p in packets]
+    coeff_segment = next(s for s in segments if s.kind == "coeff")
+    data_segments = [s for s in segments if s.kind == "data"]
+    basis = sorted(set(basis_idx))
+    # coeffs trusted for ARC = the clean helper basis + any target whose coeffs are
+    # clean; passing `basis` as the data-trusted set keeps the localizer's basis
+    # exactly the helpers (basis is a subset of coeff_trusted, so their intersection
+    # is basis).
+    coeff_trusted = sorted(set(basis) | set(coeff_clean_target_idx))
+
+    per_segment = []  # coeff segment intentionally NOT repaired (ARC-only)
+    for segment in data_segments:
+        localizer = _make_arc_localizer(field, tmp, coeff_segment, segment, gen_size,
+                                        coeff_trusted, basis)
+        per_segment.append(
+            repair_segment(field, tmp, segment, candidate_columns_for=localizer,
+                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                           pair_cache=pair_cache, verify_count=verify_count,
+                           ic_refinement=ic_refinement, W=W, drop_unlocalized=True)
+        )
+
     with _count_phase(field, "detection"):
         ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
