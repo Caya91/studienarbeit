@@ -107,21 +107,30 @@ def recover_packet_linear(field: TableField, broken_packet: bytearray, candidate
     return fixed
 
 
-def is_orthogonal_to_trusted(field: TableField, candidate: bytearray, trusted_packets: list[bytearray]) -> bool:
+def is_orthogonal_to_trusted(field: TableField, candidate: bytearray, trusted_packets: list[bytearray],
+                             W: int | None = None) -> bool:
     '''The bit-flip acceptance oracle (ADR-0007, "check with other packets").
 
     A repaired candidate is accepted iff it is self-orthogonal AND orthogonal to
-    every trusted packet. This is the targeted, per-candidate cost -- exactly
-    M+1 inner products -- rather than the full O(M^2) check_orth, so a
+    every checked trusted packet. This is the targeted, per-candidate cost --
+    exactly W+1 inner products -- rather than the full O(M^2) check_orth, so a
     CountingField measures only the work attributable to recovery.
 
+    W (ADR-0013, recovery-acceptance width): None = check against EVERY trusted
+    packet (today's behaviour, unchanged for all existing callers). An int W caps
+    the cross-check to the FIRST W trusted packets (trusted_packets[:W]) so the
+    keyless arm's acceptance width matches the keyed arm's W verified tags, giving
+    a comparable nominal collision ~q^-W. The self-check is ALWAYS applied and is
+    NOT counted toward W -- it is free keyless structure, not one of the W checks.
+
     Orthogonality to a trusted set is necessary but not sufficient: with fewer
-    than gen_size independent trusted packets a wrong repair can still pass,
-    which is exactly the silent-failure regime the simulation measures.
+    than gen_size independent trusted packets (or a capped W) a wrong repair can
+    still pass, which is exactly the silent-failure regime the simulation measures.
     '''
     if not check_orth_packet(field, candidate):
         return False
-    for t in trusted_packets:
+    witnesses = trusted_packets if W is None else trusted_packets[:W]
+    for t in witnesses:
         if inner_product_bytes(field, candidate, t) != 0:
             return False
     return True

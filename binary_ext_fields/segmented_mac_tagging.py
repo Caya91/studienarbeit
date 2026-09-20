@@ -146,14 +146,26 @@ def tag_generation_mac(field: TableField, packets: list[bytearray], gen_size: in
     return assembled
 
 
-def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, segment: MacSegment) -> bool:
+def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, segment: MacSegment,
+                       W: int | None = None) -> bool:
     """Self-sufficient MAC verification of one segment slice ([payload | tags]):
     recompute the tag vector over the received payload and compare to the received
     tag symbols. No cross-check against other packets (a MAC needs none -- contrast
-    the orthogonal scheme's self + cross check). "Broken" = tag mismatch."""
+    the orthogonal scheme's self + cross check). "Broken" = tag mismatch.
+
+    W (ADR-0013, recovery-acceptance width): None = verify ALL num_keys tags
+    (today's behaviour, unchanged for every existing caller). An int W verifies only
+    the FIRST W tags (keys[:W] against the first W received tag symbols), so the
+    keyed arm's acceptance width matches the keyless arm's W cross-checks -- nominal
+    collision ~q^-W (exact here, since generate_keyset's keys are i.i.d.). The
+    remaining num_keys-W tags still ride the wire (overhead parity, ticket 11), they
+    are simply not consulted. W must not exceed num_keys."""
+    if W is not None:
+        assert W <= segment.num_keys, f"W={W} exceeds num_keys={segment.num_keys}"
+    n = segment.num_keys if W is None else W
     payload = segment_slice[:segment.payload_length]
-    recv_tags = list(segment_slice[segment.payload_length:segment.payload_length + segment.num_keys])
-    return mac_tag_vector(field, keys, payload) == recv_tags
+    recv_tags = list(segment_slice[segment.payload_length:segment.payload_length + n])
+    return mac_tag_vector(field, keys[:n], payload) == recv_tags
 
 
 def check_mac_segmented(field: TableField, keyset: list[list[bytearray]], packets: list[bytearray],

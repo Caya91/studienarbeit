@@ -238,24 +238,26 @@ class PairRecoveryResult:
 
 def _pair_cache_key(slice_a: bytearray, slice_b: bytearray, trusted_slices: list[bytearray],
                     candidate_columns: list[int], max_combined_hd: int,
-                    candidates_budget: int | None):
+                    candidates_budget: int | None, W: int | None = None):
     """Canonical, hashable key over everything the search's output depends on.
     Trusted slices are sorted because they enter only through order-independent
     orthogonality checks -- so the same trusted *set* must key the same result
     regardless of the order classify_segment_trust happened to list them in.
     candidate_columns is kept in order: it drives the combination-iteration
-    order, so it genuinely affects which split is found first."""
+    order, so it genuinely affects which split is found first. W (ADR-0013
+    acceptance width) is part of the key because it changes the oracle, hence the
+    result -- a cache built at one W must never be reused at another."""
     return (
         bytes(slice_a), bytes(slice_b),
         tuple(sorted(bytes(t) for t in trusted_slices)),
-        tuple(candidate_columns), max_combined_hd, candidates_budget,
+        tuple(candidate_columns), max_combined_hd, candidates_budget, W,
     )
 
 
 def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice_b: bytearray,
                                      trusted_slices: list[bytearray], candidate_columns: list[int],
                                      max_combined_hd: int, candidates_budget: int | None = None,
-                                     pair_cache: dict | None = None) -> PairRecoveryResult:
+                                     pair_cache: dict | None = None, W: int | None = None) -> PairRecoveryResult:
     """
     Search low-Hamming-distance corrections to the XOR-combined row of two
     broken same-segment packets, restricted to `candidate_columns` (payload-local
@@ -291,22 +293,22 @@ def recover_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
     """
     if pair_cache is not None:
         key = _pair_cache_key(slice_a, slice_b, trusted_slices, candidate_columns,
-                              max_combined_hd, candidates_budget)
+                              max_combined_hd, candidates_budget, W)
         cached = pair_cache.get(key)
         if cached is not None:
             return cached
         result = _search_pair_by_combined_search(field, slice_a, slice_b, trusted_slices,
-                                                  candidate_columns, max_combined_hd, candidates_budget)
+                                                  candidate_columns, max_combined_hd, candidates_budget, W=W)
         pair_cache[key] = result
         return result
     return _search_pair_by_combined_search(field, slice_a, slice_b, trusted_slices,
-                                           candidate_columns, max_combined_hd, candidates_budget)
+                                           candidate_columns, max_combined_hd, candidates_budget, W=W)
 
 
 def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice_b: bytearray,
                                      trusted_slices: list[bytearray], candidate_columns: list[int],
-                                     max_combined_hd: int, candidates_budget: int | None
-                                     ) -> PairRecoveryResult:
+                                     max_combined_hd: int, candidates_budget: int | None,
+                                     W: int | None = None) -> PairRecoveryResult:
     """The actual combined search, extracted so recover_pair_by_combined_search can
     wrap it with the per-pair cache. Pure and deterministic in its inputs."""
     bits_per_symbol = field.bit_lenght
@@ -321,7 +323,7 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
                     return PairRecoveryResult(False, None, None, None, candidates_tried)
                 candidates_tried += 1
                 combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
-                if not is_orthogonal_to_trusted(field, combined_candidate, trusted_slices):
+                if not is_orthogonal_to_trusted(field, combined_candidate, trusted_slices, W=W):
                     continue  # combined filter: cannot be a valid disjoint split, skip cheaply
 
                 for a_bits in _powerset(combo):
@@ -329,9 +331,9 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
                     candidate_a = _flip_bits(slice_a, a_bits, bits_per_symbol)
                     candidate_b = _flip_bits(slice_b, b_bits, bits_per_symbol)
 
-                    if not is_orthogonal_to_trusted(field, candidate_a, trusted_slices):
+                    if not is_orthogonal_to_trusted(field, candidate_a, trusted_slices, W=W):
                         continue
-                    if not is_orthogonal_to_trusted(field, candidate_b, trusted_slices):
+                    if not is_orthogonal_to_trusted(field, candidate_b, trusted_slices, W=W):
                         continue
                     if inner_product_bytes(field, candidate_a, candidate_b) != 0:
                         continue
@@ -345,7 +347,7 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
 
 def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, trusted_slices: list[bytearray],
                                candidate_columns: list[int], max_hd: int,
-                               candidates_budget: int | None) -> bytearray | None:
+                               candidates_budget: int | None, W: int | None = None) -> bytearray | None:
     """Single-packet analogue of _search_pair_by_combined_search: flip up to `max_hd`
     bits across `candidate_columns`, accept the first candidate that passes the
     acceptance oracle (self- AND cross-orthogonal to the trusted pool). Unlike the pair
@@ -362,14 +364,15 @@ def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, truste
                 return None
             tried += 1
             candidate = _flip_bits(broken_slice, combo, bits_per_symbol)
-            if is_orthogonal_to_trusted(field, candidate, trusted_slices):
+            if is_orthogonal_to_trusted(field, candidate, trusted_slices, W=W):
                 return candidate
     return None
 
 
 def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candidate_columns: list[int],
                               trusted_slices: list[bytearray], whole_segment_columns: list[int] | None = None,
-                              max_hd: int = 2, candidates_budget: int | None = None) -> bytearray | None:
+                              max_hd: int = 2, candidates_budget: int | None = None,
+                              W: int | None = None) -> bytearray | None:
     """ADR-0012's fallback for a broken segment with no pairing partner.
 
     Two-stage, mirroring the whole-packet pipeline (playground/new_recovery.py
@@ -386,10 +389,10 @@ def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candida
     candidates_budget. Returns None only if BOTH stages give up."""
     with _count_phase(field, "recovery"):
         fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
-        if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices):
+        if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices, W=W):
             return fixed
         cols = whole_segment_columns if whole_segment_columns is not None else candidate_columns
-        return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget)
+        return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget, W=W)
 
 
 # ── One segment, either strategy ─────────────────────────────────────────────
@@ -405,7 +408,7 @@ class SegmentRepairOutcome:
 
 def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: TaggedSegment,
                     pair, cols_a, cols_b, all_columns, pair_columns, trusted_slices,
-                    max_combined_hd: int, candidates_budget: int | None) -> bool:
+                    max_combined_hd: int, candidates_budget: int | None, W: int | None = None) -> bool:
     """IC-refinement (ticket 07) for one pair the combined search could not split --
     the same-position overlap Case 2. The keyless analog of the MAC arm's per-half tag
     brute-force is the ADR-0002 EXACT single-packet linear solve (recover_packet_linear)
@@ -434,10 +437,10 @@ def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: Tagged
     slice_b = segment_slice(packets[pair.packet_b], segment)
     with _count_phase(field, "recovery"):
         fixed_a = recover_packet_linear(field, slice_a, set(cols_a_solve), trusted_slices)
-        if fixed_a is None or not is_orthogonal_to_trusted(field, fixed_a, trusted_slices):
+        if fixed_a is None or not is_orthogonal_to_trusted(field, fixed_a, trusted_slices, W=W):
             return False
         fixed_b = recover_packet_linear(field, slice_b, set(cols_b_solve), trusted_slices)
-        if fixed_b is None or not is_orthogonal_to_trusted(field, fixed_b, trusted_slices):
+        if fixed_b is None or not is_orthogonal_to_trusted(field, fixed_b, trusted_slices, W=W):
             return False
         # Mutual-orthogonality: two genuinely-correct halves are orthogonal to each
         # other; requiring it rejects the residual collision fixes a per-half solve
@@ -454,7 +457,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
                     candidates_budget: int | None = None,
                     pair_cache: dict | None = None,
                     verify_count: int | None = None,
-                    ic_refinement: bool = True) -> SegmentRepairOutcome:
+                    ic_refinement: bool = True,
+                    W: int | None = None) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -503,7 +507,7 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         slice_b = segment_slice(packets[pair.packet_b], segment)
         result = recover_pair_by_combined_search(field, slice_a, slice_b, trusted_slices, columns,
                                                   max_combined_hd, candidates_budget=candidates_budget,
-                                                  pair_cache=pair_cache)
+                                                  pair_cache=pair_cache, W=W)
 
         if result.ok:
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
@@ -511,7 +515,7 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
             pairs_recovered += 1
         elif ic_refinement and _ic_refine_pair(field, packets, segment, pair, cols_a, cols_b,
                                                all_columns, pair_columns, trusted_slices,
-                                               max_combined_hd, candidates_budget):
+                                               max_combined_hd, candidates_budget, W=W):
             # Case-2 fallback (ticket 07, keyless analog): the combined search is
             # blind to same-position overlaps, so repair each half on its own via the
             # ADR-0002 single-packet linear solve. _ic_refine_pair writes both halves
@@ -532,7 +536,7 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         # of dropped (mirrors the pair path's whole-segment fix).
         fixed = recover_unpaired_segment(field, broken_slice, columns, trusted_slices,
                                          whole_segment_columns=pair_columns,
-                                         max_hd=max_combined_hd, candidates_budget=candidates_budget)
+                                         max_hd=max_combined_hd, candidates_budget=candidates_budget, W=W)
 
         if fixed is not None:
             _write_segment(packets[unpaired.packet_index], segment, fixed)
@@ -556,7 +560,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                         max_combined_hd: int = 4, candidates_budget: int | None = None,
                         pair_cache: dict | None = None,
                         verify_count: int | None = None,
-                        ic_refinement: bool = True) -> SegmentedRecoveryReport:
+                        ic_refinement: bool = True,
+                        W: int | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -570,7 +575,7 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
     per_segment = [
         repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
         for segment in segments
     ]
     with _count_phase(field, "detection"):
@@ -646,7 +651,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                                gen_size: int, max_combined_hd: int = 4, candidates_budget: int | None = None,
                                pair_cache: dict | None = None,
                                verify_count: int | None = None,
-                               ic_refinement: bool = True) -> SegmentedRecoveryReport:
+                               ic_refinement: bool = True,
+                               W: int | None = None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -664,7 +670,7 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
     per_segment = [
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
     ]
 
     coeff_trust = classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
@@ -676,7 +682,7 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                           pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement)
+                           pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
         )
 
     with _count_phase(field, "detection"):
