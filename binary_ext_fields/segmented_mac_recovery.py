@@ -255,7 +255,8 @@ def _search_single_by_bitflip_mac(field: TableField, broken_slice: bytearray, ke
 def repair_segment_mac(field: TableField, keys: list[bytearray], packets: list[bytearray], segment: MacSegment,
                        candidate_columns_for, max_combined_hd: int = 4, candidates_budget: int | None = None,
                        pair_cache: dict | None = None, ic_refinement: bool = True,
-                       W: int | None = None, drop_unlocalized: bool = False) -> SegmentRepairOutcome:
+                       W: int | None = None, drop_unlocalized: bool = False,
+                       injected_trust: "SegmentTrust | None" = None) -> SegmentRepairOutcome:
     """Repair one segment across the generation, mutating `packets` in place: pair
     broken packets (plan_pairing, reused from the orthogonal arm -- it is tag-
     agnostic) and combined-search each pair, then bit-flip whatever is left unpaired.
@@ -268,8 +269,15 @@ def repair_segment_mac(field: TableField, keys: list[bytearray], packets: list[b
     flag -- a broken packet the localizer returns None for is DROPPED before pairing
     (counted in `dropped`, left untouched) rather than whole-segment-searched, so
     coeff-corrupted targets drop symmetrically with the keyless arm. Off for every
-    coefficient_first_mac / uniform_hd_mac caller, so their behaviour is unchanged."""
-    trust = classify_segment_trust_mac(field, keys, packets, segment)
+    coefficient_first_mac / uniform_hd_mac caller, so their behaviour is unchanged.
+
+    injected_trust (ADR-0013 isolated harness, default None): mirror of the orthogonal
+    arm -- use this ground-truth SegmentTrust verbatim instead of running
+    classify_segment_trust_mac, so the harness's injected helper/target split replaces
+    per-packet MAC sniffing. None = classify as before (every existing caller
+    unchanged)."""
+    trust = injected_trust if injected_trust is not None \
+        else classify_segment_trust_mac(field, keys, packets, segment)
     if drop_unlocalized:
         dropped_indices = [i for i in trust.broken if candidate_columns_for(i) is None]
         dropped_set = set(dropped_indices)
@@ -345,7 +353,8 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
                          segments: list[MacSegment], gen_size: int, basis_idx: list[int],
                          coeff_clean_target_idx: list[int], max_combined_hd: int = 4,
                          candidates_budget: int | None = None, pair_cache: dict | None = None,
-                         ic_refinement: bool = True, W: int | None = None) -> SegmentedRecoveryReport:
+                         ic_refinement: bool = True, W: int | None = None,
+                         injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None) -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant, keyed arm -- the exact mirror of the orthogonal
     arm's recover_arc_only (segmented_recovery.py), differing ONLY in the acceptance
     oracle (MAC verification vs orthogonality-to-helpers). Skips coeff repair, repairs
@@ -365,11 +374,12 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
         keys = keyset[seg_index[segment.name]]
         localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
                                             coeff_trusted, basis)
+        injected = None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
         per_segment.append(
             repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                pair_cache=pair_cache, ic_refinement=ic_refinement, W=W,
-                               drop_unlocalized=True)
+                               drop_unlocalized=True, injected_trust=injected)
         )
 
     ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
@@ -417,7 +427,8 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
                                   segments: list[MacSegment], gen_size: int, max_combined_hd: int = 4,
                                   candidates_budget: int | None = None,
                                   pair_cache: dict | None = None,
-                                  ic_refinement: bool = True, W: int | None = None) -> SegmentedRecoveryReport:
+                                  ic_refinement: bool = True, W: int | None = None,
+                                  injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None) -> SegmentedRecoveryReport:
     """Option 2: repair the coeff-segment first (same combined search -- it can never
     ARC-localize itself), then ARC-narrow each data-segment's candidate columns from
     the now-trusted coefficients before repairing them. ic_refinement (default on)
@@ -427,23 +438,32 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
     coeff_segment = next(s for s in segments if s.kind == "coeff")
     data_segments = [s for s in segments if s.kind == "data"]
 
+    # ADR-0013 harness: injected ground-truth trust replaces classify_segment_trust_mac
+    # for both the ARC localizer and repair_segment_mac's pool. When not injected (every
+    # existing caller), the path is identical to before.
+    def _injected(segment):
+        return None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
+
     per_segment = [
         repair_segment_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment,
                            candidate_columns_for=lambda i: None, max_combined_hd=max_combined_hd,
                            candidates_budget=candidates_budget, pair_cache=pair_cache,
-                           ic_refinement=ic_refinement, W=W)
+                           ic_refinement=ic_refinement, W=W, injected_trust=_injected(coeff_segment))
     ]
 
-    coeff_trust = classify_segment_trust_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment)
+    coeff_trust = _injected(coeff_segment) if injected_trust_by_segment is not None \
+        else classify_segment_trust_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment)
     for segment in data_segments:
         keys = keyset[seg_index[segment.name]]
-        data_trust = classify_segment_trust_mac(field, keys, tmp, segment)
+        data_trust = _injected(segment) if injected_trust_by_segment is not None \
+            else classify_segment_trust_mac(field, keys, tmp, segment)
         localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
                                             coeff_trust.trusted, data_trust.trusted)
         per_segment.append(
             repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                               pair_cache=pair_cache, ic_refinement=ic_refinement, W=W)
+                               pair_cache=pair_cache, ic_refinement=ic_refinement, W=W,
+                               injected_trust=_injected(segment))
         )
 
     ok = all(check_mac_segmented(field, keyset, tmp, segments).values())

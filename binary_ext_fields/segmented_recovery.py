@@ -372,7 +372,7 @@ def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, truste
 def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candidate_columns: list[int],
                               trusted_slices: list[bytearray], whole_segment_columns: list[int] | None = None,
                               max_hd: int = 2, candidates_budget: int | None = None,
-                              W: int | None = None) -> bytearray | None:
+                              W: int | None = None, bitflip_only: bool = False) -> bytearray | None:
     """ADR-0012's fallback for a broken segment with no pairing partner.
 
     Two-stage, mirroring the whole-packet pipeline (playground/new_recovery.py
@@ -386,8 +386,16 @@ def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candida
     -- or a uniform_hd packet whose K exceeds the trusted count -- is unsolvable and
     used to return None (dropping the packet). The bit-flip search covers the whole
     segment (payload+salt+tags via whole_segment_columns), bounded by max_hd and
-    candidates_budget. Returns None only if BOTH stages give up."""
+    candidates_budget. Returns None only if BOTH stages give up.
+
+    bitflip_only (ADR-0013 isolated comparison, default off): skip the ADR-0002 exact
+    solve entirely and bit-flip over `candidate_columns` (the ARC-narrowed set), mirroring
+    the keyed arm's _search_single_by_bitflip_mac so both arms use the same method (rule
+    4). Off for every other caller, which keeps the two-stage exact-then-bitflip path."""
     with _count_phase(field, "recovery"):
+        if bitflip_only:
+            return _search_single_by_bitflip(field, broken_slice, trusted_slices, candidate_columns,
+                                             max_hd, candidates_budget, W=W)
         fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
         if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices, W=W):
             return fixed
@@ -413,7 +421,8 @@ class SegmentRepairOutcome:
 
 def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: TaggedSegment,
                     pair, cols_a, cols_b, all_columns, pair_columns, trusted_slices,
-                    max_combined_hd: int, candidates_budget: int | None, W: int | None = None) -> bool:
+                    max_combined_hd: int, candidates_budget: int | None, W: int | None = None,
+                    bitflip_only: bool = False) -> bool:
     """IC-refinement (ticket 07) for one pair the combined search could not split --
     the same-position overlap Case 2. The keyless analog of the MAC arm's per-half tag
     brute-force is the ADR-0002 EXACT single-packet linear solve (recover_packet_linear)
@@ -435,16 +444,30 @@ def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: Tagged
 
     candidate_columns unused (candidates_budget/pair_columns/max_combined_hd kept in the
     signature for symmetry with the MAC arm's budgeted fallback; the exact solve is
-    polynomial, not a budgeted search)."""
+    polynomial, not a budgeted search).
+
+    bitflip_only (ADR-0013 isolated comparison, default off): replace the exact linear
+    solve with a bounded bit-flip search over each half's narrowed columns -- the exact
+    mirror of the keyed arm's per-half _bitflip_search_mac -- so both arms run the same
+    method and the only surviving difference is the oracle (rule 4). Off for every other
+    caller, which keeps the ADR-0002 exact solve."""
     cols_a_solve = cols_a if cols_a is not None else all_columns
     cols_b_solve = cols_b if cols_b is not None else all_columns
     slice_a = segment_slice(packets[pair.packet_a], segment)
     slice_b = segment_slice(packets[pair.packet_b], segment)
     with _count_phase(field, "recovery"):
-        fixed_a = recover_packet_linear(field, slice_a, set(cols_a_solve), trusted_slices)
+        if bitflip_only:
+            fixed_a = _search_single_by_bitflip(field, slice_a, trusted_slices, cols_a_solve,
+                                                max_combined_hd, candidates_budget, W=W)
+        else:
+            fixed_a = recover_packet_linear(field, slice_a, set(cols_a_solve), trusted_slices)
         if fixed_a is None or not is_orthogonal_to_trusted(field, fixed_a, trusted_slices, W=W):
             return False
-        fixed_b = recover_packet_linear(field, slice_b, set(cols_b_solve), trusted_slices)
+        if bitflip_only:
+            fixed_b = _search_single_by_bitflip(field, slice_b, trusted_slices, cols_b_solve,
+                                                max_combined_hd, candidates_budget, W=W)
+        else:
+            fixed_b = recover_packet_linear(field, slice_b, set(cols_b_solve), trusted_slices)
         if fixed_b is None or not is_orthogonal_to_trusted(field, fixed_b, trusted_slices, W=W):
             return False
         # Mutual-orthogonality: two genuinely-correct halves are orthogonal to each
@@ -464,7 +487,9 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
                     verify_count: int | None = None,
                     ic_refinement: bool = True,
                     W: int | None = None,
-                    drop_unlocalized: bool = False) -> SegmentRepairOutcome:
+                    drop_unlocalized: bool = False,
+                    injected_trust: "SegmentTrust | None" = None,
+                    bitflip_only: bool = False) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -494,8 +519,16 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     None-verdict depends only on injected coeff-trust, not on the tag oracle), rather
     than one arm's blind search half-repairing what the other drops. Off for every
     coefficient_first / uniform_hd caller, so their None -> whole-segment fallback is
-    unchanged."""
-    trust = classify_segment_trust(field, packets, segment, verify_count=verify_count)
+    unchanged.
+
+    injected_trust (ADR-0013 isolated harness, default None): when given, USE this
+    SegmentTrust verbatim instead of running classify_segment_trust -- the harness
+    hands recovery a ground-truth trusted set (the clean helper packets = the
+    acceptance witnesses) and broken set (the targets it corrupted), so the elaborate
+    sniffing/peel is bypassed and detection quality is idealized out of the
+    comparison. None = sniff as before (every existing caller unchanged)."""
+    trust = injected_trust if injected_trust is not None \
+        else classify_segment_trust(field, packets, segment, verify_count=verify_count)
     if drop_unlocalized:
         dropped_indices = [i for i in trust.broken if candidate_columns_for(i) is None]
         dropped_set = set(dropped_indices)
@@ -540,7 +573,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
             pairs_recovered += 1
         elif ic_refinement and _ic_refine_pair(field, packets, segment, pair, cols_a, cols_b,
                                                all_columns, pair_columns, trusted_slices,
-                                               max_combined_hd, candidates_budget, W=W):
+                                               max_combined_hd, candidates_budget, W=W,
+                                               bitflip_only=bitflip_only):
             # Case-2 fallback (ticket 07, keyless analog): the combined search is
             # blind to same-position overlaps, so repair each half on its own via the
             # ADR-0002 single-packet linear solve. _ic_refine_pair writes both halves
@@ -561,7 +595,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
         # of dropped (mirrors the pair path's whole-segment fix).
         fixed = recover_unpaired_segment(field, broken_slice, columns, trusted_slices,
                                          whole_segment_columns=pair_columns,
-                                         max_hd=max_combined_hd, candidates_budget=candidates_budget, W=W)
+                                         max_hd=max_combined_hd, candidates_budget=candidates_budget, W=W,
+                                         bitflip_only=bitflip_only)
 
         if fixed is not None:
             _write_segment(packets[unpaired.packet_index], segment, fixed)
@@ -615,7 +650,9 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
                      pair_cache: dict | None = None,
                      verify_count: int | None = None,
                      ic_refinement: bool = True,
-                     W: int | None = None) -> SegmentedRecoveryReport:
+                     W: int | None = None,
+                     injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
+                     bitflip_only: bool = False) -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant: skip the coeff-repair stage entirely and repair the
     DATA segments only, ARC-localizing from an INJECTED helper basis instead of from
     coefficient_first's repaired-then-classified coeff trust.
@@ -657,11 +694,13 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
     for segment in data_segments:
         localizer = _make_arc_localizer(field, tmp, coeff_segment, segment, gen_size,
                                         coeff_trusted, basis)
+        injected = None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                            pair_cache=pair_cache, verify_count=verify_count,
-                           ic_refinement=ic_refinement, W=W, drop_unlocalized=True)
+                           ic_refinement=ic_refinement, W=W, drop_unlocalized=True,
+                           injected_trust=injected, bitflip_only=bitflip_only)
         )
 
     with _count_phase(field, "detection"):
@@ -738,7 +777,9 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                                pair_cache: dict | None = None,
                                verify_count: int | None = None,
                                ic_refinement: bool = True,
-                               W: int | None = None) -> SegmentedRecoveryReport:
+                               W: int | None = None,
+                               injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
+                               bitflip_only: bool = False) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -753,22 +794,34 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
     coeff_segment = next(s for s in segments if s.kind == "coeff")
     data_segments = [s for s in segments if s.kind == "data"]
 
+    # ADR-0013 harness: when trust is injected, use the ground-truth SegmentTrust for
+    # both the ARC localizer's trusted sets AND repair_segment's own pool, skipping
+    # classify entirely. When it is NOT injected (every existing caller), the path
+    # below is byte- and op-for-op identical to before: classify runs inside
+    # repair_segment and once more here for the localizer, exactly as it always did.
+    def _injected(segment):
+        return None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
+
     per_segment = [
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W,
+                       injected_trust=_injected(coeff_segment), bitflip_only=bitflip_only)
     ]
 
-    coeff_trust = classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
+    coeff_trust = _injected(coeff_segment) if injected_trust_by_segment is not None \
+        else classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
     for segment in data_segments:
-        data_trust = classify_segment_trust(field, tmp, segment, verify_count=verify_count)
+        data_trust = _injected(segment) if injected_trust_by_segment is not None \
+            else classify_segment_trust(field, tmp, segment, verify_count=verify_count)
         localizer = _make_arc_localizer(
             field, tmp, coeff_segment, segment, gen_size, coeff_trust.trusted, data_trust.trusted,
         )
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                           pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
+                           pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W,
+                           injected_trust=_injected(segment), bitflip_only=bitflip_only)
         )
 
     with _count_phase(field, "detection"):
