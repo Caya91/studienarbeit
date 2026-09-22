@@ -51,6 +51,7 @@ from binary_ext_fields.segmented_mac_tagging import MacSegment, mac_verify_segme
 from binary_ext_fields.segmented_recovery import (
     SegmentTrust, PairingPlan, plan_pairing,
     PairRecoveryResult, SegmentRepairOutcome, SegmentedRecoveryReport,
+    _redundancy_columns,
 )
 from playground.arc_pl import localize_errors
 
@@ -354,7 +355,8 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
                          coeff_clean_target_idx: list[int], max_combined_hd: int = 4,
                          candidates_budget: int | None = None, pair_cache: dict | None = None,
                          ic_refinement: bool = True, W: int | None = None,
-                         injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None) -> SegmentedRecoveryReport:
+                         injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
+                         repair_span: str = "payload") -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant, keyed arm -- the exact mirror of the orthogonal
     arm's recover_arc_only (segmented_recovery.py), differing ONLY in the acceptance
     oracle (MAC verification vs orthogonality-to-helpers). Skips coeff repair, repairs
@@ -373,7 +375,7 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
     for segment in data_segments:
         keys = keyset[seg_index[segment.name]]
         localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
-                                            coeff_trusted, basis)
+                                            coeff_trusted, basis, repair_span=repair_span)
         injected = None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
         per_segment.append(
             repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
@@ -388,7 +390,7 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
 
 def _make_arc_localizer_mac(field: TableField, packets: list[bytearray], coeff_segment: MacSegment,
                             data_segment: MacSegment, gen_size: int, coeff_trusted_idx: list[int],
-                            data_trusted_idx: list[int]):
+                            data_trusted_idx: list[int], repair_span: str = "payload"):
     """Builds candidate_columns_for(packet_index) that ARC-localizes a broken
     packet's corrupted columns within `data_segment`, exactly like the orthogonal
     arm's _make_arc_localizer: a gen_size trusted [coefficients | data-payload]
@@ -399,6 +401,8 @@ def _make_arc_localizer_mac(field: TableField, packets: list[bytearray], coeff_s
     determined (MAC verification). Falls back to no-localization (None) when fewer
     than gen_size packets are trusted in BOTH segments, or the basis is rank-
     deficient (localize_errors raises)."""
+    assert repair_span in ("payload", "segment"), f"repair_span must be payload|segment, got {repair_span!r}"
+    extra = _redundancy_columns(data_segment) if repair_span == "segment" else []  # ADR-0013 ticket 16 (tags, no salt)
     basis_indices = sorted(set(coeff_trusted_idx) & set(data_trusted_idx))[:gen_size]
     if len(basis_indices) < gen_size:
         return lambda i: None
@@ -418,7 +422,9 @@ def _make_arc_localizer_mac(field: TableField, packets: list[bytearray], coeff_s
             columns = localize_errors(field, [bytearray(p) for p in trusted_basis], synthetic(i), gen_size)
         except (ValueError, ZeroDivisionError):
             return None
-        return sorted(c - gen_size for c in columns)
+        # payload columns ARC found + (repair_span="segment") the tag redundancy span. A None
+        # above stays None, so the symmetric drop of coeff-corrupted targets is unaffected.
+        return sorted(set(c - gen_size for c in columns) | set(extra))
 
     return localizer
 
@@ -428,7 +434,8 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
                                   candidates_budget: int | None = None,
                                   pair_cache: dict | None = None,
                                   ic_refinement: bool = True, W: int | None = None,
-                                  injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None) -> SegmentedRecoveryReport:
+                                  injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
+                                  repair_span: str = "payload") -> SegmentedRecoveryReport:
     """Option 2: repair the coeff-segment first (same combined search -- it can never
     ARC-localize itself), then ARC-narrow each data-segment's candidate columns from
     the now-trusted coefficients before repairing them. ic_refinement (default on)
@@ -458,7 +465,7 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
         data_trust = _injected(segment) if injected_trust_by_segment is not None \
             else classify_segment_trust_mac(field, keys, tmp, segment)
         localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
-                                            coeff_trust.trusted, data_trust.trusted)
+                                            coeff_trust.trusted, data_trust.trusted, repair_span=repair_span)
         per_segment.append(
             repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,

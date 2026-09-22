@@ -96,6 +96,18 @@ def _write_segment(packet: bytearray, segment: TaggedSegment, fixed_slice: bytea
     packet[segment.start: segment.start + segment.total_length] = fixed_slice
 
 
+def _redundancy_columns(segment) -> list[int]:
+    """Slice-local column indices of a segment's redundancy region -- everything after
+    the payload: the salt byte + tag columns (keyless) or the tag columns (keyed, no
+    salt). Empty of payload, so it is exactly the span the payload-only repair never
+    touches. The ADR-0013 ticket-16 `repair_span="segment"` knob appends these to the
+    ARC-localized payload columns so the bit-flip search may also correct a corrupted
+    salt/tag byte -- at a measured silent-decode cost (see repair_span docstrings).
+    Works for both TaggedSegment and MacSegment (both expose payload_length /
+    total_length), so the keyed arm imports and reuses it rather than mirroring it."""
+    return list(range(segment.payload_length, segment.total_length))
+
+
 # ── Segment-scoped trust (ADR-0012's extension of ADR-0004's sniffing) ──────
 
 @dataclass(frozen=True)
@@ -652,7 +664,8 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
                      ic_refinement: bool = True,
                      W: int | None = None,
                      injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
-                     bitflip_only: bool = False) -> SegmentedRecoveryReport:
+                     bitflip_only: bool = False,
+                     repair_span: str = "payload") -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant: skip the coeff-repair stage entirely and repair the
     DATA segments only, ARC-localizing from an INJECTED helper basis instead of from
     coefficient_first's repaired-then-classified coeff trust.
@@ -693,7 +706,7 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
     per_segment = []  # coeff segment intentionally NOT repaired (ARC-only)
     for segment in data_segments:
         localizer = _make_arc_localizer(field, tmp, coeff_segment, segment, gen_size,
-                                        coeff_trusted, basis)
+                                        coeff_trusted, basis, repair_span=repair_span)
         injected = None if injected_trust_by_segment is None else injected_trust_by_segment.get(segment.name)
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
@@ -710,7 +723,7 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
 
 def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segment: TaggedSegment,
                          data_segment: TaggedSegment, gen_size: int, coeff_trusted_idx: list[int],
-                         data_trusted_idx: list[int]):
+                         data_trusted_idx: list[int], repair_span: str = "payload"):
     """
     Builds a candidate_columns_for(packet_index) callable that ARC-localizes
     (localize_errors) a broken packet's corrupted columns within `data_segment`,
@@ -748,6 +761,8 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
     (as the real pipeline does) simply gets a narrower column set on a later
     call once the pool has grown.
     """
+    assert repair_span in ("payload", "segment"), f"repair_span must be payload|segment, got {repair_span!r}"
+    extra = _redundancy_columns(data_segment) if repair_span == "segment" else []  # ADR-0013 ticket 16
     basis_indices = sorted(set(coeff_trusted_idx) & set(data_trusted_idx))[:gen_size]
     if len(basis_indices) < gen_size:
         return lambda i: None
@@ -767,7 +782,9 @@ def _make_arc_localizer(field: TableField, packets: list[bytearray], coeff_segme
             columns = localize_errors(field, [bytearray(p) for p in trusted_basis], synthetic(i), gen_size)
         except (ValueError, ZeroDivisionError):
             return None  # basis not full rank -- give up localizing this data-segment
-        return sorted(c - gen_size for c in columns)
+        # payload columns ARC found + (repair_span="segment") the salt/tag redundancy span,
+        # so a corrupted salt/tag byte is searched too. A None above stays None -> still dropped.
+        return sorted(set(c - gen_size for c in columns) | set(extra))
 
     return localizer
 
@@ -779,7 +796,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                                ic_refinement: bool = True,
                                W: int | None = None,
                                injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
-                               bitflip_only: bool = False) -> SegmentedRecoveryReport:
+                               bitflip_only: bool = False,
+                               repair_span: str = "payload") -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -816,6 +834,7 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
             else classify_segment_trust(field, tmp, segment, verify_count=verify_count)
         localizer = _make_arc_localizer(
             field, tmp, coeff_segment, segment, gen_size, coeff_trust.trusted, data_trust.trusted,
+            repair_span=repair_span,
         )
         per_segment.append(
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,

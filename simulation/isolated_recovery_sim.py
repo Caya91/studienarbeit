@@ -327,9 +327,15 @@ class ConfigResult:
 
 
 def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
-               max_combined_hd: int = 2, candidates_budget: int | None = 20000) -> ConfigResult:
+               max_combined_hd: int = 2, candidates_budget: int | None = 20000,
+               repair_span: str = "payload") -> ConfigResult:
     """Inject the config's error model (paired), then run BOTH arms with injected trust
-    and score the T targets. The two arms see identical [coeff|payload] corruption."""
+    and score the T targets. The two arms see identical [coeff|payload] corruption.
+
+    repair_span (ADR-0013 ticket 16, matched across arms): "payload" = repair the
+    ARC-narrowed data columns only (default); "segment" = also search the salt/tag
+    redundancy columns, so a corrupted salt/tag byte is repairable at a measured
+    silent-decode cost."""
     model = _CONFIG_MODEL[config]
     inj = inject_paired(pools, ber, model, seed=seed * 131 + 7)
     assert_identical_info_corruption(pools, inj)
@@ -343,13 +349,15 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     if config == "coefficient_first":
         rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                           W=W, injected_trust_by_segment=kl_trust, bitflip_only=True)
+                                           W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
+                                           repair_span=repair_span)
     else:
         ccl = coeff_clean_targets(pools.kl_clean, inj.kl, pools.kl_segments, pools.target_idx)
         rep_kl = recover_arc_only(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                   basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                   max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                  W=W, injected_trust_by_segment=kl_trust, bitflip_only=True)
+                                  W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
+                                  repair_span=repair_span)
     kl_ops = pools.field.mul_count + pools.field.add_count
     kl_out = score_keyless(pools, rep_kl.packets, W)
 
@@ -358,13 +366,13 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     if config == "coefficient_first":
         rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                               W=W, injected_trust_by_segment=kd_trust)
+                                               W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
     else:
         ccl = coeff_clean_targets(pools.kd_clean, inj.kd, pools.kd_segments, pools.target_idx)
         rep_kd = recover_arc_only_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                       basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                      W=W, injected_trust_by_segment=kd_trust)
+                                      W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
     kd_ops = pools.field.mul_count + pools.field.add_count
     kd_out = score_keyed(pools, rep_kd.packets, W)
 
@@ -410,10 +418,12 @@ def _fmt_errs(descs) -> str:
 _MARK = {RECOVERED: "recovered [OK]", SILENT: "SILENT [x] wrong-accept", FAILED: "failed  [-]"}
 
 
-def print_smoke(pools: PairedPools, results: list[ConfigResult], W: int, seed: int, ber: float) -> None:
+def print_smoke(pools: PairedPools, results: list[ConfigResult], W: int, seed: int, ber: float,
+                repair_span: str = "payload") -> None:
     G, T = len(pools.helper_idx), len(pools.target_idx)
     print("\nLegend:  [OK] recovered   [x] SILENT (wrong-accept, oracle passed but bytes wrong)   [-] honest fail")
-    print(f"Fixed:   seed={seed}  W={W}  G={G}  T={T}  BER={ber}  (helpers 0..{G-1} clean, never scored)")
+    print(f"Fixed:   seed={seed}  W={W}  G={G}  T={T}  BER={ber}  repair_span={repair_span}"
+          f"  (helpers 0..{G-1} clean, never scored)")
 
     overall = {"keyless_only": 0, "keyed_only": 0, "both": 0, "neither": 0}
     for res in results:
@@ -439,12 +449,13 @@ def print_smoke(pools: PairedPools, results: list[ConfigResult], W: int, seed: i
 
 
 def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: float = 0.006,
-              data_fields: int = 18, num_data_segments: int = 3) -> list[ConfigResult]:
+              data_fields: int = 18, num_data_segments: int = 3,
+              repair_span: str = "payload") -> list[ConfigResult]:
     field = CountingField(create_field(8))
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
-    results = [run_config(pools, cfg, ber, W, seed) for cfg in CONFIGS]
-    print_smoke(pools, results, W, seed, ber)
+    results = [run_config(pools, cfg, ber, W, seed, repair_span=repair_span) for cfg in CONFIGS]
+    print_smoke(pools, results, W, seed, ber, repair_span)
     return results
 
 
@@ -457,10 +468,13 @@ def main(argv=None) -> None:
     parser.add_argument("--targets", type=int, default=8, help="T target packets")
     parser.add_argument("-W", type=int, default=2, help="recovery-acceptance width")
     parser.add_argument("--ber", type=float, default=0.006)
+    parser.add_argument("--repair-span", choices=("payload", "segment"), default="payload",
+                        help="which columns the repair may touch: payload only, or +salt/tag redundancy")
     args = parser.parse_args(argv)
 
     if args.smoke:
-        run_smoke(seed=args.seed, gen_size=args.gen_size, T=args.targets, W=args.W, ber=args.ber)
+        run_smoke(seed=args.seed, gen_size=args.gen_size, T=args.targets, W=args.W, ber=args.ber,
+                  repair_span=args.repair_span)
     else:
         parser.print_help()
 
