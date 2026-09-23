@@ -220,6 +220,25 @@ def test_edge_helper_set_exactly_gen_size():
     print(f"  G={G} identity helpers in both arms; ARC-only (a) recovers {res.keyless.recovered}/{res.keyed.recovered}")
 
 
+def test_info_only_model_identical_corruption_no_redundancy_hits():
+    _banner("info_only: same [coeff|payload] flips as whole_packet, tag/salt untouched, arms byte-identical")
+    from simulation.isolated_recovery_sim import inject_paired, assert_identical_info_corruption
+    pools = _pools()
+    inj_i = inject_paired(pools, ber=0.02, model="info_only", seed=11)
+    inj_w = inject_paired(pools, ber=0.02, model="whole_packet", seed=11)
+    assert_identical_info_corruption(pools, inj_i)
+    assert inj_i.per_target == inj_w.per_target, "info_only must reuse whole_packet's info-column flips"
+    assert any(inj_i.per_target.values()), "expected some corruption at BER 0.02"
+    for clean, bad, segs in ((pools.kl_clean, inj_i.kl, pools.kl_segments), (pools.kd_clean, inj_i.kd, pools.kd_segments)):
+        for t in pools.target_idx:
+            for s in segs:
+                red = slice(s.start + s.payload_length, s.start + s.total_length)
+                assert bad[t][red] == clean[t][red], "info_only must not touch salt/tag bytes"
+    res = run_config(pools, "coefficient_first_info", ber=0.004, W=2, seed=7)
+    assert res.keyless.recovered + res.keyless.silent + res.keyless.failed == len(pools.target_idx)
+    print("  flips == whole_packet info flips; redundancy untouched both arms; config runs")
+
+
 # ── C: readable smoke ─────────────────────────────────────────────────────────
 
 def _smoke_text(**kw):
@@ -286,6 +305,7 @@ if __name__ == "__main__":
         test_edge_W_gen_size_no_silent_any_config,
         test_edge_odd_broken_count_unpaired_path,
         test_edge_helper_set_exactly_gen_size,
+        test_info_only_model_identical_corruption_no_redundancy_hits,
         test_smoke_deterministic_and_shaped,
         test_sweep_csv_frozen_schema_and_replot,
     ]

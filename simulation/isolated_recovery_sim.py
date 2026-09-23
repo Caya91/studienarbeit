@@ -47,7 +47,9 @@ seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
 average per-seed rates when T could differ).
   schema_version     int   = CSV_SCHEMA_VERSION
   config             str   coefficient_first | arc_only_a | arc_only_b
-  error_model        str   whole_packet | data_only (fixed by config)
+                           | coefficient_first_info | arc_only_b_info (payload-only variants, added
+                           2026-09-23; value extension only, columns unchanged -> still v1)
+  error_model        str   whole_packet | data_only | info_only (fixed by config)
   arm                str   keyless | keyed
   repair_span        str   payload | segment (ticket 16, matched across arms)
   W                  int   recovery-acceptance width
@@ -195,6 +197,9 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
     tag/salt -> both arms get byte-identical corruption end to end.
     model="whole_packet": flip all payload columns (coeff + data) identically across
     arms, PLUS the tag/salt region per-arm (seed-matched, different layouts).
+    model="info_only": the whole_packet info-column flips (same RNG stream -> the SAME
+    [coeff|payload] corruption as whole_packet for a given seed) but NO tag/salt flips,
+    so both arms face byte-identical corruption end to end.
 
     Info-column flips are drawn from one shared RNG and applied to both arms in
     lock-step, so the [coeff|payload] corruption is identical by construction."""
@@ -347,11 +352,19 @@ def _tally(outcomes) -> tuple[int, int, int]:
 
 
 CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b")
-_CONFIG_MODEL = {"coefficient_first": "whole_packet", "arc_only_a": "data_only", "arc_only_b": "whole_packet"}
+# Payload-only variants of the two whole-packet configs: identical [coeff|payload] flips,
+# no salt/tag corruption -> the only cross-arm difference left is the oracle.
+INFO_CONFIGS = ("coefficient_first_info", "arc_only_b_info")
+_CONFIG_MODEL = {"coefficient_first": "whole_packet", "arc_only_a": "data_only", "arc_only_b": "whole_packet",
+                 "coefficient_first_info": "info_only", "arc_only_b_info": "info_only"}
+_CONFIG_METHOD = {"coefficient_first": "coefficient_first", "arc_only_a": "arc_only", "arc_only_b": "arc_only",
+                  "coefficient_first_info": "coefficient_first", "arc_only_b_info": "arc_only"}
 _CONFIG_LABEL = {
     "coefficient_first": "coefficient_first (whole-packet BER)",
     "arc_only_a": "ARC-only (data-only BER)",
     "arc_only_b": "ARC-only (whole-packet BER, symmetric drop)",
+    "coefficient_first_info": "coefficient_first (payload-only BER, no salt/tag hits)",
+    "arc_only_b_info": "ARC-only (payload-only BER, symmetric drop)",
 }
 
 
@@ -391,7 +404,7 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     # ---- keyless (bit-flip only: the ADR-0002 exact solve is bypassed so both arms
     #      run the identical search and the only surviving difference is the oracle) ----
     pools.field.reset()
-    if config == "coefficient_first":
+    if _CONFIG_METHOD[config] == "coefficient_first":
         rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                            W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
@@ -408,7 +421,7 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
 
     # ---- keyed ----
     pools.field.reset()
-    if config == "coefficient_first":
+    if _CONFIG_METHOD[config] == "coefficient_first":
         rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                                W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
@@ -635,6 +648,8 @@ def main(argv=None) -> None:
     parser.add_argument("--seeds", type=int, default=SWEEP_SEEDS, help="sweep: N seeds starting at --seed-start")
     parser.add_argument("--seed-start", type=int, default=0,
                         help="sweep: first seed (use a fresh range to extend a pooled run without duplicates)")
+    parser.add_argument("--configs", default=",".join(CONFIGS),
+                        help="sweep: comma list of configs, e.g. coefficient_first_info,arc_only_b_info")
     parser.add_argument("--data-fields", type=int, default=18,
                         help="sweep: data bytes (needs >= num_data_segments*(gen_size-1) for keyless tagging)")
     parser.add_argument("--workers", type=int, default=1, help="sweep: parallel processes (one seed each)")
@@ -654,7 +669,8 @@ def main(argv=None) -> None:
     elif args.sweep:
         # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
-                      data_fields=args.data_fields, workers=args.workers, out_dir=args.out)
+                      data_fields=args.data_fields, workers=args.workers, out_dir=args.out,
+                      configs=tuple(c.strip() for c in args.configs.split(",")))
         print(f"sweep done -> {d}")
     else:
         parser.print_help()

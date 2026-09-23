@@ -47,8 +47,16 @@ CONFIG_LABEL = {
     "arc_only_a": "ARC-only (a)\n(data-only BER)",
     "arc_only_b": "ARC-only (b)\n(whole-packet BER, symmetric drop)",
 }
-CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b")
-ISOLATION_COLOURS = {"coefficient_first": "#bc4749", "arc_only_b": "#457b9d"}
+CONFIG_LABEL.update({
+    "coefficient_first_info": "coefficient_first\n(payload-only BER, no salt/tag hits)",
+    "arc_only_b_info": "ARC-only (b)\n(payload-only BER, symmetric drop)",
+})
+# Panel order; only configs present in the data are drawn.
+CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b", "coefficient_first_info", "arc_only_b_info")
+# Coeff-repair isolation pairs: (coefficient_first-config, ARC-only-(b)-config, error-model label, file suffix).
+ISOLATION_PAIRS = (("coefficient_first", "arc_only_b", "whole-packet BER", ""),
+                   ("coefficient_first_info", "arc_only_b_info", "payload-only BER", "_info"))
+ISOLATION_COLOURS = ("#bc4749", "#457b9d")  # coefficient_first-role, ARC-only-(b)-role
 # Columns that must agree for runs to be pooled (else the run is skipped).
 COMPAT_COLS = ("schema_version", "gen_size", "T", "data_fields", "num_data_segments",
                "field_bits", "max_combined_hd", "candidates_budget")
@@ -206,8 +214,10 @@ def _per_config_figure(summary, valcol, errcol, ylabel, title, key, out_dir, log
     d = None
     for span in sorted(summary["repair_span"].unique()):
         sub = summary[summary["repair_span"] == span]
-        fig, axes = plt.subplots(1, len(CONFIGS), figsize=(15, 4.8), sharey=True)
-        for ax, cfg in zip(axes, CONFIGS):
+        present = [c for c in CONFIGS if c in set(sub["config"])]
+        fig, axes = plt.subplots(1, len(present), figsize=(5 * len(present), 4.8), sharey=True, squeeze=False)
+        axes = axes[0]
+        for ax, cfg in zip(axes, present):
             c = sub[sub["config"] == cfg]
             for arm, meta in ARMS.items():
                 for W in sorted(c["W"].unique()):
@@ -243,12 +253,22 @@ def plot_ops(summary, out_dir=None):
 
 
 def plot_isolation(summary, out_dir=None):
-    """Coeff-repair-stage isolation: coefficient_first vs ARC-only (b), both whole-packet
-    BER. Columns = arm; rows = recovery rate, silent-decode rate, ops. The gap between
-    the two configs within an arm is what the coeff-repair stage buys (and costs)."""
+    """Coeff-repair-stage isolation: coefficient_first vs ARC-only (b) under the same error
+    model (one figure set per pair present: whole-packet, and payload-only if run).
+    Columns = arm; rows = recovery rate, silent-decode rate, ops. The gap between the two
+    configs within an arm is what the coeff-repair stage buys (and costs)."""
+    d = None
+    for cf_cfg, arc_cfg, model_label, suffix in ISOLATION_PAIRS:
+        if {cf_cfg, arc_cfg} <= set(summary["config"]):
+            d = _plot_isolation_pair(summary, cf_cfg, arc_cfg, model_label, suffix, out_dir)
+    return d
+
+
+def _plot_isolation_pair(summary, cf_cfg, arc_cfg, model_label, suffix, out_dir):
+    colours = dict(zip((cf_cfg, arc_cfg), ISOLATION_COLOURS))
     d = None
     for span in sorted(summary["repair_span"].unique()):
-        sub = summary[(summary["repair_span"] == span) & summary["config"].isin(ISOLATION_COLOURS)]
+        sub = summary[(summary["repair_span"] == span) & summary["config"].isin(colours)]
         fig, axes = plt.subplots(3, 2, figsize=(12, 11), sharex=True, sharey="row")
         rows = (("recovery_rate", "recovery_ci", "Recovery rate", False, (-0.02, 1.02)),
                 ("silent_decode_rate", "silent_ci", "Silent-decode rate", False, None),
@@ -257,7 +277,7 @@ def plot_isolation(summary, out_dir=None):
             for col, arm in enumerate(ARMS):
                 ax = axes[r][col]
                 a = sub[sub["arm"] == arm]
-                for cfg, colour in ISOLATION_COLOURS.items():
+                for cfg, colour in colours.items():
                     for W in sorted(a["W"].unique()):
                         _line(ax, a[(a["config"] == cfg) & (a["W"] == W)], valcol, errcol, colour, W,
                               f"{cfg}, W={W}")
@@ -269,9 +289,9 @@ def plot_isolation(summary, out_dir=None):
         axes[0][1].legend(fontsize=8, loc="best")
         fig.suptitle(f"Coeff-repair-stage isolation: coefficient_first vs ARC-only (b)  [repair_span={span}]",
                      fontsize=13, fontweight="bold", y=1.0)
-        fig.text(0.5, 0.975, _subtitle(summary, ", whole-packet BER"), ha="center", fontsize=8, alpha=0.7)
+        fig.text(0.5, 0.975, _subtitle(summary, f", {model_label}"), ha="center", fontsize=8, alpha=0.7)
         fig.tight_layout(rect=(0, 0, 1, 0.97))
-        d = _save(fig, out_dir, f"coeff_repair_isolation_{span}")
+        d = _save(fig, out_dir, f"coeff_repair_isolation{suffix}_{span}")
     return d
 
 
