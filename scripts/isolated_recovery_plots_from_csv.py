@@ -33,6 +33,7 @@ sys.path.insert(0, str(_ROOT))
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import numpy as np
 import pandas as pd
 
@@ -295,7 +296,47 @@ def _plot_isolation_pair(summary, cf_cfg, arc_cfg, model_label, suffix, out_dir)
     return d
 
 
+def plot_silent_w1(summary, out_dir=None, setups=None, configs=("arc_only_a", "arc_only_b"), W=1, span="payload"):
+    """Keyless-advantage figure: silent-decode rate vs BER at the weakest oracle (W=1) in
+    the data-segment configs, keyless vs keyed. One panel per config; pass
+    setups=[(label, summary), ...] to overlay several setups (e.g. gen6 vs gen10) as
+    linestyles. Honest scope: this is the regime where keyless' free self-check wins;
+    at W>=2 both arms are ~0 here (see plot_silent), and coefficient_first is excluded
+    because of the keyless coeff-segment blind spot (ADR-0013 Results)."""
+    setups = setups or [(None, summary)]
+    styles = ("-", "--", ":", "-.")
+    present = [c for c in configs if any(c in set(s["config"]) for _, s in setups)]
+    fig, axes = plt.subplots(1, len(present), figsize=(6 * len(present), 4.8), sharey=True, squeeze=False)
+    axes = axes[0]
+    for ax, cfg in zip(axes, present):
+        for (label, s), ls in zip(setups, styles):
+            c = s[(s["config"] == cfg) & (s["repair_span"] == span) & (s["W"] == W)].sort_values("bit_error_rate")
+            for arm, meta in ARMS.items():
+                a = c[c["arm"] == arm]
+                if a.empty:
+                    continue
+                xs, ys, err = (a[k].to_numpy() for k in ("bit_error_rate", "silent_decode_rate", "silent_ci"))
+                ax.errorbar(xs, ys, yerr=[np.minimum(err, ys), err], fmt=ls, marker="o", markersize=5,
+                            color=meta["color"], capsize=2, linewidth=1.8)
+                if ax is axes[-1]:  # proxy handle so the legend shows the setup's linestyle
+                    ax.plot([], [], ls, marker="o", color=meta["color"],
+                            label=f"{meta['label']}" + (f" ({label})" if label else ""))
+        ax.set_title(CONFIG_LABEL[cfg], fontsize=10)
+        _dress(ax, "Silent-decode rate (wrong-accept, per target)" if ax is axes[0] else None)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+    axes[-1].legend(fontsize=8, loc="upper left")
+    fig.suptitle(f"Silent decodes at matched W={W}: keyless self-check vs keyed MAC  [repair_span={span}]",
+                 fontsize=13, fontweight="bold", y=1.03)
+    sub = _subtitle(setups[0][1])
+    if len(setups) > 1:  # setups differ in gen_size/T/data_fields: name them instead of the first one's
+        sub = "setups: " + "; ".join(f"{lbl}: G=T={s.attrs.get('gen_size')}, {s.attrs.get('data_fields')} B data"
+                                     for lbl, s in setups) + ", GF(2^8), max_hd=2, bit-flip only, injected trust"
+    fig.text(0.5, 0.97, sub, ha="center", fontsize=8, alpha=0.7)
+    return _save(fig, out_dir, f"silent_w{W}_vs_ber_{span}")
+
+
 PLOT_FUNCS = {
+    "silent_w1": plot_silent_w1,
     "recovery": plot_recovery,
     "silent": plot_silent,
     "ops": plot_ops,
