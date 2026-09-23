@@ -41,7 +41,7 @@ W sweep (ticket 14) -> logs/isolated_recovery/<run>/raw_trials.csv (long: run in
   $env:PYTHONPATH="."; $env:LOG_FOLDER="./logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --sweep --workers 6
 Replot without re-running: scripts/isolated_recovery_plots_from_csv.py (pools every run dir).
 
-FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 1; `CSV_COLUMNS` enforces it)
+FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 2; `CSV_COLUMNS` enforces it)
 One row per (config, arm, repair_span, W, bit_error_rate, seed) -- a "trial" is one
 seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
 average per-seed rates when T could differ).
@@ -73,6 +73,11 @@ average per-seed rates when T could differ).
   silent_decode_rate float silent / T
   failed_rate        float failed / T
   recovery_ops       int   total GF ops (mul+add) of this arm's recovery call
+  recovery_mul       int   (v2) GF multiplications of the recovery call
+  recovery_add       int   (v2) GF additions of the recovery call
+  recovery_time_s    float (v2) wall-clock seconds of the recovery call (perf_counter, scoring
+                           excluded). Machine- and load-dependent (parallel workers share the CPU):
+                           compare arms WITHIN a run, prefer ops as the deterministic cost metric.
   h2h_keyless_only   int   per-target head-to-head on 'recovered' (same on both arm rows)
   h2h_keyed_only     int
   h2h_both           int
@@ -81,6 +86,7 @@ average per-seed rates when T could differ).
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass, field as dc_field
 
 from binary_ext_fields.custom_field import create_field, CountingField
@@ -342,6 +348,9 @@ class ArmResult:
     recovered: int
     silent: int
     failed: int
+    mul: int = 0          # GF multiplications of the recovery call (ops = mul + add)
+    add: int = 0          # GF additions
+    time_s: float = 0.0   # wall-clock of the recovery call (perf_counter); scoring excluded
 
 
 def _tally(outcomes) -> tuple[int, int, int]:
@@ -404,6 +413,7 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     # ---- keyless (bit-flip only: the ADR-0002 exact solve is bypassed so both arms
     #      run the identical search and the only surviving difference is the oracle) ----
     pools.field.reset()
+    t0 = time.perf_counter()
     if _CONFIG_METHOD[config] == "coefficient_first":
         rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
@@ -416,11 +426,14 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
                                   max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                   W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
                                   repair_span=repair_span)
-    kl_ops = pools.field.mul_count + pools.field.add_count
+    kl_time = time.perf_counter() - t0
+    kl_mul, kl_add = pools.field.mul_count, pools.field.add_count
+    kl_ops = kl_mul + kl_add
     kl_out = score_keyless(pools, rep_kl.packets, W)
 
     # ---- keyed ----
     pools.field.reset()
+    t0 = time.perf_counter()
     if _CONFIG_METHOD[config] == "coefficient_first":
         rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
@@ -431,13 +444,15 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
                                       basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                       W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
-    kd_ops = pools.field.mul_count + pools.field.add_count
+    kd_time = time.perf_counter() - t0
+    kd_mul, kd_add = pools.field.mul_count, pools.field.add_count
+    kd_ops = kd_mul + kd_add
     kd_out = score_keyed(pools, rep_kd.packets, W)
 
     return ConfigResult(
         config=config, inj=inj,
-        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out)),
-        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out)),
+        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time),
+        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time),
         kl_packets=rep_kl.packets, kd_packets=rep_kd.packets,
         kl_report=rep_kl, kd_report=rep_kd,
     )
@@ -520,13 +535,14 @@ def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: flo
 
 # ── W sweep (ticket 14) ───────────────────────────────────────────────────────
 
-CSV_SCHEMA_VERSION = 1
+CSV_SCHEMA_VERSION = 2  # v2 (2026-09-23): + recovery_mul, recovery_add, recovery_time_s
 CSV_COLUMNS = (
     "schema_version", "config", "error_model", "arm", "repair_span", "W", "bit_error_rate", "seed",
     "gen_size", "T", "data_fields", "num_data_segments", "field_bits", "max_combined_hd",
     "candidates_budget", "n_info_corrupted", "n_coeff_corrupted", "n_arm_corrupted",
     "recovered", "silent", "failed", "recovery_rate", "silent_decode_rate", "failed_rate",
-    "recovery_ops", "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
+    "recovery_ops", "recovery_mul", "recovery_add", "recovery_time_s",
+    "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
 )
 
 SWEEP_W = (1, 2, 3)
@@ -564,7 +580,8 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
         row = dict(common, arm=arm, n_arm_corrupted=_n_changed(clean, corrupt, pools.target_idx),
                    recovered=ar.recovered, silent=ar.silent, failed=ar.failed,
                    recovery_rate=ar.recovered / T, silent_decode_rate=ar.silent / T,
-                   failed_rate=ar.failed / T, recovery_ops=ar.ops)
+                   failed_rate=ar.failed / T, recovery_ops=ar.ops,
+                   recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s)
         assert set(row) == set(CSV_COLUMNS), f"row drifted from frozen schema: {set(row) ^ set(CSV_COLUMNS)}"
         rows.append(row)
     return rows
@@ -592,11 +609,13 @@ def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_s
     return rows
 
 
-def write_rows(path, rows: list[dict]) -> None:
+def write_rows(path, rows: list[dict], append: bool = False) -> None:
+    """Write (or append, without header) frozen-schema rows."""
     import csv
-    with open(path, "w", newline="") as fh:
+    with open(path, "a" if append else "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="raise")
-        w.writeheader()
+        if not append:
+            w.writeheader()
         w.writerows(rows)
 
 
@@ -610,6 +629,7 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
     from functools import partial
     from pathlib import Path
     T = gen_size if T is None else T  # ADR-0013 default T = gen_size
+    assert all(0 <= w <= gen_size for w in Ws), f"W must be in 0..gen_size={gen_size}, got {tuple(Ws)}"
     if out_dir is None:
         from utils.log_helpers import get_run_log_dir
         out_dir = get_run_log_dir("isolated_recovery", gen=gen_size, T=T, seeds=len(list(seeds)))
@@ -623,9 +643,13 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
     seeds = list(seeds)
     by_seed: dict[int, list[dict]] = {}
 
+    # Append each seed as it lands (linear cost; the file is replot-able part-way, rows in
+    # completion order), then one final seed-sorted rewrite -> deterministic file.
+    write_rows(csv_path, [])
+
     def _land(seed, rows):
         by_seed[seed] = rows
-        write_rows(csv_path, [r for s in sorted(by_seed) for r in by_seed[s]])  # seed-sorted -> deterministic file
+        write_rows(csv_path, rows, append=True)
         print(f"  seed {seed} done ({len(by_seed)}/{len(seeds)}) -> {csv_path}", flush=True)
 
     if workers <= 1:
@@ -637,6 +661,7 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
             futs = {ex.submit(job, s): s for s in seeds}
             for f in as_completed(futs):
                 _land(futs[f], f.result())
+    write_rows(csv_path, [r for s in sorted(by_seed) for r in by_seed[s]])
     return out_dir
 
 
@@ -648,6 +673,8 @@ def main(argv=None) -> None:
     parser.add_argument("--seeds", type=int, default=SWEEP_SEEDS, help="sweep: N seeds starting at --seed-start")
     parser.add_argument("--seed-start", type=int, default=0,
                         help="sweep: first seed (use a fresh range to extend a pooled run without duplicates)")
+    parser.add_argument("--Ws", default=",".join(str(w) for w in SWEEP_W),
+                        help="sweep: comma list of W values, e.g. 1,2,3,4,5,6 (W <= gen_size)")
     parser.add_argument("--configs", default=",".join(CONFIGS),
                         help="sweep: comma list of configs, e.g. coefficient_first_info,arc_only_b_info")
     parser.add_argument("--data-fields", type=int, default=18,
@@ -670,7 +697,8 @@ def main(argv=None) -> None:
         # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
                       data_fields=args.data_fields, workers=args.workers, out_dir=args.out,
-                      configs=tuple(c.strip() for c in args.configs.split(",")))
+                      configs=tuple(c.strip() for c in args.configs.split(",")),
+                      Ws=tuple(int(w) for w in args.Ws.split(",")))
         print(f"sweep done -> {d}")
     else:
         parser.print_help()
