@@ -42,7 +42,8 @@ ARMS = {
     "keyless": {"color": "#588157", "label": "Keyless (orthogonal)"},
     "keyed":   {"color": "#3d405b", "label": "Keyed (MAC)"},
 }
-W_STYLE = {1: (":", "v"), 2: ("--", "s"), 3: ("-", "o")}  # (linestyle, marker) per W
+W_STYLE = {1: (":", "v"), 2: ("--", "s"), 3: ("-", "o"),  # (linestyle, marker) per W
+           4: ("-.", "D"), 5: ((0, (5, 1)), "^"), 6: ((0, (1, 1)), "P")}
 CONFIG_LABEL = {
     "coefficient_first": "coefficient_first\n(whole-packet BER)",
     "arc_only_a": "ARC-only (a)\n(data-only BER)",
@@ -115,7 +116,17 @@ def load_pooled(paths):
             print(f"  ! {p.parent.name}: setup {dict(zip(COMPAT_COLS, key))} != {dict(zip(COMPAT_COLS, ref))}; skipping")
             continue
         frames.append(df)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    # A (cell, seed) row is deterministic, so the same seed in two runs is a repeat, not a
+    # new sample -- keep the first copy so re-runs never inflate n or narrow the CIs.
+    key = ["config", "arm", "repair_span", "W", "bit_error_rate", "seed"]
+    dup = out.duplicated(subset=key, keep="first")
+    if dup.any():
+        print(f"  ! dropped {int(dup.sum())} duplicate (cell, seed) rows (same seeds in several runs)")
+        out = out[~dup].reset_index(drop=True)
+    return out
 
 
 def aggregate(df, min_trials=DEFAULT_MIN_TRIALS):
@@ -133,6 +144,11 @@ def aggregate(df, min_trials=DEFAULT_MIN_TRIALS):
             "recovery_rate": rec / n_targets, "recovery_ci": _wilson_halfwidth(rec, n_targets),
             "silent_decode_rate": sil / n_targets, "silent_ci": _wilson_halfwidth(sil, n_targets),
             "mean_recovery_ops": float(ops.mean()), "ops_ci": _z_halfwidth(ops.std(ddof=1), len(g)),
+            # schema v2 columns (NaN for v1 runs, which lack them)
+            **{f"mean_{c}": (float(g[f"recovery_{c}"].astype(float).mean()) if f"recovery_{c}" in g else float("nan"))
+               for c in ("mul", "add", "time_s")},
+            "time_ci": (_z_halfwidth(g["recovery_time_s"].astype(float).std(ddof=1), len(g))
+                        if "recovery_time_s" in g else float("nan")),
             "h2h_keyless_only": int(g["h2h_keyless_only"].sum()), "h2h_keyed_only": int(g["h2h_keyed_only"].sum()),
             "h2h_both": int(g["h2h_both"].sum()), "h2h_neither": int(g["h2h_neither"].sum()),
         })
@@ -176,7 +192,7 @@ def _line(ax, s, valcol, errcol, color, W, label):
         return
     ls, mk = W_STYLE.get(W, ("-", "o"))
     xs, ys = s["bit_error_rate"].to_numpy(), s[valcol].to_numpy()
-    ax.plot(xs, ys, ls, color=color, linewidth=1.8, alpha=0.8, zorder=1)
+    ax.plot(xs, ys, linestyle=ls, color=color, linewidth=1.8, alpha=0.8, zorder=1)
     if errcol:
         err = s[errcol].to_numpy()
         m = np.isfinite(err)
@@ -187,7 +203,7 @@ def _line(ax, s, valcol, errcol, color, W, label):
     for x, y, sparse in zip(xs, ys, s["sparse"].to_numpy()):
         ax.plot(x, y, marker=mk, markersize=5.5, color=color, markeredgecolor=color,
                 markerfacecolor="white" if sparse else color, zorder=3)
-    ax.plot([], [], ls, marker=mk, color=color, label=label)
+    ax.plot([], [], linestyle=ls, marker=mk, color=color, label=label)
 
 
 def _dress(ax, ylabel=None, log_y=False, ylim=None):
@@ -251,6 +267,71 @@ def plot_ops(summary, out_dir=None):
     """Mean recovery field-ops (total GF mul+add per recovery call) vs BER, log y."""
     return _per_config_figure(summary, "mean_recovery_ops", "ops_ci", "Mean GF ops per recovery call",
                               "Recovery field-ops vs BER", "ops", out_dir, log_y=True)
+
+
+def plot_time(summary, out_dir=None):
+    """Mean wall-clock seconds per recovery call vs BER, log y (schema v2 runs only).
+    Load-dependent -- compare arms within one run; ops is the deterministic metric."""
+    if not np.isfinite(summary.get("mean_time_s", pd.Series(dtype=float))).any():
+        print("  plot_time: no recovery_time_s in these runs (schema v1) -- skipped")
+        return None
+    return _per_config_figure(summary, "mean_time_s", "time_ci", "Mean wall-clock s per recovery call",
+                              "Recovery wall-clock time vs BER", "time", out_dir, log_y=True)
+
+
+VS_W_METRICS = (("recovery_rate", "recovery_ci", "Recovery rate", False),
+                ("silent_decode_rate", "silent_ci", "Silent-decode rate", False),
+                ("mean_recovery_ops", "ops_ci", "Mean GF ops / recovery", True),
+                ("mean_time_s", "time_ci", "Mean wall-clock s / recovery", True))
+VS_W_BER_MARKERS = ("o", "s", "^", "D", "v", "P")
+
+
+def plot_vs_w(summary, out_dir=None, bers=None):
+    """Metrics vs W (x axis) -- rows = recovery / silent / ops / time, columns = configs,
+    a line per (arm, BER). `bers` picks which BERs to draw (default: lowest, a middle
+    one, highest). One file per repair_span: vs_w_<span>.{png,pdf}."""
+    d = None
+    all_bers = sorted(summary["bit_error_rate"].unique())
+    if bers is None:
+        bers = sorted({all_bers[0], all_bers[len(all_bers) // 2], all_bers[-1]})
+    metrics = [m for m in VS_W_METRICS if m[0] in summary and np.isfinite(summary[m[0]]).any()]
+    for span in sorted(summary["repair_span"].unique()):
+        sub = summary[summary["repair_span"] == span]
+        present = [c for c in CONFIGS if c in set(sub["config"])]
+        fig, axes = plt.subplots(len(metrics), len(present), figsize=(5.5 * len(present), 3.6 * len(metrics)),
+                                 sharex=True, squeeze=False)
+        for r, (valcol, errcol, ylabel, log_y) in enumerate(metrics):
+            for col, cfg in enumerate(present):
+                ax = axes[r][col]
+                c = sub[sub["config"] == cfg]
+                for arm, meta in ARMS.items():
+                    for ber, mk in zip(bers, VS_W_BER_MARKERS):
+                        s = c[(c["arm"] == arm) & np.isclose(c["bit_error_rate"], ber)].sort_values("W")
+                        if s.empty:
+                            continue
+                        xs, ys, err = s["W"].to_numpy(), s[valcol].to_numpy(), s[errcol].to_numpy()
+                        m = np.isfinite(err)
+                        ax.errorbar(xs[m], ys[m], yerr=[np.minimum(err[m], 0.9 * ys[m]), err[m]], fmt="none",
+                                    ecolor=meta["color"], elinewidth=1, capsize=2, alpha=0.6)
+                        ax.plot(xs, ys, "-", marker=mk, color=meta["color"], linewidth=1.6, markersize=5,
+                                alpha=0.35 + 0.65 * (bers.index(ber) + 1) / len(bers),
+                                label=f"{meta['label']}, BER {ber:g}")
+                if log_y:
+                    ax.set_yscale("log")
+                ax.set_xticks(sorted(c["W"].unique()))
+                ax.grid(True, linestyle="--", alpha=0.3)
+                if r == 0:
+                    ax.set_title(CONFIG_LABEL[cfg], fontsize=10)
+                if col == 0:
+                    ax.set_ylabel(ylabel, fontsize=10, fontweight="bold")
+                if r == len(metrics) - 1:
+                    ax.set_xlabel("Recovery-acceptance width W", fontsize=10, fontweight="bold")
+        axes[0][-1].legend(fontsize=7, loc="best")
+        fig.suptitle(f"Metrics vs acceptance width W  [repair_span={span}]", fontsize=13, fontweight="bold", y=1.0)
+        fig.text(0.5, 0.985, _subtitle(summary), ha="center", fontsize=8, alpha=0.7)
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        d = _save(fig, out_dir, f"vs_w_{span}")
+    return d
 
 
 def plot_isolation(summary, out_dir=None):
@@ -337,6 +418,8 @@ def plot_silent_w1(summary, out_dir=None, setups=None, configs=("arc_only_a", "a
 
 PLOT_FUNCS = {
     "silent_w1": plot_silent_w1,
+    "time": plot_time,
+    "vs_w": plot_vs_w,
     "recovery": plot_recovery,
     "silent": plot_silent,
     "ops": plot_ops,
