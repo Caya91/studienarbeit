@@ -36,6 +36,45 @@ injection/oracle wiring is wrong.
 
 Run the readable smoke (PowerShell, project .venv):
   $env:PYTHONPATH="."; $env:LOG_FOLDER="$env:TEMP\st_logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --smoke
+
+W sweep (ticket 14) -> logs/isolated_recovery/<run>/raw_trials.csv (long: run in background):
+  $env:PYTHONPATH="."; $env:LOG_FOLDER="./logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --sweep --workers 6
+Replot without re-running: scripts/isolated_recovery_plots_from_csv.py (pools every run dir).
+
+FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 1; `CSV_COLUMNS` enforces it)
+One row per (config, arm, repair_span, W, bit_error_rate, seed) -- a "trial" is one
+seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
+average per-seed rates when T could differ).
+  schema_version     int   = CSV_SCHEMA_VERSION
+  config             str   coefficient_first | arc_only_a | arc_only_b
+  error_model        str   whole_packet | data_only (fixed by config)
+  arm                str   keyless | keyed
+  repair_span        str   payload | segment (ticket 16, matched across arms)
+  W                  int   recovery-acceptance width
+  bit_error_rate     float
+  seed               int   pool + injection seed; injection is independent of W and
+                           repair_span, so rows differing only in those are paired too
+  gen_size           int   = G (helpers)
+  T                  int   targets scored (= n_targets)
+  data_fields        int
+  num_data_segments  int
+  field_bits         int   GF(2^m)
+  max_combined_hd    int
+  candidates_budget  int   (-1 = unlimited)
+  n_info_corrupted   int   targets with >=1 [coeff|payload] flip (paired, same both arms)
+  n_coeff_corrupted  int   targets with a corrupted coeff payload (= ARC-only drop set)
+  n_arm_corrupted    int   targets with ANY byte changed in this arm (incl. tag/salt)
+  recovered          int   accepted at W AND info columns == ground truth
+  silent             int   accepted at W AND info columns != ground truth (wrong-accept)
+  failed             int   not accepted at W (honest fail)
+  recovery_rate      float recovered / T
+  silent_decode_rate float silent / T
+  failed_rate        float failed / T
+  recovery_ops       int   total GF ops (mul+add) of this arm's recovery call
+  h2h_keyless_only   int   per-target head-to-head on 'recovered' (same on both arm rows)
+  h2h_keyed_only     int
+  h2h_both           int
+  h2h_neither        int
 """
 from __future__ import annotations
 
@@ -324,20 +363,26 @@ class ConfigResult:
     keyed: ArmResult
     kl_packets: list[bytearray] = dc_field(default_factory=list)   # keyless pool after recovery
     kd_packets: list[bytearray] = dc_field(default_factory=list)   # keyed pool after recovery
+    kl_report: object = None   # SegmentedRecoveryReport (per-segment pairs/unpaired/dropped counts)
+    kd_report: object = None
 
 
 def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
                max_combined_hd: int = 2, candidates_budget: int | None = 20000,
-               repair_span: str = "payload") -> ConfigResult:
+               repair_span: str = "payload", inj: InjectedErrors | None = None) -> ConfigResult:
     """Inject the config's error model (paired), then run BOTH arms with injected trust
     and score the T targets. The two arms see identical [coeff|payload] corruption.
 
     repair_span (ADR-0013 ticket 16, matched across arms): "payload" = repair the
     ARC-narrowed data columns only (default); "segment" = also search the salt/tag
     redundancy columns, so a corrupted salt/tag byte is repairable at a measured
-    silent-decode cost."""
+    silent-decode cost.
+
+    inj: a hand-built injection (tests / edge cases) instead of drawing one at `ber`;
+    the paired-info-column guard is still enforced on it."""
     model = _CONFIG_MODEL[config]
-    inj = inject_paired(pools, ber, model, seed=seed * 131 + 7)
+    if inj is None:
+        inj = inject_paired(pools, ber, model, seed=seed * 131 + 7)
     assert_identical_info_corruption(pools, inj)
 
     kl_trust = injected_trust_map(pools.kl_clean, inj.kl, pools.kl_segments, pools.helper_idx, pools.target_idx)
@@ -381,6 +426,7 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
         keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out)),
         keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out)),
         kl_packets=rep_kl.packets, kd_packets=rep_kd.packets,
+        kl_report=rep_kl, kd_report=rep_kd,
     )
 
 
@@ -459,10 +505,140 @@ def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: flo
     return results
 
 
+# ── W sweep (ticket 14) ───────────────────────────────────────────────────────
+
+CSV_SCHEMA_VERSION = 1
+CSV_COLUMNS = (
+    "schema_version", "config", "error_model", "arm", "repair_span", "W", "bit_error_rate", "seed",
+    "gen_size", "T", "data_fields", "num_data_segments", "field_bits", "max_combined_hd",
+    "candidates_budget", "n_info_corrupted", "n_coeff_corrupted", "n_arm_corrupted",
+    "recovered", "silent", "failed", "recovery_rate", "silent_decode_rate", "failed_rate",
+    "recovery_ops", "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
+)
+
+SWEEP_W = (1, 2, 3)
+SWEEP_BERS = (1e-3, 2e-3, 4e-3, 6e-3, 1e-2)
+SWEEP_SPANS = ("payload", "segment")
+SWEEP_SEEDS = 30
+
+
+def _n_changed(clean_pool, corrupt_pool, idx) -> int:
+    return sum(1 for t in idx if corrupt_pool[t] != clean_pool[t])
+
+
+def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, seed: int, repair_span: str,
+                data_fields: int, num_data_segments: int, max_combined_hd: int,
+                candidates_budget: int | None) -> list[dict]:
+    """The two frozen-schema rows (keyless, keyed) for one run_config result."""
+    T = len(pools.target_idx)
+    h2h = head_to_head(res.keyless.outcomes, res.keyed.outcomes)
+    n_info = sum(1 for t in pools.target_idx if res.inj.per_target[t])
+    n_coeff = T - len(coeff_clean_targets(pools.kl_clean, res.inj.kl, pools.kl_segments, pools.target_idx))
+    common = {
+        "schema_version": CSV_SCHEMA_VERSION, "config": res.config, "error_model": _CONFIG_MODEL[res.config],
+        "repair_span": repair_span, "W": W, "bit_error_rate": ber, "seed": seed,
+        "gen_size": pools.gen_size, "T": T, "data_fields": data_fields,
+        "num_data_segments": num_data_segments, "field_bits": pools.field.bit_lenght,
+        "max_combined_hd": max_combined_hd,
+        "candidates_budget": -1 if candidates_budget is None else candidates_budget,
+        "n_info_corrupted": n_info, "n_coeff_corrupted": n_coeff,
+        "h2h_keyless_only": h2h["keyless_only"], "h2h_keyed_only": h2h["keyed_only"],
+        "h2h_both": h2h["both"], "h2h_neither": h2h["neither"],
+    }
+    rows = []
+    for arm, ar, clean, corrupt in (("keyless", res.keyless, pools.kl_clean, res.inj.kl),
+                                    ("keyed", res.keyed, pools.kd_clean, res.inj.kd)):
+        row = dict(common, arm=arm, n_arm_corrupted=_n_changed(clean, corrupt, pools.target_idx),
+                   recovered=ar.recovered, silent=ar.silent, failed=ar.failed,
+                   recovery_rate=ar.recovered / T, silent_decode_rate=ar.silent / T,
+                   failed_rate=ar.failed / T, recovery_ops=ar.ops)
+        assert set(row) == set(CSV_COLUMNS), f"row drifted from frozen schema: {set(row) ^ set(CSV_COLUMNS)}"
+        rows.append(row)
+    return rows
+
+
+def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_segments: int,
+               field_bits: int, Ws, bers, spans, configs, max_combined_hd: int,
+               candidates_budget: int | None) -> list[dict]:
+    """Every (BER, config, span, W) cell for ONE seed -- the unit of parallel work.
+    One pool per seed; the injection is drawn from (seed, BER) only, so all W/span
+    variants of a cell see the same corruption."""
+    field = CountingField(create_field(field_bits))
+    pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
+    assert_paired_info_columns(pools)
+    rows = []
+    for ber in bers:
+        for config in configs:
+            for span in spans:
+                for W in Ws:
+                    res = run_config(pools, config, ber, W, seed, max_combined_hd=max_combined_hd,
+                                     candidates_budget=candidates_budget, repair_span=span)
+                    rows += result_rows(pools, res, W=W, ber=ber, seed=seed, repair_span=span,
+                                        data_fields=data_fields, num_data_segments=num_data_segments,
+                                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+    return rows
+
+
+def write_rows(path, rows: list[dict]) -> None:
+    import csv
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="raise")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None, data_fields: int = 18,
+              num_data_segments: int = 3, field_bits: int = 8, Ws=SWEEP_W, bers=SWEEP_BERS,
+              spans=SWEEP_SPANS, configs=CONFIGS, max_combined_hd: int = 2,
+              candidates_budget: int | None = 20000, workers: int = 1, out_dir=None):
+    """W x BER x config x arm x repair_span sweep -> raw_trials.csv (frozen schema).
+    Seeds run in parallel (`workers` processes); the CSV is rewritten after each seed
+    lands so a long run can be replotted part-way. Returns the run dir."""
+    from functools import partial
+    from pathlib import Path
+    T = gen_size if T is None else T  # ADR-0013 default T = gen_size
+    if out_dir is None:
+        from utils.log_helpers import get_run_log_dir
+        out_dir = get_run_log_dir("isolated_recovery", gen=gen_size, T=T, seeds=len(list(seeds)))
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "raw_trials.csv"
+    job = partial(sweep_seed, gen_size=gen_size, T=T, data_fields=data_fields,
+                  num_data_segments=num_data_segments, field_bits=field_bits, Ws=tuple(Ws),
+                  bers=tuple(bers), spans=tuple(spans), configs=tuple(configs),
+                  max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+    seeds = list(seeds)
+    by_seed: dict[int, list[dict]] = {}
+
+    def _land(seed, rows):
+        by_seed[seed] = rows
+        write_rows(csv_path, [r for s in sorted(by_seed) for r in by_seed[s]])  # seed-sorted -> deterministic file
+        print(f"  seed {seed} done ({len(by_seed)}/{len(seeds)}) -> {csv_path}", flush=True)
+
+    if workers <= 1:
+        for s in seeds:
+            _land(s, job(s))
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(job, s): s for s in seeds}
+            for f in as_completed(futs):
+                _land(futs[f], f.result())
+    return out_dir
+
+
 def main(argv=None) -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Isolated recovery comparison (ADR-0013).")
     parser.add_argument("--smoke", action="store_true", help="run the readable per-target smoke report")
+    parser.add_argument("--sweep", action="store_true", help="W x BER x config x arm x span sweep -> raw_trials.csv")
+    parser.add_argument("--seeds", type=int, default=SWEEP_SEEDS, help="sweep: N seeds starting at --seed-start")
+    parser.add_argument("--seed-start", type=int, default=0,
+                        help="sweep: first seed (use a fresh range to extend a pooled run without duplicates)")
+    parser.add_argument("--data-fields", type=int, default=18,
+                        help="sweep: data bytes (needs >= num_data_segments*(gen_size-1) for keyless tagging)")
+    parser.add_argument("--workers", type=int, default=1, help="sweep: parallel processes (one seed each)")
+    parser.add_argument("--out", default=None, help="sweep: output dir (default logs/isolated_recovery/<run>)")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--gen-size", type=int, default=6)
     parser.add_argument("--targets", type=int, default=8, help="T target packets")
@@ -475,6 +651,11 @@ def main(argv=None) -> None:
     if args.smoke:
         run_smoke(seed=args.seed, gen_size=args.gen_size, T=args.targets, W=args.W, ber=args.ber,
                   repair_span=args.repair_span)
+    elif args.sweep:
+        # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
+        d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
+                      data_fields=args.data_fields, workers=args.workers, out_dir=args.out)
+        print(f"sweep done -> {d}")
     else:
         parser.print_help()
 
