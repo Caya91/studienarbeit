@@ -16,7 +16,7 @@ Sim code lives in worktree `worktree-segmented-scheme-sim`; run per `docs/runnin
 | 07 | Implement IC-refinement (Case-2 recovery) in both arms | — | ✅ done — MAC (2026-08-31) + orthogonal (2026-09-01) |
 | 08 | Segmented CRC arm with PRAC-style Combined Recovery | — | ready |
 | 09 | Reproduce HMAC-paper figures (keyless orthogonal vs keyed HMAC) | 04 (arms done) | ready |
-| 17 | Security: segment-splice test + partial-knowledge forgery (keyless vs keyed) | — | ready (Part A first, then gate) |
+| 17 | Security: segment-splice test + partial-knowledge forgery (keyless vs keyed) | — | ✅ done (2026-09-23, branch feat/security-sim) — splice CONFIRMED (fix-vs-limitation decision open) |
 
 Frontier now: **08** (PRAC-style combined-recovery CRC arm) + **09** (HMAC-paper figures). Tickets **06** (attacker sim) and **07** (IC-refinement, both arms) done. **03** (run+interpret full N-sweep) still open.
 
