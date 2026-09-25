@@ -41,8 +41,9 @@ W sweep (ticket 14) -> logs/isolated_recovery/<run>/raw_trials.csv (long: run in
   $env:PYTHONPATH="."; $env:LOG_FOLDER="./logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --sweep --workers 6
 Replot without re-running: scripts/isolated_recovery_plots_from_csv.py (pools every run dir).
 
-FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 2; `CSV_COLUMNS` enforces it)
-One row per (config, arm, repair_span, W, bit_error_rate, seed) -- a "trial" is one
+FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 4; `CSV_COLUMNS` enforces it)
+One row per (config, arm, repair_span, W, bit_error_rate, max_combined_hd, candidates_budget,
+seed) -- max_combined_hd/candidates_budget are sweep dimensions since v3 (ticket 19). A "trial" is one
 seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
 average per-seed rates when T could differ).
   schema_version     int   = CSV_SCHEMA_VERSION
@@ -63,6 +64,7 @@ average per-seed rates when T could differ).
   field_bits         int   GF(2^m)
   max_combined_hd    int
   candidates_budget  int   (-1 = unlimited)
+  keyed_early_exit   int   (v3) 1 = keyed verify stops at first bad tag (ticket 18, fair ops); 0 = old
   n_info_corrupted   int   targets with >=1 [coeff|payload] flip (paired, same both arms)
   n_coeff_corrupted  int   targets with a corrupted coeff payload (= ARC-only drop set)
   n_arm_corrupted    int   targets with ANY byte changed in this arm (incl. tag/salt)
@@ -72,12 +74,16 @@ average per-seed rates when T could differ).
   recovery_rate      float recovered / T
   silent_decode_rate float silent / T
   failed_rate        float failed / T
-  recovery_ops       int   total GF ops (mul+add) of this arm's recovery call
+  recovery_ops       int   total GF ops (mul+add) of this arm's recovery call -- since v4 REPAIR ONLY:
+                           the entry's post-repair whole-pool check (report.ok) is excluded (ticket 20)
   recovery_mul       int   (v2) GF multiplications of the recovery call
   recovery_add       int   (v2) GF additions of the recovery call
   recovery_time_s    float (v2) wall-clock seconds of the recovery call (perf_counter, scoring
                            excluded). Machine- and load-dependent (parallel workers share the CPU):
                            compare arms WITHIN a run, prefer ops as the deterministic cost metric.
+  final_check_ops    int   (v4) ops of the post-repair whole-pool check, costed separately: keyless
+                           check_orth_segmented (all packet pairs, O(M^2)), keyed check_mac_segmented (O(M))
+  final_check_time_s float (v4) wall-clock of that check
   h2h_keyless_only   int   per-target head-to-head on 'recovered' (same on both arm rows)
   h2h_keyed_only     int
   h2h_both           int
@@ -94,7 +100,7 @@ from binary_ext_fields.generate_symbols import (
     generate_identity_coefficients,
     recode_rlnc_without_coeffs,
 )
-from binary_ext_fields.segmented_tagging import tag_generation_segmented
+from binary_ext_fields.segmented_tagging import tag_generation_segmented, check_orth_segmented
 from binary_ext_fields.segmented_recovery import (
     SegmentTrust,
     recover_coefficient_first,
@@ -106,6 +112,7 @@ from binary_ext_fields.segmented_mac_tagging import (
     generate_keyset,
     tag_generation_mac,
     mac_verify_segment,
+    check_mac_segmented,
 )
 from binary_ext_fields.segmented_mac_recovery import (
     recover_coefficient_first_mac,
@@ -351,6 +358,8 @@ class ArmResult:
     mul: int = 0          # GF multiplications of the recovery call (ops = mul + add)
     add: int = 0          # GF additions
     time_s: float = 0.0   # wall-clock of the recovery call (perf_counter); scoring excluded
+    final_check_ops: int = 0        # ticket 20: the post-repair whole-pool check, costed separately
+    final_check_time_s: float = 0.0  # (keyless all-pairs orthogonality, keyed per-packet MAC)
 
 
 def _tally(outcomes) -> tuple[int, int, int]:
@@ -389,9 +398,20 @@ class ConfigResult:
     kd_report: object = None
 
 
+def _final_check_cost(field, check) -> tuple[int, float]:
+    """Ops/time of the post-repair whole-pool check, in its own window (ticket 20). It is
+    not part of repair and the harness scoring never uses it, so it is reported beside,
+    not inside, recovery_ops/recovery_time_s."""
+    field.reset()
+    t0 = time.perf_counter()
+    check()
+    return field.mul_count + field.add_count, time.perf_counter() - t0
+
+
 def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
                max_combined_hd: int = 2, candidates_budget: int | None = 20000,
-               repair_span: str = "payload", inj: InjectedErrors | None = None) -> ConfigResult:
+               repair_span: str = "payload", inj: InjectedErrors | None = None,
+               keyed_early_exit: bool = True) -> ConfigResult:
     """Inject the config's error model (paired), then run BOTH arms with injected trust
     and score the T targets. The two arms see identical [coeff|payload] corruption.
 
@@ -401,7 +421,11 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     silent-decode cost.
 
     inj: a hand-built injection (tests / edge cases) instead of drawing one at `ber`;
-    the paired-info-column guard is still enforced on it."""
+    the paired-info-column guard is still enforced on it.
+
+    keyed_early_exit (ticket 18): keyed MAC verification stops at the first mismatching
+    tag, matching the keyless oracle's self-check short-circuit, so ops/time are compared
+    fairly. Outcomes are identical either way; False reproduces the pre-ticket-18 ops."""
     model = _CONFIG_MODEL[config]
     if inj is None:
         inj = inject_paired(pools, ber, model, seed=seed * 131 + 7)
@@ -418,17 +442,19 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
         rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                            W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                           repair_span=repair_span)
+                                           repair_span=repair_span, final_check=False)
     else:
         ccl = coeff_clean_targets(pools.kl_clean, inj.kl, pools.kl_segments, pools.target_idx)
         rep_kl = recover_arc_only(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                   basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                   max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                   W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                  repair_span=repair_span)
+                                  repair_span=repair_span, final_check=False)
     kl_time = time.perf_counter() - t0
     kl_mul, kl_add = pools.field.mul_count, pools.field.add_count
     kl_ops = kl_mul + kl_add
+    kl_fc_ops, kl_fc_time = _final_check_cost(pools.field, lambda: check_orth_segmented(
+        pools.field, rep_kl.packets, pools.kl_segments))
     kl_out = score_keyless(pools, rep_kl.packets, W)
 
     # ---- keyed ----
@@ -437,22 +463,28 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
     if _CONFIG_METHOD[config] == "coefficient_first":
         rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                               W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
+                                               W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
+                                               early_exit=keyed_early_exit, final_check=False)
     else:
         ccl = coeff_clean_targets(pools.kd_clean, inj.kd, pools.kd_segments, pools.target_idx)
         rep_kd = recover_arc_only_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                       basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                      W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span)
+                                      W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
+                                      early_exit=keyed_early_exit, final_check=False)
     kd_time = time.perf_counter() - t0
     kd_mul, kd_add = pools.field.mul_count, pools.field.add_count
     kd_ops = kd_mul + kd_add
+    kd_fc_ops, kd_fc_time = _final_check_cost(pools.field, lambda: check_mac_segmented(
+        pools.field, pools.keyset, rep_kd.packets, pools.kd_segments))
     kd_out = score_keyed(pools, rep_kd.packets, W)
 
     return ConfigResult(
         config=config, inj=inj,
-        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time),
-        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time),
+        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time,
+                          final_check_ops=kl_fc_ops, final_check_time_s=kl_fc_time),
+        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time,
+                        final_check_ops=kd_fc_ops, final_check_time_s=kd_fc_time),
         kl_packets=rep_kl.packets, kd_packets=rep_kd.packets,
         kl_report=rep_kl, kd_report=rep_kd,
     )
@@ -535,13 +567,15 @@ def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: flo
 
 # ── W sweep (ticket 14) ───────────────────────────────────────────────────────
 
-CSV_SCHEMA_VERSION = 2  # v2 (2026-09-23): + recovery_mul, recovery_add, recovery_time_s
+CSV_SCHEMA_VERSION = 4  # v2: + recovery_mul/add/time_s; v3: + keyed_early_exit; v4 (2026-09-25): repair-only
+#                        recovery_* (final pool check excluded) + final_check_ops/_time_s
 CSV_COLUMNS = (
     "schema_version", "config", "error_model", "arm", "repair_span", "W", "bit_error_rate", "seed",
     "gen_size", "T", "data_fields", "num_data_segments", "field_bits", "max_combined_hd",
-    "candidates_budget", "n_info_corrupted", "n_coeff_corrupted", "n_arm_corrupted",
+    "candidates_budget", "keyed_early_exit", "n_info_corrupted", "n_coeff_corrupted", "n_arm_corrupted",
     "recovered", "silent", "failed", "recovery_rate", "silent_decode_rate", "failed_rate",
     "recovery_ops", "recovery_mul", "recovery_add", "recovery_time_s",
+    "final_check_ops", "final_check_time_s",
     "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
 )
 
@@ -557,7 +591,7 @@ def _n_changed(clean_pool, corrupt_pool, idx) -> int:
 
 def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, seed: int, repair_span: str,
                 data_fields: int, num_data_segments: int, max_combined_hd: int,
-                candidates_budget: int | None) -> list[dict]:
+                candidates_budget: int | None, keyed_early_exit: bool = True) -> list[dict]:
     """The two frozen-schema rows (keyless, keyed) for one run_config result."""
     T = len(pools.target_idx)
     h2h = head_to_head(res.keyless.outcomes, res.keyed.outcomes)
@@ -570,6 +604,7 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
         "num_data_segments": num_data_segments, "field_bits": pools.field.bit_lenght,
         "max_combined_hd": max_combined_hd,
         "candidates_budget": -1 if candidates_budget is None else candidates_budget,
+        "keyed_early_exit": int(keyed_early_exit),
         "n_info_corrupted": n_info, "n_coeff_corrupted": n_coeff,
         "h2h_keyless_only": h2h["keyless_only"], "h2h_keyed_only": h2h["keyed_only"],
         "h2h_both": h2h["both"], "h2h_neither": h2h["neither"],
@@ -581,18 +616,19 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
                    recovered=ar.recovered, silent=ar.silent, failed=ar.failed,
                    recovery_rate=ar.recovered / T, silent_decode_rate=ar.silent / T,
                    failed_rate=ar.failed / T, recovery_ops=ar.ops,
-                   recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s)
+                   recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s,
+                   final_check_ops=ar.final_check_ops, final_check_time_s=ar.final_check_time_s)
         assert set(row) == set(CSV_COLUMNS), f"row drifted from frozen schema: {set(row) ^ set(CSV_COLUMNS)}"
         rows.append(row)
     return rows
 
 
 def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_segments: int,
-               field_bits: int, Ws, bers, spans, configs, max_combined_hd: int,
-               candidates_budget: int | None) -> list[dict]:
-    """Every (BER, config, span, W) cell for ONE seed -- the unit of parallel work.
-    One pool per seed; the injection is drawn from (seed, BER) only, so all W/span
-    variants of a cell see the same corruption."""
+               field_bits: int, Ws, bers, spans, configs, hds, budgets,
+               keyed_early_exit: bool = True) -> list[dict]:
+    """Every (BER, config, span, HD, budget, W) cell for ONE seed -- the unit of parallel
+    work. One pool per seed; the injection is drawn from (seed, BER) only, so all
+    W/span/HD/budget variants of a cell see the same corruption (paired)."""
     field = CountingField(create_field(field_bits))
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
@@ -600,12 +636,16 @@ def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_s
     for ber in bers:
         for config in configs:
             for span in spans:
-                for W in Ws:
-                    res = run_config(pools, config, ber, W, seed, max_combined_hd=max_combined_hd,
-                                     candidates_budget=candidates_budget, repair_span=span)
-                    rows += result_rows(pools, res, W=W, ber=ber, seed=seed, repair_span=span,
-                                        data_fields=data_fields, num_data_segments=num_data_segments,
-                                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+                for hd in hds:
+                    for budget in budgets:
+                        for W in Ws:
+                            res = run_config(pools, config, ber, W, seed, max_combined_hd=hd,
+                                             candidates_budget=budget, repair_span=span,
+                                             keyed_early_exit=keyed_early_exit)
+                            rows += result_rows(pools, res, W=W, ber=ber, seed=seed, repair_span=span,
+                                                data_fields=data_fields, num_data_segments=num_data_segments,
+                                                max_combined_hd=hd, candidates_budget=budget,
+                                                keyed_early_exit=keyed_early_exit)
     return rows
 
 
@@ -622,10 +662,12 @@ def write_rows(path, rows: list[dict], append: bool = False) -> None:
 def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None, data_fields: int = 18,
               num_data_segments: int = 3, field_bits: int = 8, Ws=SWEEP_W, bers=SWEEP_BERS,
               spans=SWEEP_SPANS, configs=CONFIGS, max_combined_hd: int = 2,
-              candidates_budget: int | None = 20000, workers: int = 1, out_dir=None):
-    """W x BER x config x arm x repair_span sweep -> raw_trials.csv (frozen schema).
-    Seeds run in parallel (`workers` processes); the CSV is rewritten after each seed
-    lands so a long run can be replotted part-way. Returns the run dir."""
+              candidates_budget: int | None = 20000, workers: int = 1, out_dir=None,
+              hds=None, budgets=None, keyed_early_exit: bool = True):
+    """W x BER x config x arm x repair_span (x HD x budget) sweep -> raw_trials.csv.
+    hds/budgets (ticket 19) default to the single (max_combined_hd, candidates_budget);
+    a budget of None = unlimited. Seeds run in parallel (`workers` processes); rows are
+    appended as each seed lands, then rewritten seed-sorted at the end. Returns run dir."""
     from functools import partial
     from pathlib import Path
     T = gen_size if T is None else T  # ADR-0013 default T = gen_size
@@ -639,7 +681,8 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
     job = partial(sweep_seed, gen_size=gen_size, T=T, data_fields=data_fields,
                   num_data_segments=num_data_segments, field_bits=field_bits, Ws=tuple(Ws),
                   bers=tuple(bers), spans=tuple(spans), configs=tuple(configs),
-                  max_combined_hd=max_combined_hd, candidates_budget=candidates_budget)
+                  hds=tuple(hds or (max_combined_hd,)),
+                  budgets=tuple(budgets or (candidates_budget,)), keyed_early_exit=keyed_early_exit)
     seeds = list(seeds)
     by_seed: dict[int, list[dict]] = {}
 
@@ -675,6 +718,12 @@ def main(argv=None) -> None:
                         help="sweep: first seed (use a fresh range to extend a pooled run without duplicates)")
     parser.add_argument("--Ws", default=",".join(str(w) for w in SWEEP_W),
                         help="sweep: comma list of W values, e.g. 1,2,3,4,5,6 (W <= gen_size)")
+    parser.add_argument("--spans", default=",".join(SWEEP_SPANS), help="sweep: comma list of repair spans (payload,segment)")
+    parser.add_argument("--hds", default="2", help="sweep: comma list of max_combined_hd values, e.g. 1,2,3,4,5")
+    parser.add_argument("--budgets", default="20000",
+                        help="sweep: comma list of candidates_budget values, 'none' = unlimited, e.g. 20000,none")
+    parser.add_argument("--no-keyed-early-exit", action="store_true",
+                        help="sweep: old keyed verify (all W tags per candidate) -- reproduces pre-ticket-18 ops")
     parser.add_argument("--configs", default=",".join(CONFIGS),
                         help="sweep: comma list of configs, e.g. coefficient_first_info,arc_only_b_info")
     parser.add_argument("--data-fields", type=int, default=18,
@@ -698,7 +747,11 @@ def main(argv=None) -> None:
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
                       data_fields=args.data_fields, workers=args.workers, out_dir=args.out,
                       configs=tuple(c.strip() for c in args.configs.split(",")),
-                      Ws=tuple(int(w) for w in args.Ws.split(",")))
+                      Ws=tuple(int(w) for w in args.Ws.split(",")),
+                      hds=tuple(int(h) for h in args.hds.split(",")),
+                      budgets=tuple(None if b.strip().lower() == "none" else int(b) for b in args.budgets.split(",")),
+                      keyed_early_exit=not args.no_keyed_early_exit,
+                      spans=tuple(x.strip() for x in args.spans.split(",")))
         print(f"sweep done -> {d}")
     else:
         parser.print_help()

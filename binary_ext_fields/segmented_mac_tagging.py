@@ -147,7 +147,7 @@ def tag_generation_mac(field: TableField, packets: list[bytearray], gen_size: in
 
 
 def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, segment: MacSegment,
-                       W: int | None = None) -> bool:
+                       W: int | None = None, early_exit: bool = False) -> bool:
     """Self-sufficient MAC verification of one segment slice ([payload | tags]):
     recompute the tag vector over the received payload and compare to the received
     tag symbols. No cross-check against other packets (a MAC needs none -- contrast
@@ -159,12 +159,19 @@ def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, 
     keyed arm's acceptance width matches the keyless arm's W cross-checks -- nominal
     collision ~q^-W (exact here, since generate_keyset's keys are i.i.d.). The
     remaining num_keys-W tags still ride the wire (overhead parity, ticket 11), they
-    are simply not consulted. W must not exceed num_keys."""
+    are simply not consulted. W must not exceed num_keys.
+
+    early_exit (ticket 18): verify tag by tag and return False at the FIRST mismatch,
+    like the keyless oracle's self-check short-circuit. Same bool either way; only the
+    op count differs (a wrong candidate usually fails tag 0 -> ~1 inner product instead
+    of W). Default False keeps every existing caller's op counts unchanged."""
     if W is not None:
         assert W <= segment.num_keys, f"W={W} exceeds num_keys={segment.num_keys}"
     n = segment.num_keys if W is None else W
     payload = segment_slice[:segment.payload_length]
     recv_tags = list(segment_slice[segment.payload_length:segment.payload_length + n])
+    if early_exit:
+        return all(inner_product_bytes(field, payload, k) == t for k, t in zip(keys[:n], recv_tags))
     return mac_tag_vector(field, keys[:n], payload) == recv_tags
 
 

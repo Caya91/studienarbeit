@@ -634,7 +634,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                         pair_cache: dict | None = None,
                         verify_count: int | None = None,
                         ic_refinement: bool = True,
-                        W: int | None = None) -> SegmentedRecoveryReport:
+                        W: int | None = None,
+                        final_check: bool = True) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -651,8 +652,10 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                        pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
         for segment in segments
     ]
-    with _count_phase(field, "detection"):
-        ok = all(check_orth_segmented(field, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        with _count_phase(field, "detection"):
+            ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
 
 
@@ -665,7 +668,8 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
                      W: int | None = None,
                      injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
                      bitflip_only: bool = False,
-                     repair_span: str = "payload") -> SegmentedRecoveryReport:
+                     repair_span: str = "payload",
+                     final_check: bool = True) -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant: skip the coeff-repair stage entirely and repair the
     DATA segments only, ARC-localizing from an INJECTED helper basis instead of from
     coefficient_first's repaired-then-classified coeff trust.
@@ -716,8 +720,10 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
                            injected_trust=injected, bitflip_only=bitflip_only)
         )
 
-    with _count_phase(field, "detection"):
-        ok = all(check_orth_segmented(field, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        with _count_phase(field, "detection"):
+            ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
 
 
@@ -797,7 +803,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                                W: int | None = None,
                                injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
                                bitflip_only: bool = False,
-                               repair_span: str = "payload") -> SegmentedRecoveryReport:
+                               repair_span: str = "payload",
+                               final_check: bool = True) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -843,6 +850,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                            injected_trust=_injected(segment), bitflip_only=bitflip_only)
         )
 
-    with _count_phase(field, "detection"):
-        ok = all(check_orth_segmented(field, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        with _count_phase(field, "detection"):
+            ok = all(check_orth_segmented(field, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
