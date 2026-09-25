@@ -335,7 +335,8 @@ def recover_uniform_hd_mac(field: TableField, keyset: list[list[bytearray]], pac
                            segments: list[MacSegment], max_combined_hd: int = 4,
                            candidates_budget: int | None = None,
                            pair_cache: dict | None = None,
-                           ic_refinement: bool = True, W: int | None = None, early_exit: bool = False) -> SegmentedRecoveryReport:
+                           ic_refinement: bool = True, W: int | None = None, early_exit: bool = False,
+                           final_check: bool = True) -> SegmentedRecoveryReport:
     """Option 1: every segment, coeff and data alike, repaired via pairing + combined
     search. No ARC anywhere. ic_refinement (default on) adds the Case-2 same-position
     fallback per pair."""
@@ -346,7 +347,9 @@ def recover_uniform_hd_mac(field: TableField, keyset: list[list[bytearray]], pac
                            pair_cache=pair_cache, ic_refinement=ic_refinement, W=W, early_exit=early_exit)
         for s, segment in enumerate(segments)
     ]
-    ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
 
 
@@ -356,7 +359,8 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
                          candidates_budget: int | None = None, pair_cache: dict | None = None,
                          ic_refinement: bool = True, W: int | None = None, early_exit: bool = False,
                          injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
-                         repair_span: str = "payload") -> SegmentedRecoveryReport:
+                         repair_span: str = "payload",
+                         final_check: bool = True) -> SegmentedRecoveryReport:
     """ADR-0013 ARC-only variant, keyed arm -- the exact mirror of the orthogonal
     arm's recover_arc_only (segmented_recovery.py), differing ONLY in the acceptance
     oracle (MAC verification vs orthogonality-to-helpers). Skips coeff repair, repairs
@@ -384,7 +388,9 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
                                drop_unlocalized=True, injected_trust=injected)
         )
 
-    ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
 
 
@@ -435,7 +441,8 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
                                   pair_cache: dict | None = None,
                                   ic_refinement: bool = True, W: int | None = None, early_exit: bool = False,
                                   injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
-                                  repair_span: str = "payload") -> SegmentedRecoveryReport:
+                                  repair_span: str = "payload",
+                                  final_check: bool = True) -> SegmentedRecoveryReport:
     """Option 2: repair the coeff-segment first (same combined search -- it can never
     ARC-localize itself), then ARC-narrow each data-segment's candidate columns from
     the now-trusted coefficients before repairing them. ic_refinement (default on)
@@ -473,5 +480,7 @@ def recover_coefficient_first_mac(field: TableField, keyset: list[list[bytearray
                                injected_trust=_injected(segment))
         )
 
-    ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)

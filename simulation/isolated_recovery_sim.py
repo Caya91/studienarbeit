@@ -41,7 +41,7 @@ W sweep (ticket 14) -> logs/isolated_recovery/<run>/raw_trials.csv (long: run in
   $env:PYTHONPATH="."; $env:LOG_FOLDER="./logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --sweep --workers 6
 Replot without re-running: scripts/isolated_recovery_plots_from_csv.py (pools every run dir).
 
-FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 3; `CSV_COLUMNS` enforces it)
+FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 4; `CSV_COLUMNS` enforces it)
 One row per (config, arm, repair_span, W, bit_error_rate, max_combined_hd, candidates_budget,
 seed) -- max_combined_hd/candidates_budget are sweep dimensions since v3 (ticket 19). A "trial" is one
 seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
@@ -74,12 +74,16 @@ average per-seed rates when T could differ).
   recovery_rate      float recovered / T
   silent_decode_rate float silent / T
   failed_rate        float failed / T
-  recovery_ops       int   total GF ops (mul+add) of this arm's recovery call
+  recovery_ops       int   total GF ops (mul+add) of this arm's recovery call -- since v4 REPAIR ONLY:
+                           the entry's post-repair whole-pool check (report.ok) is excluded (ticket 20)
   recovery_mul       int   (v2) GF multiplications of the recovery call
   recovery_add       int   (v2) GF additions of the recovery call
   recovery_time_s    float (v2) wall-clock seconds of the recovery call (perf_counter, scoring
                            excluded). Machine- and load-dependent (parallel workers share the CPU):
                            compare arms WITHIN a run, prefer ops as the deterministic cost metric.
+  final_check_ops    int   (v4) ops of the post-repair whole-pool check, costed separately: keyless
+                           check_orth_segmented (all packet pairs, O(M^2)), keyed check_mac_segmented (O(M))
+  final_check_time_s float (v4) wall-clock of that check
   h2h_keyless_only   int   per-target head-to-head on 'recovered' (same on both arm rows)
   h2h_keyed_only     int
   h2h_both           int
@@ -96,7 +100,7 @@ from binary_ext_fields.generate_symbols import (
     generate_identity_coefficients,
     recode_rlnc_without_coeffs,
 )
-from binary_ext_fields.segmented_tagging import tag_generation_segmented
+from binary_ext_fields.segmented_tagging import tag_generation_segmented, check_orth_segmented
 from binary_ext_fields.segmented_recovery import (
     SegmentTrust,
     recover_coefficient_first,
@@ -108,6 +112,7 @@ from binary_ext_fields.segmented_mac_tagging import (
     generate_keyset,
     tag_generation_mac,
     mac_verify_segment,
+    check_mac_segmented,
 )
 from binary_ext_fields.segmented_mac_recovery import (
     recover_coefficient_first_mac,
@@ -353,6 +358,8 @@ class ArmResult:
     mul: int = 0          # GF multiplications of the recovery call (ops = mul + add)
     add: int = 0          # GF additions
     time_s: float = 0.0   # wall-clock of the recovery call (perf_counter); scoring excluded
+    final_check_ops: int = 0        # ticket 20: the post-repair whole-pool check, costed separately
+    final_check_time_s: float = 0.0  # (keyless all-pairs orthogonality, keyed per-packet MAC)
 
 
 def _tally(outcomes) -> tuple[int, int, int]:
@@ -391,6 +398,16 @@ class ConfigResult:
     kd_report: object = None
 
 
+def _final_check_cost(field, check) -> tuple[int, float]:
+    """Ops/time of the post-repair whole-pool check, in its own window (ticket 20). It is
+    not part of repair and the harness scoring never uses it, so it is reported beside,
+    not inside, recovery_ops/recovery_time_s."""
+    field.reset()
+    t0 = time.perf_counter()
+    check()
+    return field.mul_count + field.add_count, time.perf_counter() - t0
+
+
 def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
                max_combined_hd: int = 2, candidates_budget: int | None = 20000,
                repair_span: str = "payload", inj: InjectedErrors | None = None,
@@ -425,17 +442,19 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
         rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                            W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                           repair_span=repair_span)
+                                           repair_span=repair_span, final_check=False)
     else:
         ccl = coeff_clean_targets(pools.kl_clean, inj.kl, pools.kl_segments, pools.target_idx)
         rep_kl = recover_arc_only(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                   basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                   max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                   W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                  repair_span=repair_span)
+                                  repair_span=repair_span, final_check=False)
     kl_time = time.perf_counter() - t0
     kl_mul, kl_add = pools.field.mul_count, pools.field.add_count
     kl_ops = kl_mul + kl_add
+    kl_fc_ops, kl_fc_time = _final_check_cost(pools.field, lambda: check_orth_segmented(
+        pools.field, rep_kl.packets, pools.kl_segments))
     kl_out = score_keyless(pools, rep_kl.packets, W)
 
     # ---- keyed ----
@@ -445,23 +464,27 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
         rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                                W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
-                                               early_exit=keyed_early_exit)
+                                               early_exit=keyed_early_exit, final_check=False)
     else:
         ccl = coeff_clean_targets(pools.kd_clean, inj.kd, pools.kd_segments, pools.target_idx)
         rep_kd = recover_arc_only_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
                                       basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                                       W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
-                                      early_exit=keyed_early_exit)
+                                      early_exit=keyed_early_exit, final_check=False)
     kd_time = time.perf_counter() - t0
     kd_mul, kd_add = pools.field.mul_count, pools.field.add_count
     kd_ops = kd_mul + kd_add
+    kd_fc_ops, kd_fc_time = _final_check_cost(pools.field, lambda: check_mac_segmented(
+        pools.field, pools.keyset, rep_kd.packets, pools.kd_segments))
     kd_out = score_keyed(pools, rep_kd.packets, W)
 
     return ConfigResult(
         config=config, inj=inj,
-        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time),
-        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time),
+        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time,
+                          final_check_ops=kl_fc_ops, final_check_time_s=kl_fc_time),
+        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time,
+                        final_check_ops=kd_fc_ops, final_check_time_s=kd_fc_time),
         kl_packets=rep_kl.packets, kd_packets=rep_kd.packets,
         kl_report=rep_kl, kd_report=rep_kd,
     )
@@ -544,13 +567,15 @@ def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: flo
 
 # ── W sweep (ticket 14) ───────────────────────────────────────────────────────
 
-CSV_SCHEMA_VERSION = 3  # v2 (2026-09-23): + recovery_mul/add/time_s; v3 (2026-09-24): + keyed_early_exit
+CSV_SCHEMA_VERSION = 4  # v2: + recovery_mul/add/time_s; v3: + keyed_early_exit; v4 (2026-09-25): repair-only
+#                        recovery_* (final pool check excluded) + final_check_ops/_time_s
 CSV_COLUMNS = (
     "schema_version", "config", "error_model", "arm", "repair_span", "W", "bit_error_rate", "seed",
     "gen_size", "T", "data_fields", "num_data_segments", "field_bits", "max_combined_hd",
     "candidates_budget", "keyed_early_exit", "n_info_corrupted", "n_coeff_corrupted", "n_arm_corrupted",
     "recovered", "silent", "failed", "recovery_rate", "silent_decode_rate", "failed_rate",
     "recovery_ops", "recovery_mul", "recovery_add", "recovery_time_s",
+    "final_check_ops", "final_check_time_s",
     "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
 )
 
@@ -591,7 +616,8 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
                    recovered=ar.recovered, silent=ar.silent, failed=ar.failed,
                    recovery_rate=ar.recovered / T, silent_decode_rate=ar.silent / T,
                    failed_rate=ar.failed / T, recovery_ops=ar.ops,
-                   recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s)
+                   recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s,
+                   final_check_ops=ar.final_check_ops, final_check_time_s=ar.final_check_time_s)
         assert set(row) == set(CSV_COLUMNS), f"row drifted from frozen schema: {set(row) ^ set(CSV_COLUMNS)}"
         rows.append(row)
     return rows

@@ -155,6 +155,9 @@ def aggregate(df, min_trials=DEFAULT_MIN_TRIALS):
             # schema v2 columns (NaN for v1 runs, which lack them)
             **{f"mean_{c}": (float(g[f"recovery_{c}"].astype(float).mean()) if f"recovery_{c}" in g else float("nan"))
                for c in ("mul", "add", "time_s")},
+            # schema v4 (ticket 20): post-repair pool check, costed outside recovery_ops
+            **{f"mean_{c}": (float(g[c].astype(float).mean()) if c in g else float("nan"))
+               for c in ("final_check_ops", "final_check_time_s")},
             "time_ci": (_z_halfwidth(g["recovery_time_s"].astype(float).std(ddof=1), len(g))
                         if "recovery_time_s" in g else float("nan")),
             "h2h_keyless_only": int(g["h2h_keyless_only"].sum()), "h2h_keyed_only": int(g["h2h_keyed_only"].sum()),
