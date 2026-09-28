@@ -9,7 +9,8 @@ salt give-up path still surfaces cleanly per segment.
 import random
 
 from binary_ext_fields.custom_field import create_field
-from binary_ext_fields.generate_symbols import generate_identity_coefficients
+from binary_ext_fields.generate_symbols import generate_identity_coefficients, generate_symbols_until_nonzero
+from binary_ext_fields.orthogonal_tag_creator import has_unit_tag_column
 from binary_ext_fields.segmented_tagging import (
     build_segments,
     tag_generation_segmented,
@@ -167,6 +168,42 @@ def test_rank_deficient_segment_exhausts_salt_budget_no_matter_how_generous():
     assert result.failed_segment == "data-0"  # coeff-segment (length=gen_size) is not rank-deficient
 
 
+def test_last_self_tag_is_never_one_in_any_segment():
+    '''
+    Salt rule extension (silent-decode diagnosis 2026-09-24, extends ADR-0010).
+    generate_all_tags is lower-triangular -- packet k only fills tags 0..k -- so a
+    segment's LAST tag column equals c * (coefficient g-1) for every recoded packet,
+    c = the last packet's self-tag. With c == 1, flipping the same bit in coeff[g-1]
+    and tag[g-1] passes the self-check AND every cross-check, so a harmless tag[g-1]
+    error gets "repaired" into a wrong coefficient (silent decode). The salt loop must
+    therefore reject c == 1 exactly like it rejects c == 0 -- and, generally, any tag column
+    equal to e_k (self-tag 1, zero below): in the coeff-segment a row whose salt is 0 yields
+    exactly that (~gen_size/q of generations; found by the repair-seam regression test).
+    '''
+    field = create_field(8)
+    gen_size, data_fields, num_data_segments = 4, 8, 1
+    random.seed(0)
+    for _ in range(1500):
+        result = _build_tagged_pool(field, gen_size, data_fields, num_data_segments)
+        for segment in result.segments:
+            last_self_tag = result.packets[-1][segment.salt_index + gen_size]
+            assert last_self_tag not in (0, 1), (segment.name, last_self_tag)
+            rows = [p[segment.start:segment.salt_index + 1 + gen_size] for p in result.packets]
+            assert not has_unit_tag_column(rows, gen_size), segment.name  # e.g. coeff row with salt 0
+
+
+def test_whole_packet_generator_also_rejects_last_self_tag_one():
+    '''Same rule for the N=1 whole-packet scheme (OrthogonalScheme's source generator):
+    same lower-triangular generator, same coeff[g-1]/tag[g-1] blind pair when c == 1.
+    The last packet's self-tag is its final byte.'''
+    field = create_field(8)
+    random.seed(0)
+    for _ in range(1500):
+        tagged = generate_symbols_until_nonzero(field, 8, 4, coefficients=True)
+        assert tagged[-1][-1] not in (0, 1)
+        assert not has_unit_tag_column(tagged, 4)
+
+
 if __name__ == "__main__":
     test_build_segments_lays_out_coeff_and_data_segments()
     print("test_build_segments_lays_out_coeff_and_data_segments passed")
@@ -190,3 +227,9 @@ if __name__ == "__main__":
     print("test_rank_deficient_segment_exhausts_salt_budget_no_matter_how_generous passed")
 
     print("All segmented tagging tests passed!")
+
+    test_last_self_tag_is_never_one_in_any_segment()
+    print("test_last_self_tag_is_never_one_in_any_segment passed")
+
+    test_whole_packet_generator_also_rejects_last_self_tag_one()
+    print("test_whole_packet_generator_also_rejects_last_self_tag_one passed")

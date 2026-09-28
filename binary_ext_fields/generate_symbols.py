@@ -6,7 +6,7 @@ from pathlib import Path
 from icecream import ic
 from binary_ext_fields.operations import inner_product_bytes, print_ints
 from binary_ext_fields.custom_field import TableField, create_field
-from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC
+from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator as OTC, has_unit_tag_column
 
 
 from utils.log_helpers import get_playground_dir, get_run_log_dir
@@ -69,7 +69,8 @@ def generate_symbols_until_nonzero(field:TableField,data_fields:int, gen_size:in
         #ic(symbols_with_coeffs)
         tagged_symbols = otc.generate_all_tags(symbols_with_coeffs)
         accepts = check_orth(field, tagged_symbols)
-        no_tag_error = check_no_tag_error(tagged_symbols)
+        # a unit tag column makes coeff[k] + tag[k] an invisible pair (has_unit_tag_column)
+        no_tag_error = check_no_tag_error(tagged_symbols) and not has_unit_tag_column(tagged_symbols, gen_size)
 
     return tagged_symbols
 
@@ -133,7 +134,8 @@ def generate_symbols_salt(field: TableField, payloads: list, gen_size: int,
         symbols = [bytearray(list(payloads[k]) + [salts[k]] + [0] * gen_size)
                    for k in range(gen_size)]
         tagged_symbols = otc.generate_all_tags(generate_identity_coefficients(field, symbols))
-        if all(tagged_symbols[i][data_len + i] != 0 for i in range(gen_size)):
+        if all(tagged_symbols[i][data_len + i] != 0 for i in range(gen_size)) \
+                and not has_unit_tag_column(tagged_symbols, gen_size):   # invisible coeff/tag pair
             return tagged_symbols, True
     return None, False
 

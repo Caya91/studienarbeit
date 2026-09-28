@@ -15,6 +15,21 @@ verbose = False
 
 dir =  get_playground_dir("generate_with_bitshift.txt")
 
+
+def has_unit_tag_column(tagged_rows: list[bytearray], gen_size: int) -> bool:
+    """True if some tag column k is the unit vector e_k (self-tag 1, every later row's
+    cross-tag 0). generate_all_tags is lower-triangular, so recoded packets then carry
+    tag[k] == coefficient[k] exactly, and flipping the same bit in coeff[k] + tag[k] passes
+    every self- and cross-check: repair turns a harmless tag[k] error into a wrong
+    coefficient (silent decode, diagnosed 2026-09-25). It is the only weight-2 pattern that
+    moves an error from tag into payload. Occurs when the last self-tag is 1, or -- in a
+    segment whose payload is the identity coefficients -- whenever a row's salt is 0
+    (~gen_size/q of generations). Tags are the last gen_size columns of every row."""
+    g = gen_size
+    return any(tagged_rows[k][-g + k] == 1 and all(tagged_rows[i][-g + k] == 0 for i in range(k + 1, g))
+               for k in range(g))
+
+
 class OrthogonalTagGenerator:
     def __init__(self, field:TableField):
         self.field = field

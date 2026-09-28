@@ -357,6 +357,19 @@ def _search_pair_by_combined_search(field: TableField, slice_a: bytearray, slice
 
 # ── Unpaired fallback: the existing ADR-0002 single-packet linear solve ─────
 
+def _exact_solve_is_verifiable(columns: list[int] | None, gen_size: int) -> bool:
+    """Whether an ADR-0002 exact solve over `columns` leaves enough symbols to check its
+    answer (silent-decode diagnosis 2026-09-25). The solve assumes every error sits in
+    `columns`; when one sits elsewhere (e.g. a harmless tag flip), it still returns the
+    closest consistent vector. With K unknowns that wrong vector passes self+cross checks
+    with probability ~1 for K >= gen_size and ~1/q for K = gen_size-1 (measured 0.4-1.1%
+    at q=256) -- a tag error silently "solved" into a payload error. K <= gen_size-2 needs
+    >= 2 independent coincidences (<= q^-2). So: exact solve only on an ARC-narrowed set
+    of at most gen_size-2 columns; anything blind (None) or wider goes to the bit-flip
+    search instead."""
+    return columns is not None and len(columns) <= gen_size - 2
+
+
 def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, trusted_slices: list[bytearray],
                                candidate_columns: list[int], max_hd: int,
                                candidates_budget: int | None, W: int | None = None) -> bytearray | None:
@@ -381,7 +394,7 @@ def _search_single_by_bitflip(field: TableField, broken_slice: bytearray, truste
     return None
 
 
-def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candidate_columns: list[int],
+def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candidate_columns: list[int] | None,
                               trusted_slices: list[bytearray], whole_segment_columns: list[int] | None = None,
                               max_hd: int = 2, candidates_budget: int | None = None,
                               W: int | None = None, bitflip_only: bool = False) -> bytearray | None:
@@ -403,15 +416,20 @@ def recover_unpaired_segment(field: TableField, broken_slice: bytearray, candida
     bitflip_only (ADR-0013 isolated comparison, default off): skip the ADR-0002 exact
     solve entirely and bit-flip over `candidate_columns` (the ARC-narrowed set), mirroring
     the keyed arm's _search_single_by_bitflip_mac so both arms use the same method (rule
-    4). Off for every other caller, which keeps the two-stage exact-then-bitflip path."""
+    4). Off for every other caller, which keeps the two-stage exact-then-bitflip path.
+
+    candidate_columns=None skips the exact stage (no verifiable narrowing, see
+    _exact_solve_is_verifiable) and goes straight to the whole-segment bit-flip search."""
     with _count_phase(field, "recovery"):
         if bitflip_only:
             return _search_single_by_bitflip(field, broken_slice, trusted_slices, candidate_columns,
                                              max_hd, candidates_budget, W=W)
-        fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
-        if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices, W=W):
-            return fixed
+        if candidate_columns is not None:
+            fixed = recover_packet_linear(field, broken_slice, set(candidate_columns), trusted_slices)
+            if fixed is not None and is_orthogonal_to_trusted(field, fixed, trusted_slices, W=W):
+                return fixed
         cols = whole_segment_columns if whole_segment_columns is not None else candidate_columns
+        assert cols is not None, "no exact-solve columns and no whole-segment columns to search"
         return _search_single_by_bitflip(field, broken_slice, trusted_slices, cols, max_hd, candidates_budget, W=W)
 
 
@@ -462,7 +480,14 @@ def _ic_refine_pair(field: TableField, packets: list[bytearray], segment: Tagged
     solve with a bounded bit-flip search over each half's narrowed columns -- the exact
     mirror of the keyed arm's per-half _bitflip_search_mac -- so both arms run the same
     method and the only surviving difference is the oracle (rule 4). Off for every other
-    caller, which keeps the ADR-0002 exact solve."""
+    caller, which keeps the ADR-0002 exact solve.
+
+    Exact-solve mode refuses (returns False, honest failure) unless BOTH halves are
+    ARC-narrowed to a verifiable column set (_exact_solve_is_verifiable): a blind solve
+    over the whole payload silently turns a tag error into a payload error (2026-09-25)."""
+    if not bitflip_only and not (_exact_solve_is_verifiable(cols_a, segment.gen_size)
+                                 and _exact_solve_is_verifiable(cols_b, segment.gen_size)):
+        return False
     cols_a_solve = cols_a if cols_a is not None else all_columns
     cols_b_solve = cols_b if cols_b is not None else all_columns
     slice_a = segment_slice(packets[pair.packet_a], segment)
@@ -598,10 +623,12 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
 
     for unpaired in plan.unpaired:
         columns = candidate_columns_for(unpaired.packet_index)
-        if columns is None:
-            columns = all_columns
+        if bitflip_only:
+            columns = all_columns if columns is None else columns  # ADR-0013 harness: unchanged
+        elif not _exact_solve_is_verifiable(columns, segment.gen_size):
+            columns = None  # blind/too-wide exact solve is unverifiable -> bit-flip only
         broken_slice = segment_slice(packets[unpaired.packet_index], segment)
-        # Linear solve over `columns` (ARC-narrowed payload if available), then a
+        # Linear solve over `columns` (only when ARC narrowed them verifiably), then a
         # bounded whole-segment bit-flip fallback so an unpaired salt/tag flip -- or a
         # uniform_hd packet the solve can't determine -- is still recoverable instead
         # of dropped (mirrors the pair path's whole-segment fix).

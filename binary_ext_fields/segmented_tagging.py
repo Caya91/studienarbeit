@@ -23,7 +23,7 @@ import random
 from dataclasses import dataclass
 
 from binary_ext_fields.custom_field import TableField
-from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator
+from binary_ext_fields.orthogonal_tag_creator import OrthogonalTagGenerator, has_unit_tag_column
 from binary_ext_fields.generate_symbols import check_orth
 
 
@@ -151,7 +151,11 @@ def _tag_segment_with_salt(field: TableField, payload_rows: list[bytearray], gen
             for k in range(gen_size)
         ]
         tagged_rows = otc.generate_all_tags(rows)
-        if all(tagged_rows[k][self_tag_offset + k] != 0 for k in range(gen_size)):
+        # Also reject a unit tag column (has_unit_tag_column): it makes coeff[k] + tag[k]
+        # an invisible pair, so repair turns a harmless tag error into a wrong coefficient.
+        # In the coeff-segment any row with salt 0 causes it. Uniform rule for every segment.
+        if all(tagged_rows[k][self_tag_offset + k] != 0 for k in range(gen_size)) \
+                and not has_unit_tag_column(tagged_rows, gen_size):
             return tagged_rows, True
 
     return None, False

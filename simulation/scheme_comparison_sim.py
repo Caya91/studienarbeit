@@ -94,7 +94,7 @@ class SchemeTrialResult:
     overhead: float          # transmissions: packets_to_decode / gen_size
     scheme_ops: int          # native primary op count -- UNIT DIFFERS PER SCHEME
     decode_ops: int          # common RLNC decode muls (separate field, not scheme work)
-    status: str              # "decoded" | "silent_decode" | "timeout"
+    status: str              # "decoded" | "silent_decode" | "timeout" | "wall_limit"
     wall_time_s: float       # wall-clock spent in this trial's loop (pure-Python fair bridge)
     time_per_packet_s: float # wall_time_s / packets_to_decode -- the completion-time metric
     pairs_recovered: int = 0 # segmented scheme only (ADR-0012); 0 for every other scheme
@@ -111,11 +111,17 @@ class SchemeTrialResult:
 
 
 def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate,
-                       cfg: AdmitConfig, max_packets_factor=MAX_PACKETS_FACTOR) -> SchemeTrialResult:
+                       cfg: AdmitConfig, max_packets_factor=MAX_PACKETS_FACTOR,
+                       deadline_s: float | None = None) -> SchemeTrialResult:
     """One receiver lifetime for a given scheme: keep pulling fresh recoded packets,
     tag -> pollute -> admit -> try decode, until decodable or the arrival cap. The
     scheme's native op counter charges tagging/verification/repair; a separate
-    CountingField charges the (scheme-common) RLNC decode."""
+    CountingField charges the (scheme-common) RLNC decode.
+
+    `deadline_s` (None = off) stops pulling packets once that much wall time has
+    elapsed -- checked between arrivals, so one in-flight admit always finishes. Such a
+    trial reports status "wall_limit" (distinct from the arrival-cap "timeout") so a
+    caller never mistakes a compute-truncated trial for a decodability failure."""
     source, source_suffix = scheme.make_source(base_field, data_fields, gen_size)
     instrument = scheme.new_instrument(base_field)
     cnt_decode = CountingField(base_field)
@@ -124,9 +130,13 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
     pool: list[bytearray] = []
     received = 0
     decoded = correct = False
+    hit_deadline = False
 
     start = time.perf_counter()
     while received < max_packets:
+        if deadline_s is not None and time.perf_counter() - start >= deadline_s:
+            hit_deadline = True
+            break
         clean = recode_rlnc_without_coeffs(base_field, source, gen_size, count=1)
         wire = scheme.attach(instrument, bytearray(clean))
         polluted = pollute_generation(base_field, [wire], bit_error_rate, pollute_random)[0]
@@ -142,7 +152,8 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
     wall_time_s = time.perf_counter() - start
 
     silent = decoded and not correct
-    status = "decoded" if correct else ("silent_decode" if decoded else "timeout")
+    status = "decoded" if correct else ("silent_decode" if decoded else
+                                        ("wall_limit" if hit_deadline else "timeout"))
     op_counts = scheme.op_counts(instrument)  # per-scheme dict; only segmented has pairs_*
     return SchemeTrialResult(
         scheme=scheme.name, decoded=decoded, correct=correct, silent_decode=silent,
