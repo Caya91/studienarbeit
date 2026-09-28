@@ -18,7 +18,8 @@ import galois
 #from galois import PolyLike
 import numpy as np
 from binary_ext_fields.custom_field import TableField, PRIMES_GF2M, build_tables_gf2m, create_field
-from binary_ext_fields.rref import full_cleanup_rref, to_byte_matrix,calculate_rref, invert_pivot_rows
+from binary_ext_fields.rref import full_cleanup_rref, calculate_rref, invert_pivot_rows
+from utils.log_helpers import to_byte_matrix
 
 from utils.log_helpers import get_run_log_dir, get_field_subdir, save_generation_txt, print_generation, to_int_matrx
 
