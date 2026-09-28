@@ -453,16 +453,27 @@ VS_HD_METRICS = (("recovery_rate", "recovery_ci", "Recovery rate", False),
                  ("mean_time_s", "time_ci", "Mean wall-clock s / recovery", True))
 
 
-def plot_vs_hd(summary, out_dir=None):
+def plot_vs_hd(summary, out_dir=None, Ws=None, metrics=None, titles=True, only=None, suffix=""):
     """Metrics vs search depth HD (x axis): rows = recovery / silent / mean ops / p95 ops /
     time, columns = BER, a line per (arm, W). One file per (config, repair_span, budget):
-    vs_hd_<config>_<span>_<budget>.{png,pdf}."""
+    vs_hd_<config>_<span>_<budget><suffix>.{png,pdf}.
+
+    Presentation variants: Ws=(3,) keeps only those W; metrics=("recovery_rate",
+    "silent_decode_rate", "mean_time_s") picks/orders the rows; titles=False drops the
+    headline + gray subtitle (state the setup in the caption instead); only=(config, span,
+    budget) draws just that one file."""
     if summary["max_combined_hd"].nunique() < 2:
         print("  plot_vs_hd: only one HD in the data -- skipped")
         return None
     d = None
-    metrics = [m for m in VS_HD_METRICS if m[0] in summary and np.isfinite(summary[m[0]]).any()]
+    by_key = {m[0]: m for m in VS_HD_METRICS}
+    metrics = [by_key[k] for k in metrics] if metrics else list(VS_HD_METRICS)
+    metrics = [m for m in metrics if m[0] in summary and np.isfinite(summary[m[0]]).any()]
+    if Ws is not None:
+        summary = summary[summary["W"].isin(Ws)]
     for (cfg, span, bud), sub in summary.groupby(["config", "repair_span", "candidates_budget"]):
+        if only is not None and (cfg, span, int(bud)) != (only[0], only[1], int(only[2])):
+            continue
         bers = sorted(sub["bit_error_rate"].unique())
         fig, axes = plt.subplots(len(metrics), len(bers), figsize=(4 * len(bers), 3.2 * len(metrics)),
                                  sharex=True, sharey="row", squeeze=False)
@@ -495,11 +506,14 @@ def plot_vs_hd(summary, out_dir=None):
                 if r == len(metrics) - 1:
                     ax.set_xlabel("Search depth HD (max_combined_hd)", fontsize=9, fontweight="bold")
         axes[0][-1].legend(fontsize=7, loc="best")
-        fig.suptitle(f"Metrics vs search depth HD -- {CONFIG_LABEL.get(cfg, cfg).replace(chr(10), ' ')}  "
-                     f"[repair_span={span}, {_budget_label(bud)}]", fontsize=12, fontweight="bold", y=1.035)
-        fig.text(0.5, 1.0, _subtitle(summary), ha="center", fontsize=8, alpha=0.7)
-        fig.tight_layout(rect=(0, 0, 1, 0.98))
-        d = _save(fig, out_dir, f"vs_hd_{cfg}_{span}_{_budget_label(bud)}")
+        if titles:
+            fig.suptitle(f"Metrics vs search depth HD -- {CONFIG_LABEL.get(cfg, cfg).replace(chr(10), ' ')}  "
+                         f"[repair_span={span}, {_budget_label(bud)}]", fontsize=12, fontweight="bold", y=1.035)
+            fig.text(0.5, 1.0, _subtitle(summary), ha="center", fontsize=8, alpha=0.7)
+            fig.tight_layout(rect=(0, 0, 1, 0.98))
+        else:
+            fig.tight_layout()
+        d = _save(fig, out_dir, f"vs_hd_{cfg}_{span}_{_budget_label(bud)}{suffix}")
     return d
 
 
