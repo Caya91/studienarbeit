@@ -34,6 +34,8 @@ from binary_ext_fields.segmented_recovery import (
     recover_pair_by_combined_search,
     recover_uniform_hd,
     recover_coefficient_first,
+    repair_segment,
+    segment_slice,
     _make_arc_localizer,
 )
 from playground.arc_pl import error_into_packet_chosen_bit
@@ -642,6 +644,56 @@ def test_pair_cache_does_not_change_recovery_output():
     assert cached.per_segment == uncached.per_segment
 
 
+def test_benign_last_tag_error_is_never_repaired_into_a_coefficient_error():
+    '''
+    Regression for the silent-decode diagnosis (2026-09-24, Pareto sweep seed 4268461838).
+    Only tag[g-1] of one packet's coeff-segment is corrupted -- harmless redundancy. Repair
+    must restore THAT byte, never alter the coefficients: when the last self-tag c == 1 the
+    pair (coeff[g-1], tag[g-1]) is invisible to the keyless oracle, and the payload-first
+    search / linear solve moved the error into coeff[g-1] instead -> wrong decode. Holds for
+    every generation only because tagging rejects c == 1 (see segmented_tagging_test).
+    '''
+    field = create_field(8)
+    gen_size, data_fields = 4, 8
+    random.seed(1)
+    for _ in range(1500):
+        data_rows = [bytearray(random.randint(0, 255) for _ in range(data_fields)) for _ in range(gen_size)]
+        result = tag_generation_segmented(field, generate_identity_coefficients(field, data_rows), gen_size, 1)
+        assert result.ok
+        coeff = result.segments[0]
+        pool = [bytearray(p) for p in recode_rlnc_without_coeffs(field, result.packets, gen_size, count=8)]
+        clean = segment_slice(pool[0], coeff)
+        pool[0][coeff.salt_index + gen_size] ^= 0x01   # benign: one bit of tag[g-1]
+        repair_segment(field, pool, coeff, candidate_columns_for=lambda i: None, max_combined_hd=2)
+        assert segment_slice(pool[0], coeff) == clean
+
+
+def test_benign_tag_error_is_never_blind_solved_into_a_payload_error():
+    '''
+    Regression for the silent-decode diagnosis (2026-09-25, Pareto sweep seed 3914713501).
+    A tag-only error in any column, no ARC narrowing (coeff-segment / uniform_hd / pool too
+    small to localize). The old path ran the ADR-0002 exact solve over ALL payload columns
+    first: with every payload column unknown, the only symbols left to verify the answer are
+    salt + tags, so ~1/256 of tag errors were "solved" into a different, fully consistent
+    payload (here: coeff column sum of T == 1). Repair must now fall through to the bounded
+    bit-flip search, which restores the tag byte itself.
+    '''
+    field = create_field(8)
+    gen_size, data_fields = 4, 8
+    random.seed(2)
+    for _ in range(1500):
+        data_rows = [bytearray(random.randint(0, 255) for _ in range(data_fields)) for _ in range(gen_size)]
+        result = tag_generation_segmented(field, generate_identity_coefficients(field, data_rows), gen_size, 1)
+        assert result.ok
+        coeff = result.segments[0]
+        pool = [bytearray(p) for p in recode_rlnc_without_coeffs(field, result.packets, gen_size, count=8)]
+        clean = segment_slice(pool[0], coeff)
+        k = random.randrange(gen_size - 1)   # any tag column but the last (that one is fix A's case)
+        pool[0][coeff.salt_index + 1 + k] ^= 1 << random.randrange(8)
+        repair_segment(field, pool, coeff, candidate_columns_for=lambda i: None, max_combined_hd=2)
+        assert segment_slice(pool[0], coeff) == clean
+
+
 if __name__ == "__main__":
     tests = [
         test_classify_segment_trust_marks_only_the_corrupted_packet_broken,
@@ -660,6 +712,8 @@ if __name__ == "__main__":
         test_pair_cache_reuses_a_successful_repair_without_researching,
         test_pair_cache_miss_when_the_trusted_set_changes,
         test_pair_cache_does_not_change_recovery_output,
+        test_benign_last_tag_error_is_never_repaired_into_a_coefficient_error,
+        test_benign_tag_error_is_never_blind_solved_into_a_payload_error,
     ]
     for test in tests:
         test()
