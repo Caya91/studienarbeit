@@ -1,12 +1,12 @@
 # 16 — Repair-span knob (payload vs whole-segment), both arms
 
 **In one line:** a `repair_span` knob on the recovery entries that decides which columns
-the bit-flip repair may touch — `"payload"` (today: ARC-narrowed data columns only) or
+the bit-flip repair may touch — `"payload"` (today: ACR-narrowed data columns only) or
 `"segment"` (also the salt/tag redundancy columns) — so a corrupted salt/tag byte can be
 repaired instead of honest-failing. [ADR-0013](../../../docs/adr/0013-isolated-recovery-comparison-injected-trust-matched-width.md).
 
 **Why:** in the isolated harness (`bitflip_only=True`) the search is restricted to the
-ARC-narrowed payload columns, so a whole-packet-BER flip that lands in the salt (keyless)
+ACR-narrowed payload columns, so a whole-packet-BER flip that lands in the salt (keyless)
 or tag (keyed) region is never searched — the packet honest-fails even when its *data* is
 clean (the config-3 `info: none` targets). The default (non-`bitflip_only`) pipeline already
 searches the whole segment in its unpaired fallback; this knob exposes that span in the
@@ -23,7 +23,7 @@ repairing redundancy bytes, per arm, on identical corruption.
 
 ## Build to these
 1. **Default = unchanged.** `repair_span="payload"` ⇒ localizer returns exactly today's
-   ARC-narrowed data columns. Every existing caller keeps today's behaviour — zero regression.
+   ACR-narrowed data columns. Every existing caller keeps today's behaviour — zero regression.
    New params take `repair_span: str = "payload"`.
 2. **The span lives in the localizer.** `repair_span="segment"` ⇒ the localizer appends the
    data segment's redundancy columns (`range(payload_length, total_length)` — salt+tags
@@ -32,14 +32,14 @@ repairing redundancy bytes, per arm, on identical corruption.
 3. **Rides the existing column plumbing.** No change to the search functions, `repair_segment`,
    or the pair-cache key: the searched columns already flow through `candidate_columns_for`
    and are already part of `_pair_cache_key` (a wider span is automatically a distinct key).
-4. **Scope = data-segment ARC localizers only.** The coeff segment (repaired with
+4. **Scope = data-segment ACR localizers only.** The coeff segment (repaired with
    `candidate_columns_for=lambda i: None`) keeps its current behaviour; this knob is about the
    data-segment repair span, matched across both arms.
 5. **Harness:** thread `repair_span` through `run_config`/`run_smoke`, print it in the smoke
    header, add `--repair-span {payload,segment}` to `main`.
 
 ## Correctness guard (hard)
-- `repair_span="payload"` default path unchanged: segmented + MAC + pipeline + ARC-only +
+- `repair_span="payload"` default path unchanged: segmented + MAC + pipeline + ACR-only +
   harness suites all green (exit 0).
 - Matched across arms: both arms take the same `repair_span` in the harness — keyless has one
   extra redundancy column (the salt byte) the keyed arm lacks; that asymmetry is the known
@@ -49,7 +49,7 @@ repairing redundancy bytes, per arm, on identical corruption.
   ~1/q oracle — see `segmented_recovery.py` `_ic_refine_pair` warning). The requirement is
   correct mechanics + honest reporting of the tradeoff, not a silent-decode level.
 
-**Blocked by:** 10 (W), 12 (ARC-only entries), 13 (harness).
+**Blocked by:** 10 (W), 12 (ACR-only entries), 13 (harness).
 
 **Status:** DONE (2026-09-21).
 

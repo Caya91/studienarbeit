@@ -19,7 +19,7 @@ decisions are identical either way → recovery/silent results are unaffected; o
 2. Thread it through the keyed recovery path the harness uses (`segmented_mac_recovery.py` entries →
    `repair_segment_mac` → pair search / unpaired) as a default-off param; the isolated harness
    (`simulation/isolated_recovery_sim.py`) passes `early_exit=True`.
-3. Re-run the v2 W sweep (gen6, W=1–6, ARC-only a+b; ~50 min / 2000 seeds) for the cost columns.
+3. Re-run the v2 W sweep (gen6, W=1–6, ACR-only a+b; ~50 min / 2000 seeds) for the cost columns.
 
 ## Done when
 - [x] Test: `early_exit=True` returns the same bool as `False` on random valid/invalid slices, all W.
@@ -31,9 +31,9 @@ decisions are identical either way → recovery/silent results are unaffected; o
 
 **Blocked by:** —. **Status:** DONE (2026-09-24), branch `feat/keyed-early-exit-hd-frontier` @ a9ac6ef.
 
-**Result** (v3 run, 500 seeds, gen6, W 1–6, ARC-only, payload, pooled over BER; plots
-`logs/isolated_recovery_plots/v3_t18_W1-6_early_exit/`): keyed ops now ~flat in W (ARC a 6.1→6.7k,
-ARC b 4.7→6.1k) vs keyless 20–21k → **keyed ≈3× cheaper at every W** (time 12–14 ms vs 31–32 ms).
+**Result** (v3 run, 500 seeds, gen6, W 1–6, ACR-only, payload, pooled over BER; plots
+`logs/isolated_recovery_plots/v3_t18_W1-6_early_exit/`): keyed ops now ~flat in W (ACR a 6.1→6.7k,
+ACR b 4.7→6.1k) vs keyless 20–21k → **keyed ≈3× cheaper at every W** (time 12–14 ms vs 31–32 ms).
 The earlier "keyless cheaper at W≥4" crossover was entirely the verify asymmetry — retracted.
 **Superseded by ticket 20:** the ≈3× included the post-repair pool check (keyless all-pairs ~15k
 ops fixed). Repair-only, keyless = **2.0× keyed** (per-candidate 13-B self-check vs 6-B tag).

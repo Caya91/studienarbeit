@@ -24,18 +24,18 @@ paths, not a silent-decode ceiling.
 - [x] Injected-trust harness self-check: data-only (a) at large W ⇒ silent-decode ≈ 0.
 - [x] Paired invariant: `[coeff|payload]` corruption byte-identical across arms (asserted).
 - [x] Symmetric drop (b): identical dropped-target set across arms.
-- [x] ARC-only == coefficient_first on data segments when coeffs clean.
+- [x] ACR-only == coefficient_first on data segments when coeffs clean.
 - [x] Silent-decode is correctly **measured and reported** per (arm, config, W). It MAY rise vs
       the exact-solve/full-pool baseline (weaker capped-W bit-flip gate) — that rise is the
       result, not a failure. Verify the number is right, not that it's low.
 - [x] Edge cases: W=0 (self-check only, keyless) and W=gen_size; T with an odd broken count
-      (unpaired path); helper set exactly gen_size (ARC basis minimal).
+      (unpaired path); helper set exactly gen_size (ACR basis minimal).
 
 ## C. Readable smoke (the user follows this)
 A `--smoke` run (ticket 13) that prints, per config, a block like:
 
 ```
-=== config: ARC-only (data-only BER)  |  arm pair, W=2, seed=7, G=10, T=10 ===
+=== config: ACR-only (data-only BER)  |  arm pair, W=2, seed=7, G=10, T=10 ===
  t# | injected errs         | KEYLESS        | KEYED
   0 | data[3] 1 bit         | recovered ✓    | recovered ✓
   1 | data[1],data[7] 2b    | recovered ✓    | SILENT ✗ (wrong-accept)
@@ -63,7 +63,7 @@ A `--smoke` run (ticket 13) that prints, per config, a block like:
   ≈q⁻⁽ᵂ⁺¹⁾ on random errors), keyless coeff-segment blind-spot mechanism (explains coefficient_first keyless
   silent decodes), constructed scoring buckets, W=0, W=gen_size (0 silent all configs), odd broken count
   (unpaired path asserted via `SegmentRepairOutcome`), helper set = identity gen_size, smoke determinism/shape,
-  sweep CSV schema + replot. Paired invariant / data-only strong-W / symmetric drop / ARC-only==coefficient_first
+  sweep CSV schema + replot. Paired invariant / data-only strong-W / symmetric drop / ACR-only==coefficient_first
   already covered by `isolated_recovery_test.py` + `arc_only_recovery_test.py`.
 - Harness additions: `run_config(..., inj=)` (hand-built injection) and `ConfigResult.kl_report/kd_report`.
 - Measured silent-decode numbers recorded in ADR-0013 "Results".

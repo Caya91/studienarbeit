@@ -57,7 +57,7 @@ T is small so single-seed rates are noisy.
   helpers; keyed: `mac_verify_segment(W)`). recovered = accepted&correct, SILENT =
   accepted&¬correct, failed = ¬accepted.
 - `coeff_clean_targets` compares the coeff **payload only** (not the per-arm tag region) —
-  this is what makes ARC-only's drop symmetric across arms. Don't "fix" it to full-slice.
+  this is what makes ACR-only's drop symmetric across arms. Don't "fix" it to full-slice.
 
 ## The result you must NOT mistake for a bug (write it up in T15)
 Whole-packet configs show **keyless recovery rate << keyed**. This is real and
@@ -74,7 +74,7 @@ self-check in `simulation/isolated_recovery_test.py`).
 
 ## New parameters threaded (all default-off; existing callers/op-counts unchanged)
 On `repair_segment` / `repair_segment_mac`:
-- `drop_unlocalized=False` — ARC-only: drop (don't whole-segment-search) a broken packet the
+- `drop_unlocalized=False` — ACR-only: drop (don't whole-segment-search) a broken packet the
   localizer can't narrow; counted in the new `SegmentRepairOutcome.dropped` field.
 - `injected_trust: SegmentTrust|None` — use ground-truth trust instead of classify.
 - `bitflip_only=False` (keyless only) — bypass the ADR-0002 exact solve in the unpaired +

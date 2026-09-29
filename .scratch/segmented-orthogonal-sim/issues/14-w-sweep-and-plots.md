@@ -5,7 +5,7 @@ the comparison plots + CSV.
 [ADR-0013](../../../docs/adr/0013-isolated-recovery-comparison-injected-trust-matched-width.md).
 
 **Why:** the headline output — how recovery rate, silent-decode, and recovery-ops move with W
-in each arm/config, and the coeff-repair-stage isolation (coefficient_first vs ARC-only-(b) at
+in each arm/config, and the coeff-repair-stage isolation (coefficient_first vs ACR-only-(b) at
 whole-packet BER).
 
 ## Files
@@ -21,7 +21,7 @@ whole-packet BER).
    the gate that would let plotting be split off if ever needed.
 2. Plots vs BER, one line per (arm, W); separate panels/files per config. Silent-decode plot is
    first-class (it's the axis W controls).
-3. A coeff-repair-isolation plot: coefficient_first vs ARC-only-(b), whole-packet BER, per arm.
+3. A coeff-repair-isolation plot: coefficient_first vs ACR-only-(b), whole-packet BER, per arm.
 4. Long runs: background per memory `how_to_run_sims` (.venv python + `LOG_FOLDER`/`PYTHONPATH`;
    PowerShell only per memory).
 

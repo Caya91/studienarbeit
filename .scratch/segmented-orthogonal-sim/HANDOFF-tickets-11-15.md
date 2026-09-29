@@ -14,7 +14,7 @@ The goal is that the *only* difference between the arms is the acceptance oracle
 everything else about recovery is identical. Full rationale and every decision:
 
 - **`docs/adr/0013-isolated-recovery-comparison-injected-trust-matched-width.md`** — read this in full first.
-- **`CONTEXT.md`** — glossary (terms: isolated recovery comparison, helper packet, recovery-acceptance width W, ARC-only recovery, paired ground truth).
+- **`CONTEXT.md`** — glossary (terms: isolated recovery comparison, helper packet, recovery-acceptance width W, ACR-only recovery, paired ground truth).
 - **`.scratch/segmented-orthogonal-sim/issues/11..15-*.md`** — the tickets. Each has a "Done when" checklist. Build to it.
 
 ## Current state
@@ -22,7 +22,7 @@ everything else about recovery is identical. Full rationale and every decision:
 - **Ticket 10 (matched W acceptance oracle) is DONE, tested, and committed.** It is the foundation the rest build on.
 - Tickets **11, 12, 13, 14, 15 are TODO**, roughly in dependency order:
   - 11 keyed carries gen_size tags but verifies only W → needs 10.
-  - 12 ARC-only recovery variant (both arms) → needs 10.
+  - 12 ACR-only recovery variant (both arms) → needs 10.
   - 13 the isolated harness (injected trust, paired errors) → needs 10, 11, 12.
   - 14 W sweep + plots → needs 13.
   - 15 elaborate verification + readable smoke output → needs 13, 14.
@@ -85,9 +85,9 @@ PYTHONPATH=. LOG_FOLDER=/tmp/st_logs .venv/Scripts/python.exe binary_ext_fields/
 4. **The keyless arm uses bit-flip search only in this comparison.** The exact linear
    solve (`recover_packet_linear`) is deliberately off so both arms use the same method.
    Do not reintroduce it "to recover more" — that re-breaks the fairness.
-5. **ARC's blind spot is the coefficient block.** A packet whose own coefficients are
-   corrupted cannot be ARC-localized (`_make_arc_localizer(_mac)` returns `None` for it).
-   That is *why* ticket 12's ARC-only config is run two ways (data-only vs whole-packet).
+5. **ACR's blind spot is the coefficient block.** A packet whose own coefficients are
+   corrupted cannot be ACR-localized (`_make_arc_localizer(_mac)` returns `None` for it).
+   That is *why* ticket 12's ACR-only config is run two ways (data-only vs whole-packet).
 
 ## Per-ticket notes
 
@@ -95,11 +95,11 @@ PYTHONPATH=. LOG_FOLDER=/tmp/st_logs .venv/Scripts/python.exe binary_ext_fields/
   (`layout_mac_segments`), not in recovery. Keyed keys are i.i.d. (from
   `generate_keyset`), so first-W independence is free and the qᵂ bound is exact —
   contrast the keyless helper-dependence caveat (already in ADR-0013; measure it, don't fix it).
-- **12:** implement ARC-only as a flag/entry that skips the coeff-repair stage, ARC-
+- **12:** implement ACR-only as a flag/entry that skips the coeff-repair stage, ACR-
   localizes from the injected helper basis, repairs data segments only. Mirror both arms
-  exactly except the oracle. Correctness test: ARC-only == coefficient_first on data
+  exactly except the oracle. Correctness test: ACR-only == coefficient_first on data
   segments when coefficients are clean.
-- **13:** pool = fixed `G = gen_size` clean helper packets (ARC basis + keyless
+- **13:** pool = fixed `G = gen_size` clean helper packets (ACR basis + keyless
   witnesses, never corrupted/scored) + `T` target packets (corrupted, scored). Inject
   trust from ground truth (skip sniffing). Paired errors: identical corruption on the
   `[coeff | payload]` columns across arms (assert it), tag bytes seed-matched. Ship the
