@@ -6,8 +6,16 @@ from binary_ext_fields.custom_field import TableField
 
 
 def inner_product_bytes(field: Any, x: bytes, y: bytes) -> int:
-    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^m) using PyErasure vector ops."""
+    """⟨x, y⟩ = ∑ x[i]·y[i] in GF(2^m) using PyErasure vector ops.
+
+    Fast path (2026-09-29): a field exposing `inner_product` (TableField / CountingField)
+    computes the same sum by direct table lookups and charges the same op counts
+    (len(x) muls + len(x) adds, phase-attributed) -- identical result and counts to the
+    per-element loop below, ~10x faster. Other fields (pyerasure) use the loop."""
     assert len(x) == len(y)
+    fast = getattr(field, "inner_product", None)
+    if fast is not None:
+        return fast(x, y)
     acc = 0
     tmp = bytearray(1)
 

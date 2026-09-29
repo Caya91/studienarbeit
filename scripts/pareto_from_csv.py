@@ -57,7 +57,7 @@ ARM_MARKERS = {"keyless": "o", "keyed": "s"}
 INK, INK_MUTED, GRID = "#1f1f1e", "#6b6a64", "#e4e3dd"
 
 CELL_KEYS = ["source", "arm", "gen_size", "field_m", "data_fields", "n_segments", "strategy",
-             "hamming_distance", "pair_budget", "bit_error_rate"]
+             "error_scope", "repair_span", "hamming_distance", "pair_budget", "bit_error_rate"]
 
 
 # --------------------------------------------------------------------------- #
@@ -106,6 +106,9 @@ def load_trials(runs) -> pd.DataFrame:
         raise SystemExit(f"no raw_trials.csv / raw_results.csv under {runs}")
     t = pd.concat(frames, ignore_index=True)
     t["pair_budget"] = t["pair_budget"].fillna(-1).astype(int)  # -1 = None (unbounded)
+    # schema v1 rows (and ticket-03) predate the 2026-09-29 knobs: whole-packet errors, payload span
+    for col, default in (("error_scope", "whole_packet"), ("repair_span", "payload")):
+        t[col] = t[col].fillna(default) if col in t else default
     for col in ("correct", "silent_decode", "decoded"):
         t[col] = t[col].astype(str).str.lower().isin(("true", "1"))
     return t
@@ -146,7 +149,8 @@ def summarize(trials: pd.DataFrame, min_trials=DEFAULT_MIN_TRIALS) -> pd.DataFra
     s["sparse"] = s["n_trials"] < min_trials
     s["feasible"] = s["silent_rate"] == 0
     s["pareto"] = False
-    for _, g in s[s["feasible"]].groupby(["source", "arm", "strategy", "bit_error_rate"]):
+    for _, g in s[s["feasible"]].groupby(["source", "arm", "strategy", "error_scope", "repair_span",
+                                          "bit_error_rate"]):
         for i, r in g.iterrows():
             dominated = ((g["efficiency"] >= r["efficiency"]) & (g["total_ops"] <= r["total_ops"])
                          & ((g["efficiency"] > r["efficiency"]) | (g["total_ops"] < r["total_ops"]))).any()

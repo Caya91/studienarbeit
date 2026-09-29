@@ -47,7 +47,9 @@ test_recover_uniform_hd_mac_recovers_overlapping_errors_via_ic_refinement.
 from itertools import chain, combinations
 
 from binary_ext_fields.custom_field import TableField
-from binary_ext_fields.segmented_mac_tagging import MacSegment, mac_verify_segment, check_mac_segmented
+from binary_ext_fields.segmented_mac_tagging import (
+    MacSegment, mac_verify_segment, mac_verify_key_subset, check_mac_segmented,
+)
 from binary_ext_fields.segmented_recovery import (
     SegmentTrust, PairingPlan, plan_pairing,
     PairRecoveryResult, SegmentRepairOutcome, SegmentedRecoveryReport,
@@ -68,14 +70,25 @@ def _write_segment(packet: bytearray, segment: MacSegment, fixed_slice: bytearra
 # ── Segment-scoped MAC trust (self-sufficient -- no cross-check) ──────────────
 
 def classify_segment_trust_mac(field: TableField, keys: list[bytearray], packets: list[bytearray],
-                               segment: MacSegment) -> SegmentTrust:
+                               segment: MacSegment, verify_count: int | None = None,
+                               key_rank=None) -> SegmentTrust:
     """A packet is broken iff its MAC tag mismatches in this segment, trusted
     otherwise. Unlike classify_segment_trust (orthogonal), there is no cross-check
     middle ground: a MAC verification is conclusive on its own, so every packet
-    lands in exactly one of broken/trusted."""
+    lands in exactly one of broken/trusted.
+
+    verify_count (S2, 2026-09-29; None = all num_keys tags, the default) verifies only
+    that many tags per packet: the FIRST ones (key_rank=None, deterministic) or, with
+    key_rank(i, j) from witness_policy, the verify_count keys with the lowest secret rank
+    for packet i -- a per-packet subset an attacker cannot predict."""
     trusted, broken = [], []
     for i, p in enumerate(packets):
-        if mac_verify_segment(field, keys, segment_slice(p, segment), segment):
+        if verify_count is not None and key_rank is not None:
+            idx = sorted(range(segment.num_keys), key=lambda j: key_rank(i, j))[:verify_count]
+            ok = mac_verify_key_subset(field, keys, segment_slice(p, segment), segment, idx)
+        else:
+            ok = mac_verify_segment(field, keys, segment_slice(p, segment), segment, W=verify_count)
+        if ok:
             trusted.append(i)
         else:
             broken.append(i)
@@ -389,6 +402,42 @@ def recover_arc_only_mac(field: TableField, keyset: list[list[bytearray]], packe
         )
 
     ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
+
+
+def recover_acr_only_mac(field: TableField, keyset: list[list[bytearray]], packets: list[bytearray],
+                         segments: list[MacSegment], gen_size: int, max_combined_hd: int = 2,
+                         candidates_budget: int | None = None, pair_cache: dict | None = None,
+                         ic_refinement: bool = True, W: int | None = None, early_exit: bool = False,
+                         repair_span: str = "payload",
+                         final_check: bool = True) -> SegmentedRecoveryReport:
+    """Production ACR-only strategy, keyed arm -- mirror of the orthogonal arm's
+    recover_acr_only (segmented_recovery.py): no coeff repair, data segments repaired
+    only where ACR localizes (MAC-trusted basis of gen_size packets), unlocalizable
+    broken packets left untouched in the pool until a later admit. Trust per data
+    segment is classified once and reused for the repair."""
+    tmp = [bytearray(p) for p in packets]
+    seg_index = {segment.name: s for s, segment in enumerate(segments)}
+    coeff_segment = next(s for s in segments if s.kind == "coeff")
+    data_segments = [s for s in segments if s.kind == "data"]
+    coeff_trust = classify_segment_trust_mac(field, keyset[seg_index[coeff_segment.name]], tmp, coeff_segment)
+
+    per_segment = []  # coeff segment intentionally NOT repaired (ACR-only)
+    for segment in data_segments:
+        keys = keyset[seg_index[segment.name]]
+        data_trust = classify_segment_trust_mac(field, keys, tmp, segment)
+        localizer = _make_arc_localizer_mac(field, tmp, coeff_segment, segment, gen_size,
+                                            coeff_trust.trusted, data_trust.trusted, repair_span=repair_span)
+        per_segment.append(
+            repair_segment_mac(field, keys, tmp, segment, candidate_columns_for=localizer,
+                               max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                               pair_cache=pair_cache, ic_refinement=ic_refinement, W=W, early_exit=early_exit,
+                               drop_unlocalized=True, injected_trust=data_trust)
+        )
+
+    ok = None
     if final_check:
         ok = all(check_mac_segmented(field, keyset, tmp, segments).values())
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)

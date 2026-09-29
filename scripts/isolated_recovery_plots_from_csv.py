@@ -19,7 +19,7 @@ Cells (config, repair_span, arm, W, BER), pooled over seeds:
   silent_decode_rate  sum(silent)    / sum(T)     Wilson 95% CI  (MEASURED, may be > 0)
   recovery_ops        mean GF ops per recovery call (per seed pool), log y
 Figures: per repair_span one file per metric, one panel per config, line per (arm, W);
-plus the coeff-repair-isolation figure (coefficient_first vs ARC-only (b), whole-packet
+plus the coeff-repair-isolation figure (coefficient_first vs ACR-only (b), whole-packet
 BER, one column per arm).
 """
 import argparse
@@ -46,19 +46,21 @@ W_STYLE = {1: (":", "v"), 2: ("--", "s"), 3: ("-", "o"),  # (linestyle, marker) 
            4: ("-.", "D"), 5: ((0, (5, 1)), "^"), 6: ((0, (1, 1)), "P")}
 CONFIG_LABEL = {
     "coefficient_first": "coefficient_first\n(whole-packet BER)",
-    "arc_only_a": "ARC-only (a)\n(data-only BER)",
-    "arc_only_b": "ARC-only (b)\n(whole-packet BER, symmetric drop)",
+    "arc_only_a": "ACR-only (a)\n(data payload BER)",
+    "arc_only_b": "ACR-only (b)\n(whole-packet BER, symmetric drop)",
 }
 CONFIG_LABEL.update({
     "coefficient_first_info": "coefficient_first\n(payload-only BER, no salt/tag hits)",
-    "arc_only_b_info": "ARC-only (b)\n(payload-only BER, symmetric drop)",
+    "arc_only_b_info": "ACR-only (b)\n(payload-only BER, symmetric drop)",
+    "acr_only_data_tags": "ACR-only\n(data payload + salt/tag BER)",
 })
 # Panel order; only configs present in the data are drawn.
-CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b", "coefficient_first_info", "arc_only_b_info")
-# Coeff-repair isolation pairs: (coefficient_first-config, ARC-only-(b)-config, error-model label, file suffix).
+CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b", "coefficient_first_info", "arc_only_b_info",
+           "acr_only_data_tags")
+# Coeff-repair isolation pairs: (coefficient_first-config, ACR-only-(b)-config, error-model label, file suffix).
 ISOLATION_PAIRS = (("coefficient_first", "arc_only_b", "whole-packet BER", ""),
                    ("coefficient_first_info", "arc_only_b_info", "payload-only BER", "_info"))
-ISOLATION_COLOURS = ("#bc4749", "#457b9d")  # coefficient_first-role, ARC-only-(b)-role
+ISOLATION_COLOURS = ("#bc4749", "#457b9d")  # coefficient_first-role, ACR-only-(b)-role
 # Columns that must agree for runs to be pooled (else the run is skipped). Missing
 # columns (older schemas) count as their own value, so old/new runs never mix.
 COMPAT_COLS = ("schema_version", "gen_size", "T", "data_fields", "num_data_segments",
@@ -364,7 +366,7 @@ def plot_vs_w(summary, out_dir=None, bers=None):
 
 
 def plot_isolation(summary, out_dir=None):
-    """Coeff-repair-stage isolation: coefficient_first vs ARC-only (b) under the same error
+    """Coeff-repair-stage isolation: coefficient_first vs ACR-only (b) under the same error
     model (one figure set per pair present: whole-packet, and payload-only if run).
     Columns = arm; rows = recovery rate, silent-decode rate, ops. The gap between the two
     configs within an arm is what the coeff-repair stage buys (and costs)."""
@@ -398,7 +400,7 @@ def _plot_isolation_pair(summary, cf_cfg, arc_cfg, model_label, suffix, out_dir)
                 if r < 2:
                     ax.set_xlabel("")
         axes[0][1].legend(fontsize=8, loc="best")
-        fig.suptitle(f"Coeff-repair-stage isolation: coefficient_first vs ARC-only (b)  [repair_span={span}]",
+        fig.suptitle(f"Coeff-repair-stage isolation: coefficient_first vs ACR-only (b)  [repair_span={span}]",
                      fontsize=13, fontweight="bold", y=1.035)
         fig.text(0.5, 0.975, _subtitle(summary, f", {model_label}"), ha="center", fontsize=8, alpha=0.7)
         fig.tight_layout(rect=(0, 0, 1, 0.97))

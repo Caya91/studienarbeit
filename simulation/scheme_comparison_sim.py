@@ -26,6 +26,7 @@ deliberately not produced here (see docs/comparison_methodology_notes.md).
 """
 
 import csv
+import random
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -110,9 +111,23 @@ class SchemeTrialResult:
                               # corruption) -- the fair recovery-cost axis. 0 for others.
 
 
+def _pollute_positions(field, packet: bytearray, bit_error_rate: float, positions) -> bytearray:
+    """pollute_random restricted to the given byte positions: every low field.bit_lenght bit
+    of each listed byte flips independently with probability bit_error_rate (global RNG,
+    like pollute_random). The other bytes are never touched."""
+    out = bytearray(packet)
+    for i in positions:
+        byte = out[i]
+        for bit_pos in range(field.bit_lenght):
+            if random.random() < bit_error_rate:
+                byte ^= (1 << bit_pos)
+        out[i] = byte
+    return out
+
+
 def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate,
                        cfg: AdmitConfig, max_packets_factor=MAX_PACKETS_FACTOR,
-                       deadline_s: float | None = None) -> SchemeTrialResult:
+                       deadline_s: float | None = None, error_scope: str = "whole_packet") -> SchemeTrialResult:
     """One receiver lifetime for a given scheme: keep pulling fresh recoded packets,
     tag -> pollute -> admit -> try decode, until decodable or the arrival cap. The
     scheme's native op counter charges tagging/verification/repair; a separate
@@ -121,8 +136,14 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
     `deadline_s` (None = off) stops pulling packets once that much wall time has
     elapsed -- checked between arrivals, so one in-flight admit always finishes. Such a
     trial reports status "wall_limit" (distinct from the arrival-cap "timeout") so a
-    caller never mistakes a compute-truncated trial for a decodability failure."""
+    caller never mistakes a compute-truncated trial for a decodability failure.
+
+    `error_scope` (2026-09-29): "whole_packet" (default, unchanged behaviour) flips bits over
+    the whole wire packet; "data_payload" / "data_segment" restrict the flips to the
+    data-segment payload (+ its salt/tag bytes) of a segmented scheme -- the coeff segment
+    is never hit (see integrity_schemes.ERROR_SCOPES)."""
     source, source_suffix = scheme.make_source(base_field, data_fields, gen_size)
+    positions = None if error_scope == "whole_packet" else scheme.error_positions(gen_size, error_scope)
     instrument = scheme.new_instrument(base_field)
     cnt_decode = CountingField(base_field)
     max_packets = max_packets_factor * gen_size
@@ -139,7 +160,10 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
             break
         clean = recode_rlnc_without_coeffs(base_field, source, gen_size, count=1)
         wire = scheme.attach(instrument, bytearray(clean))
-        polluted = pollute_generation(base_field, [wire], bit_error_rate, pollute_random)[0]
+        if positions is None:
+            polluted = pollute_generation(base_field, [wire], bit_error_rate, pollute_random)[0]
+        else:
+            polluted = _pollute_positions(base_field, wire, bit_error_rate, positions)
         pool.append(bytearray(polluted))
         received += 1
 
