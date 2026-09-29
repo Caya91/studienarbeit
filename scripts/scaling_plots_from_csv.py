@@ -125,16 +125,14 @@ def _style(ax, logx=True, logy=False, ylim=None, percent=False):
 def _series(ax, g, x, y, err, arm, color, hollow_col, label):
     g = g.sort_values(x)
     xs, ys = g[x].to_numpy(float), g[y].to_numpy(float)
-    ax.plot(xs, ys, color=color, linestyle=ARM[arm]["ls"], linewidth=2, zorder=2)
+    ax.plot(xs, ys, color=color, linestyle=ARM[arm]["ls"], linewidth=2, zorder=2, marker=ARM[arm]["marker"],
+            markersize=5, label=label or None)
     if err is not None:
         e = g[err].to_numpy(float)
         ax.errorbar(xs, ys, yerr=[np.minimum(e, ys), e], fmt="none", ecolor=color, elinewidth=1, capsize=2, zorder=2)
     for xv, yv, h in zip(xs, ys, g[hollow_col].to_numpy(bool)):
         ax.plot(xv, yv, marker=ARM[arm]["marker"], markersize=6, color=color, markeredgewidth=1.5,
                 markerfacecolor="white" if h else color, zorder=3, linestyle="none")
-    if len(xs):
-        ax.annotate(label, (xs[-1], ys[-1]), textcoords="offset points", xytext=(4, 0), fontsize=7,
-                    color=INK_MUTED, va="center")
 
 
 def _save(fig, out_dir, name, caption):
@@ -165,6 +163,7 @@ def _grid_by(summary, value_col, err_col, ylabel, x="bit_error_rate", hollow="sp
             _style(ax, logx=True, logy=logy, ylim=ylim, percent=percent)
             if i == 0:
                 ax.set_title(f"payload {d} B", color=INK, fontsize=10)
+                ax.legend(fontsize=7, frameon=False, labelcolor=INK, loc="best")
             if j == 0:
                 ax.set_ylabel(f"{ARM[arm]['label']}\n{ylabel}", color=INK, fontsize=9)
             if i == len(arms) - 1:
@@ -225,6 +224,7 @@ def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a",
         ax.set_title(f"BER = {b:.0e}", color=INK, fontsize=10)
         ax.set_xlabel("data-segment length L (bytes)", color=INK, fontsize=9)
     axes[0][0].set_ylabel("recovery rate", color=INK, fontsize=9)
+    axes[0][0].legend(fontsize=7, frameon=False, labelcolor=INK, title="keyless, payload", title_fontsize=7)
     return _save(fig, out_dir, f"iso_recovery_vs_seglen_{config}_{span}_W{W}",
                  f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}, W={W}. Line per payload size "
                  "(lighter = smaller); circle/solid = keyless, square/dashed = keyed.")
@@ -316,6 +316,7 @@ def _vs_df(p, col, ylabel, name, out_dir, bers, scope, span, logy):
         ax.set_title(f"BER = {b:.0e}", color=INK, fontsize=10)
         ax.set_xlabel("payload size (bytes)", color=INK, fontsize=9)
     axes[0][0].set_ylabel(ylabel, color=INK, fontsize=9)
+    axes[0][0].legend(fontsize=7, frameon=False, labelcolor=INK, title="keyless", title_fontsize=7)
     return _save(fig, out_dir, name,
                  f"End-to-end ACR-only, {SCOPE_TXT[(scope, span)]}: line per data-segment length L present at "
                  "several sizes (darker = shorter L); circle/solid = keyless, square/dashed = keyed.")
