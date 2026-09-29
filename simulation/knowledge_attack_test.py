@@ -268,6 +268,50 @@ def test_attacker_work():
     print(f"  keyed muls = k*g exactly; keyless mean muls by r: {[round(x, 1) for x in means]} (increasing)")
 
 
+def _forge_phase_muls(arm, know, seed, g, df, m=8):
+    """Forge once (as run_knowledge_trial does) and return (total muls, per-phase muls)."""
+    setup, plan = paired_plan(seed, field_for(m), g, df, N, arm)
+    cnt = CountingField(field_for(m))
+    rng = random.Random(seed)
+    if arm == "keyless":
+        head = [recode(setup, r) for r in plan.head]
+        forge_coeff_keyless(setup, head[:know], plan.forged_row, rng, cnt)
+    else:
+        forge_coeff_keyed(setup, know, plan.forged_row, rng, cnt)
+    return cnt.mul_count, dict(cnt.phase_mul)
+
+
+def test_attacker_work_closed_form():
+    """S1 op-count audit. Hand-derived closed forms for the coeff-segment forgers:
+      keyed   k leaked keys:   k dot products over the g coeff symbols         = k*g
+      keyless r observed:      knowledge_dot r*g  (same dot products as keyed)
+                               randomise     (r+1)(g+1)  (b + A x0; XOR row muls by 1 included)
+                               solve         (r+1)^2 (g+2)  Gauss-Jordan, (r+1) pivots, each
+                                             normalises + eliminates r other rows of g+2 entries
+                                             (upper bound; equal unless an entry is 0 -> skipped)
+    No term depends on data_fields: only the coeff segment is forged, data segments are copied
+    from the victim for free in both arms. r = 0 is exact by hand: 0 + (g+1) + (g+2) = 2g+3."""
+    for g in (4, 6):
+        for df in (12, 96):
+            for k in range(g + 1):
+                for s in range(5):
+                    tot, ph = _forge_phase_muls("keyed", k, s, g, df)
+                    assert tot == k * g and ph.get("knowledge_dot", 0) == k * g, (g, df, k, tot, ph)
+            for r in range(g):
+                bound = r * g + (r + 1) * (g + 1) + (r + 1) ** 2 * (g + 2)
+                for s in range(5):
+                    tot, ph = _forge_phase_muls("keyless", r, s, g, df)
+                    assert ph.get("knowledge_dot", 0) == r * g, (g, df, r, ph)
+                    assert ph["randomise"] == (r + 1) * (g + 1), (g, df, r, ph)
+                    assert ph["solve"] <= (r + 1) ** 2 * (g + 2), (g, df, r, ph)
+                    assert tot == sum(ph.values()), "every forging mul is attributed to a phase"
+                    if r == 0:
+                        assert tot == 2 * g + 3, (g, tot)
+                # GF(2^8): a zero entry during elimination has prob ~1/256, these seeds hit none
+                assert _forge_phase_muls("keyless", r, 0, g, df)[0] == bound, (g, df, r)
+    print("  keyed = k*g; keyless = r*g + (r+1)(g+1) + (r+1)^2(g+2) (<=, = generic); independent of data_fields")
+
+
 def test_batch_invariants():
     n_trials = 0
     for arm in ARMS:
@@ -349,6 +393,7 @@ if __name__ == "__main__":
         test_keyed_repair_amplification_mechanism,
         test_late_strike_effects,
         test_attacker_work,
+        test_attacker_work_closed_form,
         test_batch_invariants,
         test_n5_spot_check,
         test_determinism,
