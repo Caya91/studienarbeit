@@ -95,15 +95,51 @@ Run: `logs/verify_width_attack/g4_m24_t4000_hd0/`, plots `logs/verify_width_atta
   witness subset / verdict at its first evaluation.
 - GF(2^8): smoke OK (55 cells x 60 trials, 171 s); full 4000/cell est. ~3.2 CPU-h (~40 min on 5 workers). Not run.
 
-## R2 / R3 (running: `scripts/scaling_acr_runs.sh`, output `logs/scaling_acr/`)
-Sizes df {100, 300, 1000} (log-spaced), N chosen for matched L {df, 100/250, 50, 25, 10}:
-100: N 2,3,5,11 | 300: N 2,4,7,13,31 | 1000: N 2,5,11,21,41. BER 1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2 (all sizes).
-- isolated W sweep: W 1,2,3,6, HD 2, budget 20000; payload errors (payload span) + payload+tag errors
-  (payload and segment span); 50 seeds (df 100/300), 30 (df 1000). Est. ~2.3 h.
-- isolated HD sweep: HD 1-5, W 1,3, payload errors, 30 seeds. Est. ~1.8 h.
-- end-to-end (pareto_sweep, acr_only, both arms): data_payload/payload 30 trials; data_segment with
-  payload and with segment span, 20 trials. Est. ~5 h.
-Results: TODO when the chain finishes (`python scripts/scaling_plots_from_csv.py`).
+## R2 / R3 — size x segmentation x BER (DONE 2026-09-30, `scripts/scaling_acr_runs.sh`, 7 h 51 min)
+Sizes df {100, 300, 1000}, N for matched L: 100: N 2,3,5,11 | 300: N 2,4,7,13,31 | 1000: N 2,5,11,21,41.
+BER 1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2 at every size. g=6, GF(2^8), ACR-only, HD 2, budget 20000.
+Runs `logs/scaling_acr/{iso_w,iso_hd,prod}/`; plots `logs/scaling_acr/plots/` (cross-size set) and
+`logs/scaling_acr/plots/standard/df*_N*/` (the usual isolated overview set per layout: vs_w, vs_hd,
+pareto, silent_w1, *_vs_ber). All cells complete, no wall-limit hits, 0 silent decodes end-to-end.
+
+### Isolated harness (recovery of 6 corrupted targets, injected trust)
+Keyless recovery, payload errors, W=6 (keyed identical to 0.0 at W=6):
+
+| df | N | L | 1e-4 | 3e-4 | 1e-3 | 3e-3 | 1e-2 |
+|---|---|---|---|---|---|---|---|
+| 100 | 2 / 3 / 5 / 11 | 100 / 50 / 25 / 10 | 100 all | 100 all | 91 / 97 / 99 / 99 | 38 / 59 / 81 / 96 | 0 / 0 / 5 / 35 |
+| 300 | 2 / 4 / 7 / 13 / 31 | 300 / 100 / 50 / 25 / 10 | 100 all | 92 / 100 ... | 32 / 75 / 90 / 99 / 99 | 1 / 5 / 22 / 55 / 90 | 0 ... 6 |
+| 1000 | 2 / 5 / 11 / 21 / 41 | 1000 / 250 / 100 / 50 / 25 | 95 / 99 / 100 ... | 29 / 83 / 97 / 100 / 100 | 0 / 8 / 38 / 71 / 97 | 0 ... 14 | 0 |
+
+- Segmentation is what carries recovery to higher BER: shorter L -> fewer flips per segment -> within HD.
+- Same L, bigger df = WORSE (L=50 @1e-3: 97 / 90 / 71 %): a packet needs EVERY segment repaired,
+  more segments -> more chances one fails (~p_seg^(N-1)).
+- HD sweep (W=3): HD3 is the big step over HD2 for long segments (df1000 L=50 @1e-3: 71 -> 95 %;
+  @3e-3 L=25: 14 -> 86 %); HD4 = HD5 everywhere (budget 20000 binds). Cost x3-10 per HD step at long L.
+- Silent (wrong accept): keyed W=1 large (e.g. 1e-3: 1-99 %, grows with L), W=2 <= 2 %, W=3 = 0;
+  keyless <= 0.7 % at W=1 (4 cells, 1-2 of 300 targets), 0 at W>=2. W=1 keyed is non-monotone at the
+  floor BERs (budget-capped search) -- floor region, not interpreted.
+- Tag errors (data salt/tags also hit): payload-only repair loses a lot as N grows (e.g. 1000 B N=41
+  @3e-4: 42 % keyless / 53 % keyed vs 100 %); keyless a bit worse (1 extra salt byte per segment). Repairing
+  over payload+salt/tags restores the payload-only curve. -> `iso_error_models_W6.png`.
+
+### End-to-end (send until decodable, cap 48 packets)
+Best bit-efficiency N per (df, BER), keyless (keyed same N almost everywhere):
+
+| df | 1e-5 | 3e-5 | 1e-4 | 3e-4 | 1e-3 | 3e-3 | 1e-2 |
+|---|---|---|---|---|---|---|---|
+| 100 | N2 .82 | N2 .83 | N2 .79 | N3 .66 | N5 .49 | N11 .32 | N11 .16 |
+| 300 | N2 .91 | N2 .87 | N2 .78 | N7 .64 | N13 .45 | N31 .30 | none |
+| 1000 | N2 .90 | N5 .82 | N11 .72 | N41 .56 | N41 .41 | .02 | none |
+
+- The optimal segment count grows with BER AND with payload size; at low BER N=2 wins (least tag
+  overhead), at high BER short segments win despite 7 extra bytes per segment.
+- Decodability floor (48-packet cap): df1000 ends at 1e-3 (3e-3: only N=41 23 %); df300 at 3e-3 (N>=13);
+  df100 reaches 1e-2 only at N=11 (L=10).
+- Keyed ~1 pp more efficient on average (6 tag bytes per segment vs 7 = salt + 6).
+- N=2 never repairs (F2): its curve is pure "wait for g clean packets"; still the best at <= 1e-4.
+- Tag errors end-to-end: payload-only repair costs little at 100 B but kills df1000 L=50 at 1e-3
+  (eff .37 -> .02); segment-span repair recovers most of it (.32).
 
 ## vs branch feat/scaling-and-op-audit
 | item | old branch | this branch |

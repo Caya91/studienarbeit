@@ -116,10 +116,20 @@ def _style(ax, logx=True, logy=False, ylim=None, percent=False):
         ax.set_xscale("log")
     if logy:
         ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(matplotlib.ticker.LogFormatterSciNotation(labelOnlyBase=True))
+        ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     if ylim:
         ax.set_ylim(*ylim)
     if percent:
         ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+
+
+def _plain_log_y(fig):
+    """Plain tick numbers (1, 2, 3, 5 ...) on log-y axes that span less than a decade or two."""
+    for ax in fig.axes:
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+        ax.yaxis.set_minor_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+        ax.tick_params(axis="y", which="minor", labelsize=7, labelcolor=INK_MUTED)
 
 
 def _series(ax, g, x, y, err, arm, color, hollow_col, label):
@@ -219,7 +229,7 @@ def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a",
         _style(ax, logx=False, ylim=(-0.03, 1.03), percent=True)
         ax.set_xscale("log", base=2)
         ticks = sorted(sub["L"].unique())
-        ax.set_xticks(ticks, [str(t) for t in ticks])
+        ax.set_xticks(ticks, [str(t) for t in ticks], rotation=45, fontsize=7)
         ax.minorticks_off()
         ax.set_title(f"BER = {b:.0e}", color=INK, fontsize=10)
         ax.set_xlabel("data-segment length L (bytes)", color=INK, fontsize=9)
@@ -230,13 +240,23 @@ def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a",
                  "(lighter = smaller); circle/solid = keyless, square/dashed = keyed.")
 
 
-def plot_iso_error_models(s, out_dir, layouts=None, W=6):
-    """Payload-only errors vs payload+tag errors (payload / segment repair span), per layout."""
-    layouts = layouts or sorted({(d, n) for d, n in zip(s["data_fields"], s["N"])})
-    fig, axes = plt.subplots(1, len(layouts), figsize=(4.0 * len(layouts), 3.4), sharey=True, squeeze=False)
+ERROR_MODEL_LAYOUTS = ((100, 3), (300, 7), (1000, 21),   # L = 50 at each size
+                       (100, 5), (300, 13), (1000, 41))  # L = 25
+
+
+def plot_iso_error_models(s, out_dir, layouts=ERROR_MODEL_LAYOUTS, W=6):
+    """Payload-only errors vs payload+tag errors (payload / segment repair span); matched-L layouts,
+    3 per row."""
+    present = set(zip(s["data_fields"], s["N"]))
+    layouts = [lay for lay in layouts if lay in present] or sorted(present)[:6]
+    cols = min(3, len(layouts))
+    rows = -(-len(layouts) // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(4.2 * cols, 3.2 * rows), sharey=True, sharex=True, squeeze=False)
+    for ax in axes.flat[len(layouts):]:
+        ax.set_visible(False)
     styles = {("arc_only_a", "payload"): 1.0, ("acr_only_data_tags", "payload"): 0.45,
               ("acr_only_data_tags", "segment"): 0.72}
-    for ax, (d, n) in zip(axes[0], layouts):
+    for ax, (d, n) in zip(axes.flat, layouts):
         for (cfg, span), t in styles.items():
             for arm in ARM:
                 g = s[(s["config"] == cfg) & (s["repair_span"] == span) & (s["W"] == W) & (s["arm"] == arm)
@@ -245,15 +265,16 @@ def plot_iso_error_models(s, out_dir, layouts=None, W=6):
                     _series(ax, g, "bit_error_rate", "recovery_rate", None, arm, _shade(ARM[arm]["color"], t),
                             "sparse", "")
         _style(ax, ylim=(-0.03, 1.03), percent=True)
-        ax.set_title(f"{d} B, N={n}", color=INK, fontsize=10)
+        ax.set_title(f"{d} B, N={n} (L={d // (n - 1)})", color=INK, fontsize=10)
         ax.set_xlabel("bit error rate", color=INK, fontsize=9)
-    axes[0][0].set_ylabel("recovery rate", color=INK, fontsize=9)
+    for row in axes:
+        row[0].set_ylabel("recovery rate", color=INK, fontsize=9)
     from matplotlib.lines import Line2D
     handles = [Line2D([], [], color=_shade(ARM["keyless"]["color"], t), linewidth=2, label=CONFIG_TXT[k])
                for k, t in styles.items()]
     handles += [Line2D([], [], color=INK_MUTED, marker=ARM[a]["marker"], linestyle=ARM[a]["ls"], label=ARM[a]["label"])
                 for a in ARM]
-    fig.legend(handles=handles, loc="upper center", ncol=5, frameon=False, fontsize=7.5, bbox_to_anchor=(0.5, 1.06))
+    fig.legend(handles=handles, loc="upper center", ncol=3, frameon=False, fontsize=7.5, bbox_to_anchor=(0.5, 1.08))
     return _save(fig, out_dir, f"iso_error_models_W{W}",
                  f"Isolated harness, ACR-only, W={W}, HD 2: payload-only errors vs errors that also hit the data "
                  "segments' salt/tag bytes, repaired over the payload only or over payload + salt/tags.")
@@ -287,6 +308,7 @@ def plot_prod_overhead_vs_ber(p, out_dir, scope="data_payload", span="payload"):
     sub = _prod_pick(p, scope, span)
     sub = sub[np.isfinite(sub["mean_overhead_decoded"])]
     fig = _grid_by(sub, "mean_overhead_decoded", None, "packets / g (decoded trials)", hollow="hollow", logy=True)
+    _plain_log_y(fig)
     return _save(fig, out_dir, f"prod_overhead_vs_ber_{scope}_{span}",
                  f"End-to-end ACR-only, {SCOPE_TXT[(scope, span)]}: mean packets per generation over decoded "
                  "trials (1 = no retransmission). Hollow = some trials hit the cap.")
@@ -300,7 +322,7 @@ def plot_prod_ops_vs_ber(p, out_dir, scope="data_payload", span="payload"):
                  "detection + repair) + RLNC decode, mean per generation.")
 
 
-def _vs_df(p, col, ylabel, name, out_dir, bers, scope, span, logy):
+def _vs_df(p, col, ylabel, name, out_dir, bers, scope, span, logy, plain_log=False):
     sub = _prod_pick(p, scope, span)
     bers = [b for b in bers if b in set(sub["bit_error_rate"])]
     fig, axes = plt.subplots(1, len(bers), figsize=(4.3 * len(bers), 3.4), sharey=True, squeeze=False)
@@ -317,6 +339,8 @@ def _vs_df(p, col, ylabel, name, out_dir, bers, scope, span, logy):
         ax.set_xlabel("payload size (bytes)", color=INK, fontsize=9)
     axes[0][0].set_ylabel(ylabel, color=INK, fontsize=9)
     axes[0][0].legend(fontsize=7, frameon=False, labelcolor=INK, title="keyless", title_fontsize=7)
+    if plain_log:
+        _plain_log_y(fig)
     return _save(fig, out_dir, name,
                  f"End-to-end ACR-only, {SCOPE_TXT[(scope, span)]}: line per data-segment length L present at "
                  "several sizes (darker = shorter L); circle/solid = keyless, square/dashed = keyed.")
@@ -325,7 +349,7 @@ def _vs_df(p, col, ylabel, name, out_dir, bers, scope, span, logy):
 def plot_prod_overhead_vs_df(p, out_dir, bers=(1e-4, 1e-3, 3e-3), scope="data_payload", span="payload"):
     return _vs_df(p[np.isfinite(p["mean_overhead_decoded"])], "mean_overhead_decoded",
                   "packets / g (decoded trials)", f"prod_overhead_vs_df_{scope}_{span}",
-                  out_dir, bers, scope, span, logy=True)
+                  out_dir, bers, scope, span, logy=True, plain_log=True)
 
 
 def plot_prod_ops_vs_df(p, out_dir, bers=(1e-4, 1e-3, 3e-3), scope="data_payload", span="payload"):
