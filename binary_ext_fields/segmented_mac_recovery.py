@@ -117,7 +117,8 @@ def _powerset(items):
 
 
 def _pair_cache_key(slice_a: bytearray, slice_b: bytearray, candidate_columns: list[int],
-                    max_combined_hd: int, candidates_budget, ic_refinement: bool, W: int | None = None):
+                    max_combined_hd: int, candidates_budget, ic_refinement: bool, W: int | None = None,
+                    half_columns=None):
     """Hashable key over everything the search depends on. The keyset is constant
     for a trial (the pair_cache lives on the per-trial instrument), so it is not
     part of the key -- unlike the orthogonal cache, which keys on the trusted set
@@ -127,14 +128,16 @@ def _pair_cache_key(slice_a: bytearray, slice_b: bytearray, candidate_columns: l
     and W (ADR-0013 acceptance width) because it changes how many tags are verified
     and hence which fixes are accepted."""
     return (bytes(slice_a), bytes(slice_b), tuple(candidate_columns), max_combined_hd,
-            candidates_budget, ic_refinement, W)
+            candidates_budget, ic_refinement, W,
+            None if half_columns is None else tuple(tuple(c) for c in half_columns))
 
 
 def recover_pair_by_combined_search_mac(field: TableField, keys: list[bytearray], slice_a: bytearray,
                                         slice_b: bytearray, candidate_columns: list[int], segment: MacSegment,
                                         max_combined_hd: int, candidates_budget: int | None = None,
                                         pair_cache: dict | None = None,
-                                        ic_refinement: bool = True, W: int | None = None, early_exit: bool = False) -> PairRecoveryResult:
+                                        ic_refinement: bool = True, W: int | None = None, early_exit: bool = False,
+                                        half_columns=None) -> PairRecoveryResult:
     """Combined Recovery on one broken pair (paper Algorithm 1, Case-1 part).
 
     Sc = slice_a XOR slice_b, Tc = T1 XOR T2 (both fall out of XORing the whole
@@ -153,41 +156,61 @@ def recover_pair_by_combined_search_mac(field: TableField, keys: list[bytearray]
     hit returns an identical result without re-spending field ops.
 
     ic_refinement (default True) enables the Case-2 same-position fallback described
-    in the module docstring; pass False to restore the disjoint-only combined search."""
+    in the module docstring; pass False to restore the disjoint-only combined search.
+
+    half_columns (2026-10-01, keyless parity): (cols_a, cols_b) = each half's OWN ACR columns
+    for the fallback searches, like the keyless _ic_refine_pair. None = both halves search
+    candidate_columns (the union), as before."""
     if pair_cache is not None:
         key = _pair_cache_key(slice_a, slice_b, candidate_columns, max_combined_hd,
-                              candidates_budget, ic_refinement, W)
+                              candidates_budget, ic_refinement, W, half_columns)
         cached = pair_cache.get(key)
         if cached is not None:
             return cached
         result = _search_pair_mac(field, keys, slice_a, slice_b, candidate_columns, segment,
-                                  max_combined_hd, candidates_budget, ic_refinement, W=W, early_exit=early_exit)
+                                  max_combined_hd, candidates_budget, ic_refinement, W=W, early_exit=early_exit,
+                                  half_columns=half_columns)
         pair_cache[key] = result
         return result
     return _search_pair_mac(field, keys, slice_a, slice_b, candidate_columns, segment,
-                            max_combined_hd, candidates_budget, ic_refinement, W=W, early_exit=early_exit)
+                            max_combined_hd, candidates_budget, ic_refinement, W=W, early_exit=early_exit,
+                            half_columns=half_columns)
 
 
 def _search_pair_mac(field: TableField, keys: list[bytearray], slice_a: bytearray, slice_b: bytearray,
                      candidate_columns: list[int], segment: MacSegment, max_combined_hd: int,
                      candidates_budget: int | None, ic_refinement: bool = True,
-                     W: int | None = None, early_exit: bool = False) -> PairRecoveryResult:
+                     W: int | None = None, early_exit: bool = False, half_columns=None) -> PairRecoveryResult:
     """The actual combined search, extracted so the public wrapper can cache it.
     Pure and deterministic in its inputs (keys constant per trial).
 
     Two stages: (1) the paper's combined search over Sc = a XOR b -- recovers any
     DISJOINT error split; (2) when that exhausts and ic_refinement is on, the Case-2
-    IC-refinement fallback (module docstring) correcting each half individually. Both
-    stages share one candidates_budget so a high-BER cell cannot blow up."""
+    IC-refinement fallback (module docstring) correcting each half individually.
+
+    Budget rule (fixed 2026-10-01): EVERY search step gets its own candidates_budget --
+    the combined search, then half A, then half B -- and a combined search stopped by the
+    budget still falls through to the fallback, exactly like the keyless arm
+    (repair_segment -> _ic_refine_pair -> one budgeted search per half). Before, the keyed
+    arm (a) ran all three under ONE shared budget and (b) returned without the fallback as
+    soon as the combined search hit the budget, so at HD >= 3 keyed recovered less than
+    keyless at matched W for budget reasons alone (isolated HD sweep, df1000 N11 1e-3 HD4
+    W3: 22 vs 42 of 48; IC-refinement off in both arms: 22 vs 22). candidates_tried = sum."""
     bits_per_symbol = field.bit_lenght
     bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
     combined = bytearray(a ^ b for a, b in zip(slice_a, slice_b))
 
     candidates_tried = 0
+    budget_hit = False
     for hd in range(1, max_combined_hd + 1):
+        if budget_hit:
+            break
         for combo in combinations(bit_positions, hd):
             if candidates_budget is not None and candidates_tried >= candidates_budget:
-                return PairRecoveryResult(False, None, None, None, candidates_tried)
+                # end the COMBINED stage only -- the fallback below still runs (keyless parity;
+                # this used to `return` here and skip IC-refinement whenever the budget bound)
+                budget_hit = True
+                break
             candidates_tried += 1
             combined_candidate = _flip_bits(combined, combo, bits_per_symbol)
             if not mac_verify_segment(field, keys, combined_candidate, segment, W=W, early_exit=early_exit):
@@ -207,15 +230,16 @@ def _search_pair_mac(field: TableField, keys: list[bytearray], slice_a: bytearra
     # same-position overlaps (they cancel in Sc), so fall back to correcting each
     # half on its own MAC over the same candidate columns. Each half is only
     # accepted if it MAC-verifies (done inside _bitflip_search_mac), so no silent
-    # decode is introduced. The two searches continue the shared budget count.
+    # decode is introduced. Each half gets a fresh budget (same rule as the keyless arm).
     if ic_refinement:
-        fixed_a, candidates_tried = _bitflip_search_mac(field, slice_a, keys, candidate_columns, segment,
-                                                        max_combined_hd, candidates_budget,
-                                                        start_tried=candidates_tried, W=W, early_exit=early_exit)
+        cols_a, cols_b = half_columns if half_columns is not None else (candidate_columns, candidate_columns)
+        fixed_a, tried_a = _bitflip_search_mac(field, slice_a, keys, cols_a, segment,
+                                               max_combined_hd, candidates_budget, W=W, early_exit=early_exit)
+        candidates_tried += tried_a
         if fixed_a is not None:
-            fixed_b, candidates_tried = _bitflip_search_mac(field, slice_b, keys, candidate_columns, segment,
-                                                            max_combined_hd, candidates_budget,
-                                                            start_tried=candidates_tried, W=W, early_exit=early_exit)
+            fixed_b, tried_b = _bitflip_search_mac(field, slice_b, keys, cols_b, segment,
+                                                   max_combined_hd, candidates_budget, W=W, early_exit=early_exit)
+            candidates_tried += tried_b
             if fixed_b is not None:
                 return PairRecoveryResult(True, fixed_a, fixed_b, None, candidates_tried)
 
@@ -233,10 +257,9 @@ def _bitflip_search_mac(field: TableField, broken_slice: bytearray, keys: list[b
     check is the real acceptance oracle, so a returned candidate is always valid --
     a wrong "fix" would need a q^-V tag collision.
 
-    start_tried lets a caller run several of these under ONE shared candidates_budget
-    (the IC-refinement pair path runs two, after the combined search): the budget is
-    compared against the cumulative count, and the cumulative count is returned so the
-    next call can carry on where this one stopped."""
+    start_tried (default 0 = a fresh budget) counts against the budget as if that many
+    candidates had already been tried; the returned count includes it. Since 2026-10-01 no
+    caller shares a budget across searches (see _search_pair_mac's budget rule)."""
     bits_per_symbol = field.bit_lenght
     bit_positions = _bit_positions_for_columns(candidate_columns, bits_per_symbol)
     tried = start_tried
@@ -315,9 +338,13 @@ def repair_segment_mac(field: TableField, keys: list[bytearray], packets: list[b
 
         slice_a = segment_slice(packets[pair.packet_a], segment)
         slice_b = segment_slice(packets[pair.packet_b], segment)
+        # IC-refinement halves search their OWN localized columns (keyless parity); unlocalized
+        # pairs keep the whole-segment `columns` for both halves, as before.
+        halves = None if (cols_a is None or cols_b is None) else (cols_a, cols_b)
         result = recover_pair_by_combined_search_mac(field, keys, slice_a, slice_b, columns, segment,
                                                      max_combined_hd, candidates_budget=candidates_budget,
-                                                     pair_cache=pair_cache, ic_refinement=ic_refinement, W=W, early_exit=early_exit)
+                                                     pair_cache=pair_cache, ic_refinement=ic_refinement, W=W,
+                                                     early_exit=early_exit, half_columns=halves)
         if result.ok:
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
             _write_segment(packets[pair.packet_b], segment, result.fixed_b)

@@ -141,6 +141,21 @@ Best bit-efficiency N per (df, BER), keyless (keyed same N almost everywhere):
 - Tag errors end-to-end: payload-only repair costs little at 100 B but kills df1000 L=50 at 1e-3
   (eff .37 -> .02); segment-span repair recovers most of it (.32).
 
+### F7 — BUG (fixed 2026-10-01): keyed pair fallback had less search than keyless
+Seen as "keyless recovers more at HD 4, even at W=3" (df1000 N11 1e-3: keyed 22 vs keyless 42 of 48,
+0 silent both; IC-refinement off in both arms: 22 vs 22). Three differences in the keyed pair path
+(`segmented_mac_recovery._search_pair_mac`) vs keyless (`repair_segment` -> `_ic_refine_pair`):
+1. one budget SHARED by combined search + both fallback halves (keyless: fresh budget per step);
+2. combined search hitting the budget RETURNED, skipping the fallback (keyless: fallback still runs);
+3. fallback halves searched the UNION of both halves' ACR columns (keyless: each half its own).
+Fix (user: fresh budget per search step for keyed too): all three aligned to the keyless rule. Same
+cell after fix: HD3 40/40, HD4 42/42, 0 per-target differences. Test `simulation/pair_budget_parity_test.py`
+(3 cases, each red on the old code). Keyless code unchanged.
+Stale (keyed arm only, rerun pending by user choice): `logs/scaling_acr/iso_hd` (HD >= 3) and its
+vs_hd / pareto / hd3-5 plots; the ticket-19 HD runs `logs/isolated_recovery_v4/t19*`. HD 2 headline
+results stand (W >= 3: 0 per-target differences between arms already before the fix); keyed W <= 2
+numbers at HD 2 may shift slightly (fallback path also hit by wrong-accept candidates).
+
 ## vs branch feat/scaling-and-op-audit
 | item | old branch | this branch |
 |---|---|---|
