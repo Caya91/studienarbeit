@@ -93,7 +93,10 @@ Run: `logs/verify_width_attack/g4_m24_t4000_hd0/`, plots `logs/verify_width_atta
   witness set with prob n/g -> one extra lottery ticket. With that term (verify_width_attack_sim
   .theory_admit_reeval) all 110 cells fit (max |z| 2.7). Hardening idea (not built): freeze a packet's
   witness subset / verdict at its first evaluation.
-- GF(2^8): smoke OK (55 cells x 60 trials, 171 s); full 4000/cell est. ~3.2 CPU-h (~40 min on 5 workers). Not run.
+- GF(2^8) (run 2026-10-01, `logs/verify_width_attack/g4_m8_t4000_hd0/`, 4000 trials/cell): all 55 cells
+  fit the theory incl. re-evaluation (max |z| 2.58). With q = 256 the 1/q term vanishes, so a random
+  single check is just k/g (keyed 25.4 / 49.3 / 75.3 % for k = 1/2/3) and r/(g-1) (keyless 33.8 / 65.4 %),
+  while the deterministic check is 100 % from k >= W / r >= vc. Checking everything (width all) = q^-u.
 
 ## R2 / R3 — size x segmentation x BER (DONE 2026-09-30, `scripts/scaling_acr_runs.sh`, 7 h 51 min)
 Sizes df {100, 300, 1000}, N for matched L: 100: N 2,3,5,11 | 300: N 2,4,7,13,31 | 1000: N 2,5,11,21,41.
@@ -170,6 +173,6 @@ numbers at HD 2 may shift slightly (fallback path also hit by wrong-accept candi
 1. Merge `feat/scaling-acr`? (touches recovery + admit code; all new behaviour behind non-default knobs,
    plus the behaviour-identical fast path.)
 2. Keyless random witnesses: accept the re-evaluation effect or add "freeze on first evaluation"?
-3. GF(2^8) S2 full run (~40 min)?
+3. ~~GF(2^8) S2 full run~~ done 2026-10-01.
 4. Production `acr_only` uses bit-flip over ACR columns in BOTH arms (like the harness), not the keyless
    ADR-0002 exact solve. OK, or should keyless keep the exact solve end-to-end?
