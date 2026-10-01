@@ -119,7 +119,7 @@ class SegmentTrust:
 
 
 def classify_segment_trust(field: TableField, packets: list[bytearray], segment: TaggedSegment,
-                           verify_count: int | None = None) -> SegmentTrust:
+                           verify_count: int | None = None, witness_rank=None) -> SegmentTrust:
     """
     Self-check failure -> broken (conclusive, ADR-0004). Among the self-check
     passers, decide who is *trusted* (cross-consistent) via a POISONER-TOLERANT
@@ -148,6 +148,13 @@ def classify_segment_trust(field: TableField, packets: list[bytearray], segment:
          only). Core members trivially agree with each other, so the core is
          always trusted; the dial only governs how strictly non-core self-passers
          are admitted.
+
+    WHICH core members are the witnesses (S2, 2026-09-29): witness_rank=None keeps the
+    deterministic choice -- the first verify_count core members by pool index, which an
+    attacker who knows the arrival order can predict. witness_rank(a, c) -> sortable key
+    (a, c = pool indices; see witness_policy.secret_rank) instead takes, for each checked
+    packet a, the verify_count core members with the lowest secret rank -- a per-packet
+    subset the attacker cannot predict. Only matters when verify_count caps the check.
 
     All field ops (self-checks + the one-time pairwise agreement matrix) are
     charged to the "detection" phase; the peel and witness check operate on the
@@ -181,6 +188,9 @@ def classify_segment_trust(field: TableField, packets: list[bytearray], segment:
     trusted = []
     for a in range(m):
         witnesses = [c for c in core if c != a]
+        if witness_rank is not None:
+            pa = self_pass[a]
+            witnesses.sort(key=lambda c: witness_rank(pa, self_pass[c]))
         if verify_count is not None:
             witnesses = witnesses[:verify_count]
         if all(not disagree[a][c] for c in witnesses):
@@ -526,7 +536,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
                     W: int | None = None,
                     drop_unlocalized: bool = False,
                     injected_trust: "SegmentTrust | None" = None,
-                    bitflip_only: bool = False) -> SegmentRepairOutcome:
+                    bitflip_only: bool = False,
+                    witness_rank=None) -> SegmentRepairOutcome:
     """
     Repairs one segment across the whole generation, mutating `packets` in
     place: pairs broken packets (plan_pairing) and combined-searches each pair
@@ -565,7 +576,8 @@ def repair_segment(field: TableField, packets: list[bytearray], segment: TaggedS
     sniffing/peel is bypassed and detection quality is idealized out of the
     comparison. None = sniff as before (every existing caller unchanged)."""
     trust = injected_trust if injected_trust is not None \
-        else classify_segment_trust(field, packets, segment, verify_count=verify_count)
+        else classify_segment_trust(field, packets, segment, verify_count=verify_count,
+                                    witness_rank=witness_rank)
     if drop_unlocalized:
         dropped_indices = [i for i in trust.broken if candidate_columns_for(i) is None]
         dropped_set = set(dropped_indices)
@@ -662,7 +674,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
                         verify_count: int | None = None,
                         ic_refinement: bool = True,
                         W: int | None = None,
-                        final_check: bool = True) -> SegmentedRecoveryReport:
+                        final_check: bool = True,
+                        witness_rank=None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 1: every segment, coeff and data alike, repaired via
     pairing + combined search, unpaired via the ADR-0002 linear solve. No ARC
     anywhere -- the coeff-segment gets exactly the same treatment as any
@@ -676,7 +689,8 @@ def recover_uniform_hd(field: TableField, packets: list[bytearray], segments: li
     per_segment = [
         repair_segment(field, tmp, segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W)
+                       pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W,
+                       witness_rank=witness_rank)
         for segment in segments
     ]
     ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
@@ -748,6 +762,65 @@ def recover_arc_only(field: TableField, packets: list[bytearray], segments: list
         )
 
     ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)
+    if final_check:
+        with _count_phase(field, "detection"):
+            ok = all(check_orth_segmented(field, tmp, segments).values())
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
+
+
+def recover_acr_only(field: TableField, packets: list[bytearray], segments: list[TaggedSegment],
+                     gen_size: int, max_combined_hd: int = 2, candidates_budget: int | None = None,
+                     pair_cache: dict | None = None,
+                     verify_count: int | None = None,
+                     ic_refinement: bool = True,
+                     W: int | None = None,
+                     repair_span: str = "payload",
+                     final_check: bool = True,
+                     witness_rank=None,
+                     bitflip_only: bool = True) -> SegmentedRecoveryReport:
+    """Production ACR-only strategy (2026-09-29; ACR = algebraic consistency check, the
+    step the code calls "ARC"): the end-to-end counterpart of the harness's
+    recover_arc_only, with SNIFFED trust instead of an injected helper basis.
+
+    - No coeff-segment repair (coefficients are assumed clean -- the error models that
+      go with this strategy never flip coefficient bits).
+    - Each data segment is repaired ONLY where ACR localizes the broken packet: the
+      localizer needs gen_size packets trusted in both the coeff segment and this data
+      segment. A broken packet it cannot localize yet is skipped (drop_unlocalized) --
+      left untouched IN THE POOL, not discarded -- so the receiver simply waits for more
+      packets and retries on a later admit (ADR-0003's "wait for enough trusted packets").
+    - Repair method (bitflip_only, user decision 2026-09-30: bit-flip is the default):
+        True  -- bit-flip search over the ACR columns only, the same method as the keyed arm
+                 and the isolated harness (+ the salt/tag span when repair_span="segment").
+                 No blind whole-segment search anywhere.
+        False -- the pre-2026-09-29 keyless path of repair_segment: ADR-0002 exact linear
+                 solve over the ACR columns when verifiable (<= gen_size-2 columns), else /
+                 then the bounded bit-flip over the WHOLE segment. Kept switchable for
+                 experiments (AdmitConfig.acr_bitflip_only=False).
+
+    Trust per data segment is classified once and handed to repair_segment
+    (injected_trust), so detection is not paid twice for the same pool state."""
+    tmp = [bytearray(p) for p in packets]
+    coeff_segment = next(s for s in segments if s.kind == "coeff")
+    data_segments = [s for s in segments if s.kind == "data"]
+    coeff_trust = classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count,
+                                         witness_rank=witness_rank)
+
+    per_segment = []  # coeff segment intentionally NOT repaired (ACR-only)
+    for segment in data_segments:
+        data_trust = classify_segment_trust(field, tmp, segment, verify_count=verify_count,
+                                            witness_rank=witness_rank)
+        localizer = _make_arc_localizer(field, tmp, coeff_segment, segment, gen_size,
+                                        coeff_trust.trusted, data_trust.trusted, repair_span=repair_span)
+        per_segment.append(
+            repair_segment(field, tmp, segment, candidate_columns_for=localizer,
+                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                           pair_cache=pair_cache, verify_count=verify_count,
+                           ic_refinement=ic_refinement, W=W, drop_unlocalized=True,
+                           injected_trust=data_trust, bitflip_only=bitflip_only)
+        )
+
+    ok = None
     if final_check:
         with _count_phase(field, "detection"):
             ok = all(check_orth_segmented(field, tmp, segments).values())
@@ -831,7 +904,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
                                injected_trust_by_segment: "dict[str, SegmentTrust] | None" = None,
                                bitflip_only: bool = False,
                                repair_span: str = "payload",
-                               final_check: bool = True) -> SegmentedRecoveryReport:
+                               final_check: bool = True,
+                               witness_rank=None) -> SegmentedRecoveryReport:
     """ADR-0012 Option 2: repair the coeff-segment first (same pairing/combined-
     search machinery as Option 1 -- it can never ARC-localize itself), then use
     the now-trustworthy coefficients to ARC-narrow each data-segment's candidate
@@ -858,14 +932,17 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
         repair_segment(field, tmp, coeff_segment, candidate_columns_for=lambda i: None,
                        max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                        pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W,
-                       injected_trust=_injected(coeff_segment), bitflip_only=bitflip_only)
+                       injected_trust=_injected(coeff_segment), bitflip_only=bitflip_only,
+                       witness_rank=witness_rank)
     ]
 
     coeff_trust = _injected(coeff_segment) if injected_trust_by_segment is not None \
-        else classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count)
+        else classify_segment_trust(field, tmp, coeff_segment, verify_count=verify_count,
+                                    witness_rank=witness_rank)
     for segment in data_segments:
         data_trust = _injected(segment) if injected_trust_by_segment is not None \
-            else classify_segment_trust(field, tmp, segment, verify_count=verify_count)
+            else classify_segment_trust(field, tmp, segment, verify_count=verify_count,
+                                        witness_rank=witness_rank)
         localizer = _make_arc_localizer(
             field, tmp, coeff_segment, segment, gen_size, coeff_trust.trusted, data_trust.trusted,
             repair_span=repair_span,
@@ -874,7 +951,8 @@ def recover_coefficient_first(field: TableField, packets: list[bytearray], segme
             repair_segment(field, tmp, segment, candidate_columns_for=localizer,
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                            pair_cache=pair_cache, verify_count=verify_count, ic_refinement=ic_refinement, W=W,
-                           injected_trust=_injected(segment), bitflip_only=bitflip_only)
+                           injected_trust=_injected(segment), bitflip_only=bitflip_only,
+                           witness_rank=witness_rank)
         )
 
     ok = None  # final_check=False: the caller checks/costs the pool itself (ADR-0013 ticket 20)

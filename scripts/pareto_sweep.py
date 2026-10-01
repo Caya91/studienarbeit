@@ -32,6 +32,15 @@ one cell run at once, and each trial stops pulling packets after --trial-deadlin
 --resume <run_dir> skips trials already in it -- an interrupted run loses at most the
 in-flight trials. Wall times are contended (N workers share the CPU); ops are not.
 
+2026-09-29 (scaling study, schema v2): gen size, strategy, channel-error scope, repair span,
+min_pool_size and pair budget are CLI knobs (defaults = the original run above). The ACR-only
+setup used for the size/BER study:
+  --gen-size 6 --strategy acr_only --error-scope data_payload|data_segment
+  --repair-span payload|segment --min-pool-size 6 --pair-budget 20000 --configs "df:N,..."
+(ACR = algebraic consistency check; code calls it "ARC"). Rows carry error_scope + repair_span.
+acr_only repairs by bit-flip over the ACR columns (default); --acr-exact-solve switches the keyless
+arm back to the ADR-0002 exact solve + whole-segment fallback (schema v3 column acr_bitflip_only).
+
 Run (PowerShell, from the worktree; memory how_to_run_sims):
   $env:LOG_FOLDER="./logs"; $env:PYTHONPATH="."
   & "E:/projects/studienarbeit/.venv/Scripts/python.exe" scripts/pareto_sweep.py --stage smoke
@@ -62,7 +71,7 @@ from binary_ext_fields.custom_field import create_field
 from simulation.integrity_schemes import AdmitConfig, SegmentedMacScheme, SegmentedScheme
 from simulation.scheme_comparison_sim import SEGMENTED_MAX_PACKETS_FACTOR, run_recovery_trial
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3   # v2 (2026-09-29): + error_scope, repair_span; v3 (2026-09-30): + acr_bitflip_only
 GEN_SIZE = 10
 FIELD_M = 8
 STRATEGY = "coefficient_first"
@@ -80,6 +89,7 @@ RAW_FIELDS = [
     "schema_version", "arm", "scheme", "strategy", "gen_size", "field_m", "data_fields",
     "n_segments", "seg_len_min", "seg_len_max", "wire_symbols", "hamming_distance",
     "pair_budget", "verify_count", "min_pool_size", "max_packets_factor", "trial_deadline_s",
+    "error_scope", "repair_span", "acr_bitflip_only",
     "bit_error_rate", "trial_idx", "seed",
     "status", "decoded", "correct", "silent_decode", "packets_to_decode", "overhead",
     "scheme_ops", "decode_ops", "detection_ops", "recovery_ops",
@@ -95,11 +105,11 @@ def n_values_for(df: int, gen_size: int) -> list[int]:
     return sorted(n for n in ns if 2 <= n <= n_max)
 
 
-def make_scheme(arm: str, n_segments: int, df: int):
+def make_scheme(arm: str, n_segments: int, df: int, strategy: str = STRATEGY):
     cls = SegmentedScheme if arm == "keyless" else SegmentedMacScheme
     prefix = "segmented" if arm == "keyless" else "mac"
-    return cls(num_data_segments=n_segments - 1, data_fields=df, strategy=STRATEGY,
-               name=f"{prefix}_{STRATEGY}_n{n_segments}_df{df}")
+    return cls(num_data_segments=n_segments - 1, data_fields=df, strategy=strategy,
+               name=f"{prefix}_{strategy}_n{n_segments}_df{df}")
 
 
 @dataclass(frozen=True)
@@ -127,6 +137,8 @@ class Task:
     wire_symbols: int
     seg_len_min: int
     seg_len_max: int
+    strategy: str = STRATEGY
+    error_scope: str = "whole_packet"
 
 
 def _seed(cell: Cell, trial_idx: int, gen_size: int, field_m: int) -> int:
@@ -142,22 +154,24 @@ def run_task(task: Task) -> dict:
     np.random.seed(task.seed % 2**32)
     field = _FIELDS.setdefault(task.field_m, create_field(task.field_m))
     cell = task.cell
-    scheme = make_scheme(cell.arm, cell.n, cell.df)
+    scheme = make_scheme(cell.arm, cell.n, cell.df, task.strategy)
     cfg = AdmitConfig(**task.cfg)
     res = run_recovery_trial(field, scheme, cell.df, task.gen_size, cell.ber, cfg,
                              max_packets_factor=task.max_packets_factor,
-                             deadline_s=task.trial_deadline_s)
+                             deadline_s=task.trial_deadline_s, error_scope=task.error_scope)
     r = asdict(res)
     info_bits = task.gen_size * cell.df * task.field_m if res.correct else 0
     wire_bits = res.packets_to_decode * task.wire_symbols * task.field_m
     return {
         "schema_version": SCHEMA_VERSION, "arm": cell.arm, "scheme": scheme.name,
-        "strategy": STRATEGY, "gen_size": task.gen_size, "field_m": task.field_m,
+        "strategy": task.strategy, "gen_size": task.gen_size, "field_m": task.field_m,
         "data_fields": cell.df, "n_segments": cell.n, "seg_len_min": task.seg_len_min,
         "seg_len_max": task.seg_len_max, "wire_symbols": task.wire_symbols,
         "hamming_distance": cfg.hamming_distance, "pair_budget": cfg.pair_budget,
         "verify_count": cfg.verify_count, "min_pool_size": cfg.min_pool_size,
         "max_packets_factor": task.max_packets_factor, "trial_deadline_s": task.trial_deadline_s,
+        "error_scope": task.error_scope, "repair_span": cfg.repair_span,
+        "acr_bitflip_only": int(cfg.acr_bitflip_only),
         "bit_error_rate": cell.ber, "trial_idx": task.trial_idx, "seed": task.seed,
         **{k: r[k] for k in RAW_FIELDS if k in r},
         "info_bits_delivered": info_bits, "wire_bits_sent": wire_bits,
@@ -173,9 +187,9 @@ def _layout(arm: str, n: int, df: int, gen_size: int, field) -> tuple[int, int, 
     return len(packets[0]), min(data_lens), max(data_lens)
 
 
-def _est_cost(cell: Cell, wire_symbols: int, seg_len_max: int) -> float:
+def _est_cost(cell: Cell, wire_symbols: int, seg_len_max: int, gen_size: int = GEN_SIZE) -> float:
     """Ordering heuristic only: expected flips per packet x per-segment search width."""
-    return cell.ber * wire_symbols * (seg_len_max + GEN_SIZE + 1)
+    return cell.ber * wire_symbols * (seg_len_max + gen_size + 1)
 
 
 def _load_done(raw_path: Path) -> dict:
@@ -192,27 +206,35 @@ def _load_done(raw_path: Path) -> dict:
 
 
 def run_sweep(arm, dfs, n_by_df, bers, trials, cell_budget_s, trial_deadline_s, workers,
-              max_inflight_per_cell, pair_budget, out_root: Path, resume: Path | None) -> Path:
+              max_inflight_per_cell, pair_budget, out_root: Path, resume: Path | None,
+              gen_size: int = GEN_SIZE, strategy: str = STRATEGY, error_scope: str = "whole_packet",
+              repair_span: str = "payload", min_pool_size: int | None = None,
+              acr_bitflip_only: bool = True,
+              max_packets_factor: int = SEGMENTED_MAX_PACKETS_FACTOR) -> Path:
     field = create_field(FIELD_M)
-    cfg = dict(hamming_distance=HAMMING_DISTANCE, pair_budget=pair_budget)
+    cfg = dict(hamming_distance=HAMMING_DISTANCE, pair_budget=pair_budget, repair_span=repair_span,
+               acr_bitflip_only=acr_bitflip_only)
+    if min_pool_size is not None:
+        cfg["min_pool_size"] = min_pool_size
     cfg_obj = AdmitConfig(**cfg)
 
-    run_dir = resume or out_root / f"{datetime.now():%Y%m%d_%H%M%S}_{arm}_gen{GEN_SIZE}_m{FIELD_M}_t{trials}"
+    tag = "" if (strategy, error_scope) == (STRATEGY, "whole_packet") else f"_{strategy}_{error_scope}_{repair_span}"
+    run_dir = resume or out_root / f"{datetime.now():%Y%m%d_%H%M%S}_{arm}_gen{gen_size}_m{FIELD_M}_t{trials}{tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_path = run_dir / "raw_trials.csv"
     done = _load_done(raw_path)
 
     cells, layout = [], {}
     for df in dfs:
-        for n in (n_by_df or {}).get(df) or n_values_for(df, GEN_SIZE):
-            layout[(df, n)] = _layout(arm, n, df, GEN_SIZE, field)
+        for n in (n_by_df or {}).get(df) or n_values_for(df, gen_size):
+            layout[(df, n)] = _layout(arm, n, df, gen_size, field)
             cells += [Cell(arm, df, n, ber) for ber in bers]
-    cells.sort(key=lambda c: _est_cost(c, layout[(c.df, c.n)][0], layout[(c.df, c.n)][2]))
+    cells.sort(key=lambda c: _est_cost(c, layout[(c.df, c.n)][0], layout[(c.df, c.n)][2], gen_size))
 
     (run_dir / "run_config.json").write_text(json.dumps({
-        "schema_version": SCHEMA_VERSION, "arm": arm, "gen_size": GEN_SIZE, "field_m": FIELD_M,
-        "strategy": STRATEGY, "admit_config": asdict(cfg_obj),
-        "max_packets_factor": SEGMENTED_MAX_PACKETS_FACTOR, "trials": trials,
+        "schema_version": SCHEMA_VERSION, "arm": arm, "gen_size": gen_size, "field_m": FIELD_M,
+        "strategy": strategy, "error_scope": error_scope, "admit_config": asdict(cfg_obj),
+        "max_packets_factor": max_packets_factor, "trials": trials,
         "cell_budget_s": cell_budget_s, "trial_deadline_s": trial_deadline_s, "workers": workers,
         "max_inflight_per_cell": max_inflight_per_cell, "bers": bers,
         "configs": [{"df": df, "n": n, "wire_symbols": w, "seg_len_min": lo, "seg_len_max": hi}
@@ -230,8 +252,9 @@ def run_sweep(arm, dfs, n_by_df, bers, trials, cell_budget_s, trial_deadline_s, 
                 count[c.key] += 1
             else:
                 w, lo, hi = layout[(c.df, c.n)]
-                queue.append(Task(c, t, _seed(c, t, GEN_SIZE, FIELD_M), GEN_SIZE, FIELD_M, cfg,
-                                  SEGMENTED_MAX_PACKETS_FACTOR, trial_deadline_s, w, lo, hi))
+                queue.append(Task(c, t, _seed(c, t, gen_size, FIELD_M), gen_size, FIELD_M, cfg,
+                                  max_packets_factor, trial_deadline_s, w, lo, hi,
+                                  strategy=strategy, error_scope=error_scope))
 
     print(f"run_dir: {run_dir}")
     print(f"{len(cells)} cells, {len(queue)} trials queued ({len(done)} resumed), "
@@ -310,6 +333,14 @@ def main(argv=None) -> None:
     p.add_argument("--pair-budget", type=str, default="none", help='int or "none" (full HD-2 search)')
     p.add_argument("--out-root", type=Path, default=_ROOT / "logs" / "pareto_sweep")
     p.add_argument("--resume", type=Path, default=None, help="existing run dir to continue")
+    p.add_argument("--gen-size", type=int, default=GEN_SIZE)
+    p.add_argument("--strategy", default=STRATEGY, help="uniform_hd | coefficient_first | acr_only")
+    p.add_argument("--error-scope", default="whole_packet", help="whole_packet | data_payload | data_segment")
+    p.add_argument("--repair-span", default="payload", help="payload | segment (acr_only)")
+    p.add_argument("--min-pool-size", type=int, default=None, help="AdmitConfig.min_pool_size (default 10)")
+    p.add_argument("--max-packets-factor", type=int, default=SEGMENTED_MAX_PACKETS_FACTOR)
+    p.add_argument("--acr-exact-solve", action="store_true",
+                   help="acr_only, keyless arm: ADR-0002 exact solve instead of the default bit-flip repair")
     a = p.parse_args(argv)
 
     st = dict(STAGES[a.stage])
@@ -328,7 +359,9 @@ def main(argv=None) -> None:
               trial_deadline_s=a.trial_deadline_s if a.trial_deadline_s is not None else st["trial_deadline_s"],
               workers=a.workers, max_inflight_per_cell=a.max_inflight_per_cell,
               pair_budget=None if a.pair_budget.lower() == "none" else int(a.pair_budget),
-              out_root=a.out_root, resume=a.resume)
+              out_root=a.out_root, resume=a.resume, gen_size=a.gen_size, strategy=a.strategy,
+              error_scope=a.error_scope, repair_span=a.repair_span, min_pool_size=a.min_pool_size,
+              max_packets_factor=a.max_packets_factor, acr_bitflip_only=not a.acr_exact_solve)
 
 
 if __name__ == "__main__":

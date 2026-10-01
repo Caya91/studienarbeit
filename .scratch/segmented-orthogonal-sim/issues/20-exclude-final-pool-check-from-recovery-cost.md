@@ -8,7 +8,7 @@ isolated harness; report it as its own column instead.
 keyless `check_orth_segmented` (all packet PAIRS, O(M²): ~15k ops fixed at gen6) vs keyed
 `check_mac_segmented` (each packet vs own tags, O(M): ~3.5k). The harness never uses `report.ok`
 (scoring is separate) but counts it inside the recovery window → a flat ~11.5k-op penalty on keyless.
-Profile (ARC-only (a), W=2, HD=2): at BER 1e-3 it is 98 % of keyless ops; repair-only cost is
+Profile (ACR-only (a), W=2, HD=2): at BER 1e-3 it is 98 % of keyless ops; repair-only cost is
 0.3k vs 0.2k; at 1e-2 repair-only is 15.1k vs 8.4k (≈1.8×, from the 13-B whole-segment self-check vs
 keyed's 6-B payload tag). The reported "keyed ≈3× cheaper" (ticket 18) is inflated by this.
 
@@ -33,9 +33,9 @@ keyed's 6-B payload tag). The reported "keyed ≈3× cheaper" (ticket 18) is inf
 
 **Result** (v4 re-runs, same seeds; outcomes == v3 in all 690k rows; plots `logs/isolated_recovery_plots/v4_*`):
 - Final pool check (now `final_check_ops`): keyless 14.98k fixed, keyed 2.7–3.4k.
-- **Repair-only ops: keyless = 2.0× keyed at every BER and W** (ARC a W=2: 439 vs 256 at 1e-3,
+- **Repair-only ops: keyless = 2.0× keyed at every BER and W** (ACR a W=2: 439 vs 256 at 1e-3,
   15.7k vs 8.7k at 1e-2; pooled W1–6: 5.5–6.1k vs 2.7–3.3k). Matches the per-candidate check cost
   (13-B whole-segment self-check vs 6-B payload tag). Time: keyless 14–15 ms vs keyed 10–13 ms (≈1.4×,
   Python overhead dilutes the ops ratio).
-- HD sweep (ARC a, 1e-2, W=2, uncapped) repair-only mean ops keyless/keyed: HD2 15.8k/8.7k,
+- HD sweep (ACR a, 1e-2, W=2, uncapped) repair-only mean ops keyless/keyed: HD2 15.8k/8.7k,
   HD3 54.9k/27.9k, HD4 148k/71k, HD5 320k/139k — ratio ~2–2.3 at every depth.

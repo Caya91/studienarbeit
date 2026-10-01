@@ -175,6 +175,16 @@ def mac_verify_segment(field: TableField, keys: list[bytearray], segment_slice, 
     return mac_tag_vector(field, keys[:n], payload) == recv_tags
 
 
+def mac_verify_key_subset(field: TableField, keys: list[bytearray], segment_slice, segment: MacSegment,
+                          key_idx) -> bool:
+    """Verify only the tags at positions `key_idx` (tag j = <payload, keys[j]>), stopping at
+    the first mismatch -- the S2 per-packet random key subset (witness_policy "random").
+    mac_verify_segment(W=...) covers the deterministic first-W subset."""
+    payload = segment_slice[:segment.payload_length]
+    tags = segment_slice[segment.payload_length:]
+    return all(inner_product_bytes(field, payload, keys[j]) == tags[j] for j in key_idx)
+
+
 def mac_tag_overhead_symbols(segments: list[MacSegment]) -> int:
     """Total tag symbols a MAC-tagged generation carries on the wire: the sum of
     num_keys over segments, no salt (ADR-0013 overhead accounting, ticket 11).

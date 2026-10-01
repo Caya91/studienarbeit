@@ -48,7 +48,7 @@ Recovery is tag-agnostic below the oracle: `plan_pairing`, `SegmentTrust`,
      = `crc_verify_segment(Sc_candidate)`; then split, accept first split where BOTH
      halves' CRC verify), `_search_single_by_bitflip_crc` (unpaired fallback),
      `repair_segment_crc`, `recover_uniform_hd_crc`, `recover_coefficient_first_crc`.
-   - ARC localizer for `coefficient_first`: reuse the MAC localizer logic
+   - ACR localizer for `coefficient_first`: reuse the MAC localizer logic
      (`_make_arc_localizer_mac` is tag-independent except for how trust is decided —
      swap MAC verify for CRC verify). Consider hoisting a shared localizer rather than
      a third copy.
@@ -119,7 +119,7 @@ style, matching the MAC test. Required cases:
       the goal is NOT to prove silent errors are zero (for 16 bits they can't be), it is
       to prove the harness MEASURES them and surfaces the count in `silent_decode_rate`.
       A wrong "repair" that no oracle can catch must land in that number, never be hidden.
-- [ ] **`coefficient_first` ARC narrowing engages:** the data-segment localizer returns a
+- [ ] **`coefficient_first` ACR narrowing engages:** the data-segment localizer returns a
       narrowed column set once coefficients are trusted (same assertion as the MAC test).
 - [ ] **Per-pair cache correctness:** a repeated admit round with unchanged bytes returns
       an identical result and spends no additional `correction_trials`.

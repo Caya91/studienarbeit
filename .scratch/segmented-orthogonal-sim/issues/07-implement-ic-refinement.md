@@ -77,7 +77,7 @@ is the keyless gap and the high-BER regime.
       the narrowed positions against its own MAC tag; done and tested first.
       (Stage-2 fallback in `_search_pair_mac`, `_bitflip_search_mac`; `ic_refinement` flag.)
 - [x] Orthogonal arm: same overlap detection → each half repaired by the single-packet
-      **EXACT** linear solve (`recover_packet_linear`) over the ARC-narrowed positions,
+      **EXACT** linear solve (`recover_packet_linear`) over the ACR-narrowed positions,
       gated on self+cross + mutual orthogonality. `_ic_refine_pair` in `segmented_recovery.py`.
       NOT the blind whole-segment bit-flip: that raised silent decodes (2→6 @BER=3e-3),
       violating decision 4 — the keyless oracle is too weak (~1/q) for a broad search.

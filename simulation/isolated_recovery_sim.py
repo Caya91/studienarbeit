@@ -50,7 +50,9 @@ average per-seed rates when T could differ).
   config             str   coefficient_first | arc_only_a | arc_only_b
                            | coefficient_first_info | arc_only_b_info (payload-only variants, added
                            2026-09-23; value extension only, columns unchanged -> still v1)
-  error_model        str   whole_packet | data_only | info_only (fixed by config)
+                           | acr_only_data_tags (2026-09-29: ACR-only with data payload + data
+                           salt/tag flips; value extension only)
+  error_model        str   whole_packet | data_only | info_only | data_segment (fixed by config)
   arm                str   keyless | keyed
   repair_span        str   payload | segment (ticket 16, matched across arms)
   W                  int   recovery-acceptance width
@@ -213,6 +215,9 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
     model="info_only": the whole_packet info-column flips (same RNG stream -> the SAME
     [coeff|payload] corruption as whole_packet for a given seed) but NO tag/salt flips,
     so both arms face byte-identical corruption end to end.
+    model="data_segment" (2026-09-29): data_only's payload flips (same RNG stream -> the
+    SAME payload corruption as data_only for a given seed) PLUS the DATA segments' own
+    salt/tag region per-arm (seed-matched); the coeff segment is never touched.
 
     Info-column flips are drawn from one shared RNG and applied to both arms in
     lock-step, so the [coeff|payload] corruption is identical by construction."""
@@ -228,7 +233,7 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
         descs = []
         # Information columns -- identical flips both arms.
         for sl, sd in zip(pools.kl_segments, pools.kd_segments):
-            if model == "data_only" and sl.kind != "data":
+            if model in ("data_only", "data_segment") and sl.kind != "data":
                 continue
             for col in range(sl.payload_length):
                 for bit in range(bits):
@@ -236,14 +241,19 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
                         kl[t][sl.start + col] ^= (1 << bit)
                         kd[t][sd.start + col] ^= (1 << bit)
                         descs.append((sl.name, col, bit))
-        # Redundancy region -- per-arm, seed-matched (whole-packet only).
-        if model == "whole_packet":
+        # Redundancy region -- per-arm, seed-matched (whole-packet: every segment;
+        # data_segment: data segments only).
+        if model in ("whole_packet", "data_segment"):
             for sl in pools.kl_segments:
+                if model == "data_segment" and sl.kind != "data":
+                    continue
                 for b in range(sl.payload_length, sl.total_length):
                     for bit in range(bits):
                         if kl_red_rng.random() < ber:
                             kl[t][sl.start + b] ^= (1 << bit)
             for sd in pools.kd_segments:
+                if model == "data_segment" and sd.kind != "data":
+                    continue
                 for b in range(sd.payload_length, sd.total_length):
                     for bit in range(bits):
                         if kd_red_rng.random() < ber:
@@ -373,16 +383,22 @@ CONFIGS = ("coefficient_first", "arc_only_a", "arc_only_b")
 # Payload-only variants of the two whole-packet configs: identical [coeff|payload] flips,
 # no salt/tag corruption -> the only cross-arm difference left is the oracle.
 INFO_CONFIGS = ("coefficient_first_info", "arc_only_b_info")
+# ACR-only configs for the 2026-09-29 scaling study (no coeff repair, coeffs never hit):
+# payload-only data errors (arc_only_a) vs data payload + data salt/tag errors.
+ACR_CONFIGS = ("arc_only_a", "acr_only_data_tags")
 _CONFIG_MODEL = {"coefficient_first": "whole_packet", "arc_only_a": "data_only", "arc_only_b": "whole_packet",
-                 "coefficient_first_info": "info_only", "arc_only_b_info": "info_only"}
+                 "coefficient_first_info": "info_only", "arc_only_b_info": "info_only",
+                 "acr_only_data_tags": "data_segment"}
 _CONFIG_METHOD = {"coefficient_first": "coefficient_first", "arc_only_a": "arc_only", "arc_only_b": "arc_only",
-                  "coefficient_first_info": "coefficient_first", "arc_only_b_info": "arc_only"}
+                  "coefficient_first_info": "coefficient_first", "arc_only_b_info": "arc_only",
+                  "acr_only_data_tags": "arc_only"}
 _CONFIG_LABEL = {
     "coefficient_first": "coefficient_first (whole-packet BER)",
     "arc_only_a": "ARC-only (data-only BER)",
     "arc_only_b": "ARC-only (whole-packet BER, symmetric drop)",
     "coefficient_first_info": "coefficient_first (payload-only BER, no salt/tag hits)",
     "arc_only_b_info": "ARC-only (payload-only BER, symmetric drop)",
+    "acr_only_data_tags": "ACR-only (data payload + data salt/tag BER)",
 }
 
 
@@ -629,6 +645,8 @@ def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_s
     """Every (BER, config, span, HD, budget, W) cell for ONE seed -- the unit of parallel
     work. One pool per seed; the injection is drawn from (seed, BER) only, so all
     W/span/HD/budget variants of a cell see the same corruption (paired)."""
+    from icecream import ic
+    ic.disable()  # playground/arc_pl.py debug prints would flood every worker's stderr
     field = CountingField(create_field(field_bits))
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
@@ -728,6 +746,10 @@ def main(argv=None) -> None:
                         help="sweep: comma list of configs, e.g. coefficient_first_info,arc_only_b_info")
     parser.add_argument("--data-fields", type=int, default=18,
                         help="sweep: data bytes (needs >= num_data_segments*(gen_size-1) for keyless tagging)")
+    parser.add_argument("--num-data-segments", type=int, default=3,
+                        help="sweep: data segments (N_total - 1)")
+    parser.add_argument("--bers", default=",".join(repr(b) for b in SWEEP_BERS),
+                        help="sweep: comma list of bit error rates")
     parser.add_argument("--workers", type=int, default=1, help="sweep: parallel processes (one seed each)")
     parser.add_argument("--out", default=None, help="sweep: output dir (default logs/isolated_recovery/<run>)")
     parser.add_argument("--seed", type=int, default=7)
@@ -746,6 +768,8 @@ def main(argv=None) -> None:
         # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
                       data_fields=args.data_fields, workers=args.workers, out_dir=args.out,
+                      num_data_segments=args.num_data_segments,
+                      bers=tuple(float(b) for b in args.bers.split(",")),
                       configs=tuple(c.strip() for c in args.configs.split(",")),
                       Ws=tuple(int(w) for w in args.Ws.split(",")),
                       hds=tuple(int(h) for h in args.hds.split(",")),

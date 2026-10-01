@@ -17,7 +17,7 @@ this needs.
 
 ## Build to these (ADR-0013)
 1. **Pool:** `G = gen_size` ground-truth-**clean** helper packets (fixed, never corrupted) —
-   ARC basis (both arms) + keyless acceptance witnesses. Plus `T` target packets (knob,
+   ACR basis (both arms) + keyless acceptance witnesses. Plus `T` target packets (knob,
    default `gen_size`), corrupted per config, scored on.
 2. **Injected trust:** hand the recovery entries the helper set directly; do NOT run
    `classify_segment_trust(_mac)`. Broken/target set is ground truth (the harness knows what
@@ -30,8 +30,8 @@ this needs.
    face exactly the same corruption end to end.
 4. **Configs (each × both arms):**
    - coefficient_first — whole-packet BER (uses coeff repair).
-   - ARC-only (a) — data-only BER (ticket 12).
-   - ARC-only (b) — whole-packet BER, symmetric drop (ticket 12).
+   - ACR-only (a) — data-only BER (ticket 12).
+   - ACR-only (b) — whole-packet BER, symmetric drop (ticket 12).
 5. **Metrics over T:** recovery rate, silent-decode rate, recovery field-ops (CountingField
    phase split), plus a **per-target head-to-head** record (target i: keyless {recovered /
    silent / failed} vs keyed {…}) → win/loss/tie.

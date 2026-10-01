@@ -46,15 +46,16 @@ from binary_ext_fields.generate_symbols import (
     generate_symbols_until_nonzero,
 )
 from binary_ext_fields.pollution import pollute_intelligent
+from binary_ext_fields.witness_policy import key_rank_for, witness_rank_for
 from binary_ext_fields.segmented_tagging import layout_segments, tag_generation_segmented
 from binary_ext_fields.segmented_recovery import (
-    classify_segment_trust, recover_coefficient_first, recover_uniform_hd,
+    classify_segment_trust, recover_acr_only, recover_coefficient_first, recover_uniform_hd,
 )
 from binary_ext_fields.segmented_mac_tagging import (
     layout_mac_segments, generate_keyset, tag_generation_mac,
 )
 from binary_ext_fields.segmented_mac_recovery import (
-    classify_segment_trust_mac, recover_coefficient_first_mac, recover_uniform_hd_mac,
+    classify_segment_trust_mac, recover_acr_only_mac, recover_coefficient_first_mac, recover_uniform_hd_mac,
 )
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
 from simulation.crc_recovery import CrcInstrument, recover as crc_recover
@@ -90,6 +91,23 @@ class AdmitConfig:
     # scale WITH hamming_distance -- a higher HD whose corrections sit past this budget
     # is pure wasted search (measured: HD3 at 100k = same recovery as HD2, 4.4x wall).
     pair_budget: int = SEGMENTED_PAIR_BUDGET
+    # Segmented "acr_only" strategy only: which columns the ACR-narrowed bit-flip search may
+    # touch -- "payload" (ACR columns only) or "segment" (+ the data segment's salt/tag span).
+    repair_span: str = "payload"
+    # Segmented "acr_only" strategy, KEYLESS arm: True (default, 2026-09-30) = bit-flip search
+    # over the ACR columns, same method as the keyed arm; False = the ADR-0002 exact linear
+    # solve (+ whole-segment bit-flip fallback) as before. The keyed arm always bit-flips.
+    acr_bitflip_only: bool = True
+    # S2 security dial (2026-09-29, binary_ext_fields/witness_policy.py): WHICH verify_count
+    # witnesses (keyless) / mac_verify_count keys (keyed) a packet is checked against.
+    # "first" = deterministic (today's behaviour, predictable by an attacker); "random" = a
+    # per-packet subset from the receiver secret `witness_secret` (never seen by the attacker).
+    witness_policy: str = "first"
+    witness_secret: int = 0
+    # Keyed arm only: MAC tags verified per segment at admission (None = all g, the default).
+    # The repair search keeps verifying all g tags (stricter), so this caps only the
+    # admission check of unrepaired packets.
+    mac_verify_count: int | None = None
 
 
 # ── Native op-count instruments ───────────────────────────────────────────────
@@ -384,6 +402,29 @@ class SegmentedInstrument:
     pair_cache: dict = field(default_factory=dict)
 
 
+# Segmented strategies: uniform_hd / coefficient_first (ADR-0012) and acr_only (2026-09-29:
+# no coeff repair, data segments repaired only where ACR localizes, else wait for packets).
+SEGMENTED_STRATEGY_NAMES = ("uniform_hd", "coefficient_first", "acr_only")
+
+# Channel-error scopes for run_recovery_trial (2026-09-29). "whole_packet" = every wire byte
+# (the original model); the two restricted scopes never touch the coeff segment:
+#   data_payload -- data-segment payload bytes only
+#   data_segment -- data-segment payload + that segment's salt/tag bytes
+ERROR_SCOPES = ("whole_packet", "data_payload", "data_segment")
+
+
+def _segment_error_positions(segments, scope: str) -> list[int]:
+    """Wire byte indices a channel error may hit under `scope` (restricted scopes only)."""
+    assert scope in ("data_payload", "data_segment"), f"no position list for scope {scope!r}"
+    out = []
+    for seg in segments:
+        if seg.kind != "data":
+            continue
+        end = seg.payload_length if scope == "data_payload" else seg.total_length
+        out.extend(range(seg.start, seg.start + end))
+    return out
+
+
 def _strip_to_code(packet: bytearray, segments) -> bytearray:
     """[coeffs | data...] with every segment's salt+tag bytes dropped -- the shape
     _try_decode's RLNC basis expects, reassembled in the original column order
@@ -406,7 +447,7 @@ class SegmentedScheme(IntegrityScheme):
     _MAX_TAG_ATTEMPTS = 10  # make_source retries on salt give-up; see docstring below
 
     def __init__(self, num_data_segments: int, data_fields: int, strategy: str, name: str):
-        assert strategy in ("uniform_hd", "coefficient_first")
+        assert strategy in SEGMENTED_STRATEGY_NAMES
         self.num_data_segments = num_data_segments
         self.data_fields = data_fields
         self.strategy = strategy
@@ -457,6 +498,7 @@ class SegmentedScheme(IntegrityScheme):
 
         segments = layout_segments(gen_size, self.data_fields, self.num_data_segments)
         field = instrument.field
+        wrank = witness_rank_for(cfg.witness_policy, cfg.witness_secret)
 
         # Cheap pre-check (self+cross orthogonality only, no combinatorial search):
         # packets already good in every segment, no repair needed. If that alone
@@ -465,19 +507,27 @@ class SegmentedScheme(IntegrityScheme):
         already_good = set(range(len(wire_pool)))
         for segment in segments:
             already_good &= set(classify_segment_trust(field, wire_pool, segment,
-                                                       verify_count=cfg.verify_count).trusted)
+                                                       verify_count=cfg.verify_count, witness_rank=wrank).trusted)
         if len(already_good) >= gen_size:
             return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
 
         if self.strategy == "uniform_hd":
             report = recover_uniform_hd(field, wire_pool, segments, max_combined_hd=cfg.hamming_distance,
                                         candidates_budget=cfg.pair_budget,
-                                        pair_cache=instrument.pair_cache, verify_count=cfg.verify_count)
+                                        pair_cache=instrument.pair_cache, verify_count=cfg.verify_count,
+                                        witness_rank=wrank)
+        elif self.strategy == "acr_only":
+            report = recover_acr_only(field, wire_pool, segments, gen_size,
+                                      max_combined_hd=cfg.hamming_distance, candidates_budget=cfg.pair_budget,
+                                      pair_cache=instrument.pair_cache, verify_count=cfg.verify_count,
+                                      repair_span=cfg.repair_span, witness_rank=wrank,
+                                      bitflip_only=cfg.acr_bitflip_only)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,
                                                candidates_budget=cfg.pair_budget,
-                                               pair_cache=instrument.pair_cache, verify_count=cfg.verify_count)
+                                               pair_cache=instrument.pair_cache, verify_count=cfg.verify_count,
+                                               witness_rank=wrank)
 
         for outcome in report.per_segment:
             instrument.pairs_recovered += outcome.pairs_recovered
@@ -490,12 +540,16 @@ class SegmentedScheme(IntegrityScheme):
         # segments, not union, since one broken segment still corrupts the packet.
         good = set(range(len(report.packets)))
         for segment in segments:
-            trust = classify_segment_trust(field, report.packets, segment, verify_count=cfg.verify_count)
+            trust = classify_segment_trust(field, report.packets, segment, verify_count=cfg.verify_count,
+                                           witness_rank=wrank)
             if len(trust.trusted) < cfg.min_trust_count:
                 return None  # not enough trust yet in this segment -- keep waiting
             good &= set(trust.trusted)
 
         return [_strip_to_code(report.packets[i], segments) for i in sorted(good)]
+
+    def error_positions(self, gen_size, scope: str) -> list[int]:
+        return _segment_error_positions(layout_segments(gen_size, self.data_fields, self.num_data_segments), scope)
 
     def tag_overhead_bits(self, gen_size, m) -> int:
         n = 1 + self.num_data_segments
@@ -564,7 +618,7 @@ class SegmentedMacScheme(IntegrityScheme):
     unlike the orthogonal self-tag which the receiver checks with no key)."""
 
     def __init__(self, num_data_segments: int, data_fields: int, strategy: str, name: str):
-        assert strategy in ("uniform_hd", "coefficient_first")
+        assert strategy in SEGMENTED_STRATEGY_NAMES
         self.num_data_segments = num_data_segments
         self.data_fields = data_fields
         self.strategy = strategy
@@ -607,12 +661,15 @@ class SegmentedMacScheme(IntegrityScheme):
         segments = layout_mac_segments(gen_size, self.data_fields, self.num_data_segments, num_keys)
         field = instrument.field
         keyset = instrument.keyset
+        krank = key_rank_for(cfg.witness_policy, cfg.witness_secret)
+        W = cfg.mac_verify_count
 
         # Cheap pre-check: packets already MAC-good in every segment need no repair.
         # If that alone reaches gen_size, skip the expensive combined search entirely.
         already_good = set(range(len(wire_pool)))
         for s, segment in enumerate(segments):
-            already_good &= set(classify_segment_trust_mac(field, keyset[s], wire_pool, segment).trusted)
+            already_good &= set(classify_segment_trust_mac(field, keyset[s], wire_pool, segment,
+                                                           verify_count=W, key_rank=krank).trusted)
         if len(already_good) >= gen_size:
             return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
 
@@ -621,6 +678,14 @@ class SegmentedMacScheme(IntegrityScheme):
                                             max_combined_hd=cfg.hamming_distance,
                                             candidates_budget=cfg.pair_budget,
                                             pair_cache=instrument.pair_cache)
+        elif self.strategy == "acr_only":
+            # early_exit (ticket 18): keyed verify stops at the first bad tag, like the keyless
+            # self-check short-circuit -- same outcomes, fair op counts.
+            report = recover_acr_only_mac(field, keyset, wire_pool, segments, gen_size,
+                                          max_combined_hd=cfg.hamming_distance,
+                                          candidates_budget=cfg.pair_budget,
+                                          pair_cache=instrument.pair_cache, early_exit=True,
+                                          repair_span=cfg.repair_span)
         else:
             report = recover_coefficient_first_mac(field, keyset, wire_pool, segments, gen_size,
                                                    max_combined_hd=cfg.hamming_distance,
@@ -637,9 +702,14 @@ class SegmentedMacScheme(IntegrityScheme):
         # (intersect, not union). No min_trust warm-up gate: a MAC is self-sufficient.
         good = set(range(len(report.packets)))
         for s, segment in enumerate(segments):
-            good &= set(classify_segment_trust_mac(field, keyset[s], report.packets, segment).trusted)
+            good &= set(classify_segment_trust_mac(field, keyset[s], report.packets, segment,
+                                                   verify_count=W, key_rank=krank).trusted)
 
         return [_strip_to_code(report.packets[i], segments) for i in sorted(good)]
+
+    def error_positions(self, gen_size, scope: str) -> list[int]:
+        segments = layout_mac_segments(gen_size, self.data_fields, self.num_data_segments, self._num_keys(gen_size))
+        return _segment_error_positions(segments, scope)
 
     def tag_overhead_bits(self, gen_size, m) -> int:
         n = 1 + self.num_data_segments

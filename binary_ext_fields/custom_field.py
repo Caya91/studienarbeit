@@ -35,6 +35,15 @@ class TableField:
     def mul(self, a: int, b: int) -> int:
         return self._mul[a][b]
 
+    def inner_product(self, x, y) -> int:
+        """<x, y> = sum x[i]*y[i]: the same mul-then-add per element as the generic loop in
+        operations.inner_product_bytes, via direct table lookups (fast path)."""
+        mul, add = self._mul, self._add
+        acc = 0
+        for a, b in zip(x, y):
+            acc = add[acc][mul[a][b]]
+        return acc
+
     def vector_multiply_into(self, vec: bytearray | list[int], scalar: int) -> None:
         """
         CAREFUL - MUTATES THE VECTOR : vec
@@ -142,6 +151,19 @@ class CountingField(TableField):
             p = self._phase_stack[-1]
             self.phase_add[p] = self.phase_add.get(p, 0) + 1
         return super().add(a, b)
+
+    def inner_product(self, x, y) -> int:
+        """Fast path with the generic loop's exact accounting: len(x) muls + len(x) adds,
+        charged to the running totals and the active phase (nothing charged for len 0)."""
+        n = len(x)
+        if n:
+            self.mul_count += n
+            self.add_count += n
+            if self._phase_stack:
+                p = self._phase_stack[-1]
+                self.phase_mul[p] = self.phase_mul.get(p, 0) + n
+                self.phase_add[p] = self.phase_add.get(p, 0) + n
+        return TableField.inner_product(self, x, y)
 
     @contextmanager
     def phase(self, name: str):
