@@ -88,6 +88,24 @@ def test_keyed_waits_then_repairs():
     print("  keyed:   unlocalizable -> untouched (no blind search); +1 packet -> repaired")
 
 
+def test_repair_method_switch():
+    """Default bit-flip (HD 2) cannot undo a 3-bit error in ONE byte; the switchable ADR-0002 exact
+    solve (bitflip_only=False) solves that byte value directly -- same ACR column, other method."""
+    pool, segs = _keyless(7, extra=2)
+    data0 = next(s for s in segs if s.kind == "data")
+    clean = [bytearray(p) for p in pool]
+    broken = [bytearray(p) for p in pool]
+    for bit in (0, 3, 6):
+        _flip(broken[GEN_SIZE], data0, 5, bit)
+    flip = recover_acr_only(CountingField(FIELD), broken, segs, GEN_SIZE, max_combined_hd=2)
+    exact = recover_acr_only(CountingField(FIELD), broken, segs, GEN_SIZE, max_combined_hd=2, bitflip_only=False)
+    assert flip.packets[GEN_SIZE] == broken[GEN_SIZE], "bit-flip HD 2 must fail on a 3-bit byte error"
+    assert exact.packets[GEN_SIZE] == clean[GEN_SIZE], "exact solve must recover the byte"
+    from simulation.integrity_schemes import AdmitConfig
+    assert AdmitConfig().acr_bitflip_only is True, "bit-flip is the default repair"
+    print("  repair switch: default bit-flip fails a 3-bit byte error, exact solve (switch) recovers it")
+
+
 def test_coeff_segment_never_repaired():
     pool, segs = _keyless(5, extra=3)
     coeff = next(s for s in segs if s.kind == "coeff")
@@ -138,6 +156,7 @@ if __name__ == "__main__":
     ic.disable()
     test_keyless_waits_then_repairs()
     test_keyed_waits_then_repairs()
+    test_repair_method_switch()
     test_coeff_segment_never_repaired()
     test_n2_end_to_end_never_repairs()
     test_error_scopes()

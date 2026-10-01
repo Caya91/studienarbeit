@@ -94,6 +94,10 @@ class AdmitConfig:
     # Segmented "acr_only" strategy only: which columns the ACR-narrowed bit-flip search may
     # touch -- "payload" (ACR columns only) or "segment" (+ the data segment's salt/tag span).
     repair_span: str = "payload"
+    # Segmented "acr_only" strategy, KEYLESS arm: True (default, 2026-09-30) = bit-flip search
+    # over the ACR columns, same method as the keyed arm; False = the ADR-0002 exact linear
+    # solve (+ whole-segment bit-flip fallback) as before. The keyed arm always bit-flips.
+    acr_bitflip_only: bool = True
     # S2 security dial (2026-09-29, binary_ext_fields/witness_policy.py): WHICH verify_count
     # witnesses (keyless) / mac_verify_count keys (keyed) a packet is checked against.
     # "first" = deterministic (today's behaviour, predictable by an attacker); "random" = a
@@ -516,7 +520,8 @@ class SegmentedScheme(IntegrityScheme):
             report = recover_acr_only(field, wire_pool, segments, gen_size,
                                       max_combined_hd=cfg.hamming_distance, candidates_budget=cfg.pair_budget,
                                       pair_cache=instrument.pair_cache, verify_count=cfg.verify_count,
-                                      repair_span=cfg.repair_span, witness_rank=wrank)
+                                      repair_span=cfg.repair_span, witness_rank=wrank,
+                                      bitflip_only=cfg.acr_bitflip_only)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,

@@ -776,7 +776,8 @@ def recover_acr_only(field: TableField, packets: list[bytearray], segments: list
                      W: int | None = None,
                      repair_span: str = "payload",
                      final_check: bool = True,
-                     witness_rank=None) -> SegmentedRecoveryReport:
+                     witness_rank=None,
+                     bitflip_only: bool = True) -> SegmentedRecoveryReport:
     """Production ACR-only strategy (2026-09-29; ACR = algebraic consistency check, the
     step the code calls "ARC"): the end-to-end counterpart of the harness's
     recover_arc_only, with SNIFFED trust instead of an injected helper basis.
@@ -788,10 +789,14 @@ def recover_acr_only(field: TableField, packets: list[bytearray], segments: list
       segment. A broken packet it cannot localize yet is skipped (drop_unlocalized) --
       left untouched IN THE POOL, not discarded -- so the receiver simply waits for more
       packets and retries on a later admit (ADR-0003's "wait for enough trusted packets").
-      There is no blind whole-segment search anywhere.
-    - The search itself is the bit-flip search over the ACR columns (bitflip_only, the
-      same method as the keyed arm and the isolated harness), plus the salt/tag span
-      when repair_span="segment".
+    - Repair method (bitflip_only, user decision 2026-09-30: bit-flip is the default):
+        True  -- bit-flip search over the ACR columns only, the same method as the keyed arm
+                 and the isolated harness (+ the salt/tag span when repair_span="segment").
+                 No blind whole-segment search anywhere.
+        False -- the pre-2026-09-29 keyless path of repair_segment: ADR-0002 exact linear
+                 solve over the ACR columns when verifiable (<= gen_size-2 columns), else /
+                 then the bounded bit-flip over the WHOLE segment. Kept switchable for
+                 experiments (AdmitConfig.acr_bitflip_only=False).
 
     Trust per data segment is classified once and handed to repair_segment
     (injected_trust), so detection is not paid twice for the same pool state."""
@@ -812,7 +817,7 @@ def recover_acr_only(field: TableField, packets: list[bytearray], segments: list
                            max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
                            pair_cache=pair_cache, verify_count=verify_count,
                            ic_refinement=ic_refinement, W=W, drop_unlocalized=True,
-                           injected_trust=data_trust, bitflip_only=True)
+                           injected_trust=data_trust, bitflip_only=bitflip_only)
         )
 
     ok = None

@@ -79,10 +79,11 @@ def load_isolated(root=DEFAULT_ROOT, sub="iso_w", min_trials=DEFAULT_MIN_TRIALS)
     return s
 
 
-def load_production(root=DEFAULT_ROOT, min_trials=DEFAULT_MIN_TRIALS) -> pd.DataFrame:
+def load_production(root=DEFAULT_ROOT, min_trials=DEFAULT_MIN_TRIALS, bitflip_only=1) -> pd.DataFrame:
+    """acr_only cells only; bitflip_only=1 (default repair) / 0 (--acr-exact-solve runs), never mixed."""
     from scripts.pareto_from_csv import load_trials, summarize
     s = summarize(load_trials([str(Path(root) / "prod" / "*")]), min_trials)
-    s = s[s["strategy"] == "acr_only"].copy()
+    s = s[(s["strategy"] == "acr_only") & (s["acr_bitflip_only"].astype(int) == bitflip_only)].copy()
     s["N"] = s["n_segments"].astype(int)
     s["L"] = s["data_fields"] // (s["N"] - 1)
     s["decode_rate"] = s["correct_rate"] + s["silent_rate"]

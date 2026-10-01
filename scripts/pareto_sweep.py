@@ -38,6 +38,8 @@ setup used for the size/BER study:
   --gen-size 6 --strategy acr_only --error-scope data_payload|data_segment
   --repair-span payload|segment --min-pool-size 6 --pair-budget 20000 --configs "df:N,..."
 (ACR = algebraic consistency check; code calls it "ARC"). Rows carry error_scope + repair_span.
+acr_only repairs by bit-flip over the ACR columns (default); --acr-exact-solve switches the keyless
+arm back to the ADR-0002 exact solve + whole-segment fallback (schema v3 column acr_bitflip_only).
 
 Run (PowerShell, from the worktree; memory how_to_run_sims):
   $env:LOG_FOLDER="./logs"; $env:PYTHONPATH="."
@@ -69,7 +71,7 @@ from binary_ext_fields.custom_field import create_field
 from simulation.integrity_schemes import AdmitConfig, SegmentedMacScheme, SegmentedScheme
 from simulation.scheme_comparison_sim import SEGMENTED_MAX_PACKETS_FACTOR, run_recovery_trial
 
-SCHEMA_VERSION = 2   # v2 (2026-09-29): + error_scope, repair_span
+SCHEMA_VERSION = 3   # v2 (2026-09-29): + error_scope, repair_span; v3 (2026-09-30): + acr_bitflip_only
 GEN_SIZE = 10
 FIELD_M = 8
 STRATEGY = "coefficient_first"
@@ -87,7 +89,7 @@ RAW_FIELDS = [
     "schema_version", "arm", "scheme", "strategy", "gen_size", "field_m", "data_fields",
     "n_segments", "seg_len_min", "seg_len_max", "wire_symbols", "hamming_distance",
     "pair_budget", "verify_count", "min_pool_size", "max_packets_factor", "trial_deadline_s",
-    "error_scope", "repair_span",
+    "error_scope", "repair_span", "acr_bitflip_only",
     "bit_error_rate", "trial_idx", "seed",
     "status", "decoded", "correct", "silent_decode", "packets_to_decode", "overhead",
     "scheme_ops", "decode_ops", "detection_ops", "recovery_ops",
@@ -169,6 +171,7 @@ def run_task(task: Task) -> dict:
         "verify_count": cfg.verify_count, "min_pool_size": cfg.min_pool_size,
         "max_packets_factor": task.max_packets_factor, "trial_deadline_s": task.trial_deadline_s,
         "error_scope": task.error_scope, "repair_span": cfg.repair_span,
+        "acr_bitflip_only": int(cfg.acr_bitflip_only),
         "bit_error_rate": cell.ber, "trial_idx": task.trial_idx, "seed": task.seed,
         **{k: r[k] for k in RAW_FIELDS if k in r},
         "info_bits_delivered": info_bits, "wire_bits_sent": wire_bits,
@@ -206,9 +209,11 @@ def run_sweep(arm, dfs, n_by_df, bers, trials, cell_budget_s, trial_deadline_s, 
               max_inflight_per_cell, pair_budget, out_root: Path, resume: Path | None,
               gen_size: int = GEN_SIZE, strategy: str = STRATEGY, error_scope: str = "whole_packet",
               repair_span: str = "payload", min_pool_size: int | None = None,
+              acr_bitflip_only: bool = True,
               max_packets_factor: int = SEGMENTED_MAX_PACKETS_FACTOR) -> Path:
     field = create_field(FIELD_M)
-    cfg = dict(hamming_distance=HAMMING_DISTANCE, pair_budget=pair_budget, repair_span=repair_span)
+    cfg = dict(hamming_distance=HAMMING_DISTANCE, pair_budget=pair_budget, repair_span=repair_span,
+               acr_bitflip_only=acr_bitflip_only)
     if min_pool_size is not None:
         cfg["min_pool_size"] = min_pool_size
     cfg_obj = AdmitConfig(**cfg)
@@ -334,6 +339,8 @@ def main(argv=None) -> None:
     p.add_argument("--repair-span", default="payload", help="payload | segment (acr_only)")
     p.add_argument("--min-pool-size", type=int, default=None, help="AdmitConfig.min_pool_size (default 10)")
     p.add_argument("--max-packets-factor", type=int, default=SEGMENTED_MAX_PACKETS_FACTOR)
+    p.add_argument("--acr-exact-solve", action="store_true",
+                   help="acr_only, keyless arm: ADR-0002 exact solve instead of the default bit-flip repair")
     a = p.parse_args(argv)
 
     st = dict(STAGES[a.stage])
@@ -354,7 +361,7 @@ def main(argv=None) -> None:
               pair_budget=None if a.pair_budget.lower() == "none" else int(a.pair_budget),
               out_root=a.out_root, resume=a.resume, gen_size=a.gen_size, strategy=a.strategy,
               error_scope=a.error_scope, repair_span=a.repair_span, min_pool_size=a.min_pool_size,
-              max_packets_factor=a.max_packets_factor)
+              max_packets_factor=a.max_packets_factor, acr_bitflip_only=not a.acr_exact_solve)
 
 
 if __name__ == "__main__":
