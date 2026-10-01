@@ -98,6 +98,14 @@ Run: `logs/verify_width_attack/g4_m24_t4000_hd0/`, plots `logs/verify_width_atta
   single check is just k/g (keyed 25.4 / 49.3 / 75.3 % for k = 1/2/3) and r/(g-1) (keyless 33.8 / 65.4 %),
   while the deterministic check is 100 % from k >= W / r >= vc. Checking everything (width all) = q^-u.
 
+### F6b — S2 rerun with remembered rejections (2026-10-02)
+New knob `AdmitConfig.witness_sticky` (default off; on in the S2 driver only): once the receiver's
+cross-check rejects a packet it stays rejected -> no re-evaluation second chance. Rerun GF(2^2/4),
+4000 trials/cell (`logs/verify_width_attack/sticky_g4_m24_t4000_hd0/`): keyless random now fits the PLAIN
+formula r/(g-1) + (1-r/(g-1))/q (r=0 vc=1 GF(4): 25.0 % vs 30.7 % before); all 64 random/all cells within
+max |z| 2.7. Plots (random policy only, theory black dashed): `logs/verify_width_attack/plots_sticky/`.
+GF(2^8) sticky rerun pending; bigger g (6/10) after user review.
+
 ## R2 / R3 — size x segmentation x BER (DONE 2026-09-30, `scripts/scaling_acr_runs.sh`, 7 h 51 min)
 Sizes df {100, 300, 1000}, N for matched L: 100: N 2,3,5,11 | 300: N 2,4,7,13,31 | 1000: N 2,5,11,21,41.
 BER 1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2 at every size. g=6, GF(2^8), ACR-only, HD 2, budget 20000.

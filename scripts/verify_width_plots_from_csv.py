@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from simulation.verify_width_attack_sim import summarize, theory_admit_reeval
+from simulation.verify_width_attack_sim import summarize, theory_admit
 
 ARM = {"keyless": {"color": "#588157", "marker": "o", "x": "r = honest packets observed",
                    "title": "keyless: vc witnesses"},
@@ -67,22 +67,31 @@ def _wlabel(w):
     return "all" if w < 0 else str(w)
 
 
+def _theory(ax, ks, ys, label=None):
+    """Theory: black dashed line + hollow black markers, drawn UNDER the measured points."""
+    ax.plot(ks, ys, color=INK, linestyle=(0, (4, 3)), linewidth=1.1, marker="o", markersize=7,
+            markerfacecolor="none", markeredgecolor=INK, markeredgewidth=1, zorder=4, label=label)
+
+
+def _measured(ax, c, color, marker, label=None):
+    x, y = c["knowledge"].to_numpy(), c["admit_rate"].to_numpy()
+    lo, hi = c["admit_lo"].to_numpy(), c["admit_hi"].to_numpy()
+    ax.errorbar(x, y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)], fmt="none", ecolor=color,
+                elinewidth=1.2, capsize=3, zorder=2)
+    ax.plot(x, y, color=color, linewidth=2, marker=marker, markersize=6, zorder=3, label=label)
+
+
 def _draw(ax, sub, arm, m, g, widths):
     ts = np.linspace(0.45, 1.0, len(widths))
-    for w, t in zip(widths, ts):
+    for i, (w, t) in enumerate(zip(widths, ts)):
         c = sub[sub["width"] == w].sort_values("knowledge")
         if c.empty:
             continue
-        color = _shade(ARM[arm]["color"], t)
         ks = np.arange(0, c["knowledge"].max() + 1)
-        pol = c["policy"].iloc[0]
-        th = [theory_admit_reeval(arm, pol, int(k), None if w < 0 else int(w), g, 2 ** m) for k in ks]
-        ax.plot(ks, th, color=THEORY, linewidth=1, zorder=1)
-        x, y = c["knowledge"].to_numpy(), c["admit_rate"].to_numpy()
-        lo, hi = c["admit_lo"].to_numpy(), c["admit_hi"].to_numpy()
-        ax.errorbar(x, y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)], fmt="none", ecolor=color, elinewidth=1, capsize=2, zorder=2)
-        ax.plot(x, y, color=color, linewidth=1.6, marker=ARM[arm]["marker"], markersize=6, zorder=3,
-                label=f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)}")
+        _theory(ax, ks, [theory_admit(arm, "random", int(k), None if w < 0 else int(w), g, 2 ** m) for k in ks],
+                "theory" if i == 0 else None)
+        _measured(ax, c, _shade(ARM[arm]["color"], t), ARM[arm]["marker"],
+                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)} (measured)")
 
 
 def _save(fig, out_dir, name, caption):
@@ -96,62 +105,51 @@ def _save(fig, out_dir, name, caption):
     return out_dir / f"{name}.png"
 
 
-def plot_policy_grid(summary, m, out_dir):
-    s = summary[summary["field_bits"] == m]
+def plot_random_grid(summary, m, out_dir):
+    """Receiver-secret random subset only: keyless (top) and keyed (bottom), a line per width."""
+    s = summary[(summary["field_bits"] == m) & ((summary["policy"] == "random") | (summary["width"] < 0))]
     g = int(s["gen_size"].iloc[0])
-    fig, axes = plt.subplots(2, 2, figsize=(9.5, 6.4), sharey=True)
-    for i, arm in enumerate(ARM):
-        for j, pol in enumerate(POLICY):
-            ax = axes[i][j]
-            sub = s[(s["arm"] == arm) & ((s["policy"] == pol) | (s["width"] < 0))].copy()
-            sub.loc[sub["width"] < 0, "policy"] = pol   # width=all is policy-free: draw it in both columns
-            widths = sorted(sub["width"].unique(), key=lambda w: 99 if w < 0 else w)
-            _draw(ax, sub, arm, m, g, widths)
-            _style(ax)
-            ax.set_xticks(sorted(sub["knowledge"].unique()))
-            if i == 0:
-                ax.set_title(POLICY[pol], color=INK, fontsize=10)
-            if j == 0:
-                ax.set_ylabel(f"{ARM[arm]['title']}\nforgery admitted", color=INK, fontsize=9)
-                ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
-            ax.set_xlabel(ARM[arm]["x"], color=INK, fontsize=9)
-    return _save(fig, out_dir, f"s2_admit_vs_knowledge_m{m}",
-                 f"S2: one splice-free forged packet (early strike, repair off), GF(2^{m}), g={g}, N=2, "
-                 f"{int(s['trials'].iloc[0])} paired trials/cell. Gray = theory (keyless random incl. the "
-                 "re-evaluation term). Lighter = narrower check (vc = keyless witnesses, W = keyed tags).")
+    fig, axes = plt.subplots(2, 1, figsize=(5.6, 7.0), sharey=True)
+    for ax, arm in zip(axes, ARM):
+        sub = s[s["arm"] == arm]
+        widths = sorted(sub["width"].unique(), key=lambda w: 99 if w < 0 else w)
+        _draw(ax, sub, arm, m, g, widths)
+        _style(ax)
+        ax.set_xticks(sorted(sub["knowledge"].unique()))
+        ax.set_title(f"{ARM[arm]['title']}, GF(2^{m}), g={g}", color=INK, fontsize=10)
+        ax.set_ylabel("forgery admitted", color=INK, fontsize=9)
+        ax.set_xlabel(ARM[arm]["x"], color=INK, fontsize=9)
+        ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
+    return _save(fig, out_dir, f"s2_random_vs_knowledge_m{m}",
+                 f"S2: one forged packet (early strike, repair off), receiver checks a secret random subset of "
+                 f"width vc / W per packet and remembers rejections; {int(s['trials'].iloc[0])} trials/cell, 95% CI. "
+                 "Dashed black + hollow = theory.")
 
 
 def plot_w1(summary, out_dir):
-    s = summary[summary["width"] == 1]
+    """Width 1, receiver-secret random choice only: rows = field, cols = arm."""
+    s = summary[(summary["width"] == 1) & (summary["policy"] == "random")]
     ms = sorted(s["field_bits"].unique())
     fig, axes = plt.subplots(len(ms), 2, figsize=(9.5, 3.2 * len(ms)), sharey=True, squeeze=False)
     for i, m in enumerate(ms):
         for j, arm in enumerate(ARM):
             ax = axes[i][j]
-            for pol, t in (("first", 0.5), ("random", 1.0)):
-                c = s[(s["field_bits"] == m) & (s["arm"] == arm) & (s["policy"] == pol)].sort_values("knowledge")
-                g = int(c["gen_size"].iloc[0])
-                ks = np.arange(0, c["knowledge"].max() + 1)
-                ax.plot(ks, [theory_admit_reeval(arm, pol, int(k), 1, g, 2 ** m) for k in ks], color=THEORY,
-                        linewidth=1, zorder=1)
-                x, y = c["knowledge"].to_numpy(), c["admit_rate"].to_numpy()
-                color = _shade(ARM[arm]["color"], t)
-                ax.errorbar(x, y, yerr=[np.clip(y - c["admit_lo"].to_numpy(), 0, None), np.clip(c["admit_hi"].to_numpy() - y, 0, None)], fmt="none",
-                            ecolor=color, elinewidth=1, capsize=2)
-                ax.plot(x, y, color=color, marker=ARM[arm]["marker"], markersize=6, linewidth=1.6,
-                        linestyle="--" if pol == "first" else "-", zorder=3)
-                ax.annotate(pol, (x[1], y[1]), textcoords="offset points", xytext=(6, -10 if pol == "random" else 4),
-                            fontsize=7, color=INK_MUTED)
+            c = s[(s["field_bits"] == m) & (s["arm"] == arm)].sort_values("knowledge")
+            g = int(c["gen_size"].iloc[0])
+            ks = np.arange(0, c["knowledge"].max() + 1)
+            _theory(ax, ks, [theory_admit(arm, "random", int(k), 1, g, 2 ** m) for k in ks], "theory")
+            _measured(ax, c, ARM[arm]["color"], ARM[arm]["marker"], "measured")
             _style(ax)
             ax.set_xticks(sorted(c["knowledge"].unique()))
-            ax.set_title(f"{ARM[arm]['title'].split(':')[0]}, GF(2^{m}), width 1", color=INK, fontsize=10)
+            ax.set_title(f"{ARM[arm]['title'].split(':')[0]}, GF(2^{m}), 1 check", color=INK, fontsize=10)
             ax.set_xlabel(ARM[arm]["x"], color=INK, fontsize=9)
             if j == 0:
                 ax.set_ylabel("forgery admitted", color=INK, fontsize=9)
-    return _save(fig, out_dir, "s2_w1_first_vs_random",
-                 "S2, single check per packet: deterministic choice (dashed) = 100% as soon as the attacker knows "
-                 "the checked witness/key; receiver-secret choice (solid) = k/g + (1-k/g)/q (keyed), "
-                 "r/(g-1) + (1-r/(g-1))/q + re-evaluation term (keyless). Gray = theory.")
+            if i == 0:
+                ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
+    return _save(fig, out_dir, "s2_w1_random",
+                 "S2, one secret random check per packet, rejections remembered. Theory: keyed k/g + (1-k/g)/q, "
+                 "keyless r/(g-1) + (1-r/(g-1))/q. Filled = measured (95% CI), dashed black + hollow = theory.")
 
 
 def main(argv=None):
@@ -161,7 +159,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     s = load(a.runs)
     for m in sorted(s["field_bits"].unique()):
-        print("wrote", plot_policy_grid(s, m, a.out))
+        print("wrote", plot_random_grid(s, m, a.out))
     print("wrote", plot_w1(s, a.out))
 
 

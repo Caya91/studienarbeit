@@ -104,6 +104,11 @@ class AdmitConfig:
     # per-packet subset from the receiver secret `witness_secret` (never seen by the attacker).
     witness_policy: str = "first"
     witness_secret: int = 0
+    # Keyless, S2 security check only (default off): the receiver REMEMBERS a cross-check
+    # rejection -- a self-passing packet that once failed its witnesses is never admitted later.
+    # Removes the re-evaluation "second chance" a stateless receiver gives a forger under the
+    # random policy (the new arrival can enter its witness set). 2026-10-02.
+    witness_sticky: bool = False
     # Keyed arm only: MAC tags verified per segment at admission (None = all g, the default).
     # The repair search keeps verifying all g tags (stricter), so this caps only the
     # admission check of unrepaired packets.
@@ -395,6 +400,7 @@ class SegmentedInstrument:
     its last search is not searched again -- ticket 01, ADR-0012's deferred
     "per-pair persistence"."""
     field: CountingField
+    cross_rejected: set = field(default_factory=set)  # AdmitConfig.witness_sticky memory (pool indices)
     pairs_recovered: int = 0
     pairs_failed: int = 0
     unpaired_recovered: int = 0
@@ -504,10 +510,17 @@ class SegmentedScheme(IntegrityScheme):
         # packets already good in every segment, no repair needed. If that alone
         # already reaches gen_size, decode doesn't need this round's repair at all --
         # skip the expensive combined search entirely.
+        def trusted_set(trust, n):
+            if not cfg.witness_sticky:
+                return set(trust.trusted)
+            instrument.cross_rejected |= set(range(n)) - set(trust.broken) - set(trust.trusted)
+            return set(trust.trusted) - instrument.cross_rejected
+
         already_good = set(range(len(wire_pool)))
         for segment in segments:
-            already_good &= set(classify_segment_trust(field, wire_pool, segment,
-                                                       verify_count=cfg.verify_count, witness_rank=wrank).trusted)
+            already_good &= trusted_set(classify_segment_trust(field, wire_pool, segment,
+                                                               verify_count=cfg.verify_count, witness_rank=wrank),
+                                        len(wire_pool))
         if len(already_good) >= gen_size:
             return [_strip_to_code(wire_pool[i], segments) for i in sorted(already_good)]
 
@@ -544,7 +557,7 @@ class SegmentedScheme(IntegrityScheme):
                                            witness_rank=wrank)
             if len(trust.trusted) < cfg.min_trust_count:
                 return None  # not enough trust yet in this segment -- keep waiting
-            good &= set(trust.trusted)
+            good &= trusted_set(trust, len(report.packets))
 
         return [_strip_to_code(report.packets[i], segments) for i in sorted(good)]
 

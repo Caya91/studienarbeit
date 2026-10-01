@@ -35,6 +35,7 @@ FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 1)
   witness_policy   str   first | random
   width            int   keyless vc / keyed W; -1 = all (no cap)
   witness_secret   int   receiver secret of this trial (derived from seed; never given to the attacker)
+  witness_sticky   int   (v2) 1 = receiver remembers cross-check rejections (no re-evaluation chance)
   theory_admit     float the formula above for this cell
 """
 import argparse
@@ -50,13 +51,14 @@ from simulation.knowledge_attack_sim import (
     CSV_COLUMNS as KNOWLEDGE_COLUMNS, knowledge_levels, run_knowledge_trial, wilson, write_rows,
 )
 
-CSV_SCHEMA_VERSION = 1
+CSV_SCHEMA_VERSION = 2   # v2 (2026-10-02): + witness_sticky
 GEN_SIZE = 4
 DATA_FIELDS = 12
 N_SEGMENTS = 2
 POLICIES = ("first", "random")
+STICKY = True   # receiver remembers cross-check rejections -> no re-evaluation second chance
 CSV_COLUMNS = ([c for c in KNOWLEDGE_COLUMNS if c not in ("schema_version", "verify_count")]
-               + ["schema_version", "witness_policy", "width", "witness_secret", "theory_admit"])
+               + ["schema_version", "witness_policy", "width", "witness_secret", "witness_sticky", "theory_admit"])
 
 
 # ── Theory ────────────────────────────────────────────────────────────────────
@@ -131,6 +133,7 @@ def run_trial(cell: dict, seed: int, data_fields=DATA_FIELDS, n=N_SEGMENTS) -> d
     cfg.hamming_distance = cell["hd"]
     cfg.witness_policy = cell["policy"]
     cfg.witness_secret = _secret(seed)          # receiver-side only; the forgers never read cfg
+    cfg.witness_sticky = STICKY                 # 2026-10-02: a cross-check rejection is remembered
     if cell["arm"] == "keyless":
         cfg.verify_count = cell["width"]
     else:
@@ -140,6 +143,7 @@ def run_trial(cell: dict, seed: int, data_fields=DATA_FIELDS, n=N_SEGMENTS) -> d
     t.pop("verify_count")
     t.update(schema_version=CSV_SCHEMA_VERSION, witness_policy=cell["policy"],
              width=-1 if cell["width"] is None else cell["width"], witness_secret=cfg.witness_secret,
+             witness_sticky=int(cfg.witness_sticky),
              theory_admit=theory_admit(cell["arm"], cell["policy"], cell["knowledge"], cell["width"], g,
                                        2 ** cell["field_bits"]))
     return {c: t[c] for c in CSV_COLUMNS}

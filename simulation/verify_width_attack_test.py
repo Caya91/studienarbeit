@@ -105,6 +105,21 @@ def test_first_policy_is_predictable():
     print("  deterministic witnesses: forger that saw/stole the checked ones always wins (silent decode)")
 
 
+def test_sticky_rejection_removes_second_chance():
+    """Keyless random, r=0, vc=1, GF(4): a stateless receiver re-checks a rejected forger at the next
+    arrival (~0.30 admit); remembering the rejection brings it back to the plain 1/q = 0.25."""
+    import simulation.verify_width_attack_sim as vw
+    cell = dict(arm="keyless", knowledge=0, field_bits=2, width=1, policy="random", g=4, hd=0)
+    counts = {}
+    for sticky in (False, True):
+        vw.STICKY = sticky
+        counts[sticky] = sum(vw.run_trial(cell, s)["forged_admitted"] for s in range(600))
+    vw.STICKY = True
+    assert counts[True] < counts[False], counts
+    assert abs(counts[True] / 600 - 0.25) < 0.06, counts
+    print(f"  sticky rejection: admits {counts[False]} -> {counts[True]} of 600 (plain theory 150)")
+
+
 def test_isolated_data_segment_model():
     from binary_ext_fields.custom_field import CountingField
     from simulation.isolated_recovery_sim import build_paired_pools, inject_paired, info_columns
@@ -134,5 +149,6 @@ if __name__ == "__main__":
     test_classify_witness_rank_semantics()
     test_keyed_subset_verification()
     test_first_policy_is_predictable()
+    test_sticky_rejection_removes_second_chance()
     test_isolated_data_segment_model()
     print("\nAll verify-width / data_segment tests passed!")
