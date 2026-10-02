@@ -115,7 +115,7 @@ def _draw(ax, sub, arm, m, g, widths):
         _theory(ax, ks, [theory_admit(arm, "random", int(k), None if w < 0 else int(w), g, 2 ** m) for k in ks],
                 "theory" if i == 0 else None)
         _measured(ax, c, _shade(ARM[arm]["color"], t), ARM[arm]["marker"],
-                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)} (measured)", low=low)
+                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)}", low=low)
     _place_low(ax, low)
 
 
