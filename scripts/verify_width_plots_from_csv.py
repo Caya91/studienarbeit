@@ -31,6 +31,7 @@ ARM = {"keyless": {"color": "#588157", "marker": "o", "x": "r = honest packets o
                    "title": "keyless: vc witnesses"},
        "keyed": {"color": "#3d405b", "marker": "s", "x": "k = keys leaked (of g)", "title": "keyed: W of g tags"}}
 POLICY = {"first": "deterministic (first witnesses / first keys)", "random": "receiver-secret random subset"}
+CAPTIONS = False   # 2026-10-02: descriptions live in the figure notes, not on the figure
 INK, INK_MUTED, GRID, THEORY = "#1f1f1e", "#6b6a64", "#e4e3dd", "#9a9990"
 
 
@@ -73,16 +74,39 @@ def _theory(ax, ks, ys, label=None):
             markerfacecolor="none", markeredgecolor=INK, markeredgewidth=1, zorder=4, label=label)
 
 
-def _measured(ax, c, color, marker, label=None):
+def _label(ax, xv, yv, txt, offset, ha):
+    ax.annotate(txt, (xv, yv), textcoords="offset points", xytext=offset, ha=ha, fontsize=7, color=INK, zorder=5,
+                bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.85))
+
+
+def _pct(yv):
+    return f"{100 * yv:.1f}%" if yv < 0.995 else "100%"
+
+
+def _measured(ax, c, color, marker, label=None, low=None):
+    """low: dict x -> list of (y, text, color) collecting near-zero labels for _place_low (None = label all here)."""
     x, y = c["knowledge"].to_numpy(), c["admit_rate"].to_numpy()
     lo, hi = c["admit_lo"].to_numpy(), c["admit_hi"].to_numpy()
     ax.errorbar(x, y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)], fmt="none", ecolor=color,
                 elinewidth=1.2, capsize=3, zorder=2)
     ax.plot(x, y, color=color, linewidth=2, marker=marker, markersize=6, zorder=3, label=label)
+    for xv, yv in zip(x, y):  # measured value above each point (figure notes carry the rest)
+        if low is not None and yv < 0.12:
+            low.setdefault(xv, []).append((yv, _pct(yv)))
+        else:
+            _label(ax, xv, yv, _pct(yv), (0, 7), "center")
+
+
+def _place_low(ax, low):
+    """Near-zero labels of several lines at one x: a column right of the points, highest value on top."""
+    for xv, items in low.items():
+        for rank, (yv, txt) in enumerate(sorted(items, reverse=True)):
+            _label(ax, xv, 0.0, txt, (8, 4 + 9 * (len(items) - 1 - rank)), "left")
 
 
 def _draw(ax, sub, arm, m, g, widths):
     ts = np.linspace(0.45, 1.0, len(widths))
+    low = {}
     for i, (w, t) in enumerate(zip(widths, ts)):
         c = sub[sub["width"] == w].sort_values("knowledge")
         if c.empty:
@@ -91,14 +115,16 @@ def _draw(ax, sub, arm, m, g, widths):
         _theory(ax, ks, [theory_admit(arm, "random", int(k), None if w < 0 else int(w), g, 2 ** m) for k in ks],
                 "theory" if i == 0 else None)
         _measured(ax, c, _shade(ARM[arm]["color"], t), ARM[arm]["marker"],
-                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)} (measured)")
+                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)} (measured)", low=low)
+    _place_low(ax, low)
 
 
 def _save(fig, out_dir, name, caption):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, color=INK_MUTED, wrap=True)
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    if caption and CAPTIONS:
+        fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, color=INK_MUTED, wrap=True)
+    fig.tight_layout(rect=(0, 0.05 if (caption and CAPTIONS) else 0, 1, 1))
     for ext in ("png", "pdf"):
         fig.savefig(out_dir / f"{name}.{ext}", dpi=160, bbox_inches="tight")
     plt.close(fig)
