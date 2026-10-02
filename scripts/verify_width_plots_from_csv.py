@@ -29,7 +29,7 @@ from simulation.knowledge_attack_sim import wilson
 from simulation.verify_width_attack_sim import summarize, theory_admit
 
 ARM = {"keyless": {"color": "#588157", "marker": "o", "x": "r = honest packets observed",
-                   "title": "keyless: vc witnesses"},
+                   "title": "keyless: W witnesses"},
        "keyed": {"color": "#3d405b", "marker": "s", "x": "k = keys leaked (of g)", "title": "keyed: W of g tags"}}
 POLICY = {"first": "deterministic (first witnesses / first keys)", "random": "receiver-secret random subset"}
 CAPTIONS = False   # 2026-10-02: descriptions live in the figure notes, not on the figure
@@ -118,7 +118,7 @@ def _draw(ax, sub, arm, m, g, widths):
         _theory(ax, ks, [theory_admit(arm, "random", int(k), None if w < 0 else int(w), g, 2 ** m) for k in ks],
                 "theory" if i == 0 else None)
         _measured(ax, c, _shade(ARM[arm]["color"], t), ARM[arm]["marker"],
-                  f"{'W' if arm == 'keyed' else 'vc'} = {_wlabel(w)}", low=low)
+                  f"W = {_wlabel(w)}", low=low)
     _place_low(ax, low)
 
 
@@ -151,7 +151,7 @@ def plot_random_grid(summary, m, out_dir):
         ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
     return _save(fig, out_dir, f"s2_random_vs_knowledge_m{m}",
                  f"S2: one forged packet (early strike, repair off), receiver checks a secret random subset of "
-                 f"width vc / W per packet and remembers rejections; {int(s['trials'].iloc[0])} trials/cell, 95% CI. "
+                 f"width W per packet and remembers rejections; {int(s['trials'].iloc[0])} trials/cell, 95% CI. "
                  "Dashed black + hollow = theory.")
 
 
