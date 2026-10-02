@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from simulation.knowledge_attack_sim import wilson
 from simulation.verify_width_attack_sim import summarize, theory_admit
 
 ARM = {"keyless": {"color": "#588157", "marker": "o", "x": "r = honest packets observed",
@@ -85,8 +86,10 @@ def _pct(yv):
 
 def _measured(ax, c, color, marker, label=None, low=None):
     """low: dict x -> list of (y, text, color) collecting near-zero labels for _place_low (None = label all here)."""
-    x, y = c["knowledge"].to_numpy(), c["admit_rate"].to_numpy()
-    lo, hi = c["admit_lo"].to_numpy(), c["admit_hi"].to_numpy()
+    # silent-decode rate (every admitted forgery decoded wrong in all runs so far; plot the silent count itself)
+    x, y = c["knowledge"].to_numpy(), c["silent_rate"].to_numpy()
+    ci = [wilson(int(sv), int(t)) for sv, t in zip(c["silent"], c["trials"])]
+    lo, hi = np.array([a for a, _ in ci]), np.array([b for _, b in ci])
     ax.errorbar(x, y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)], fmt="none", ecolor=color,
                 elinewidth=1.2, capsize=3, zorder=2)
     ax.plot(x, y, color=color, linewidth=2, marker=marker, markersize=6, zorder=3, label=label)
@@ -143,7 +146,7 @@ def plot_random_grid(summary, m, out_dir):
         _style(ax)
         ax.set_xticks(sorted(sub["knowledge"].unique()))
         ax.set_title(f"{ARM[arm]['title']}, GF(2^{m}), g={g}", color=INK, fontsize=10)
-        ax.set_ylabel("forgery admitted", color=INK, fontsize=9)
+        ax.set_ylabel("silent decode rate", color=INK, fontsize=9)
         ax.set_xlabel(ARM[arm]["x"], color=INK, fontsize=9)
         ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
     return _save(fig, out_dir, f"s2_random_vs_knowledge_m{m}",
@@ -170,7 +173,7 @@ def plot_w1(summary, out_dir):
             ax.set_title(f"{ARM[arm]['title'].split(':')[0]}, GF(2^{m}), 1 check", color=INK, fontsize=10)
             ax.set_xlabel(ARM[arm]["x"], color=INK, fontsize=9)
             if j == 0:
-                ax.set_ylabel("forgery admitted", color=INK, fontsize=9)
+                ax.set_ylabel("silent decode rate", color=INK, fontsize=9)
             if i == 0:
                 ax.legend(loc="upper left", fontsize=7.5, frameon=False, labelcolor=INK)
     return _save(fig, out_dir, "s2_w1_random",
