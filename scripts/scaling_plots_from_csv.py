@@ -188,34 +188,39 @@ def _iso_pick(s, config="arc_only_a", span="payload", W=6, hd=2):
     return s[(s["config"] == config) & (s["repair_span"] == span) & (s["W"] == W) & (s["max_combined_hd"] == hd)]
 
 
-def plot_iso_recovery_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=6):
-    fig = _grid_by(_iso_pick(s, config, span, W), "recovery_rate", "recovery_ci", "recovery rate",
+def _hd_tag(hd):
+    """File-name suffix; HD 2 (the iso_w default) keeps the original names."""
+    return "" if hd == 2 else f"_HD{hd}"
+
+
+def plot_iso_recovery_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=6, hd=2):
+    fig = _grid_by(_iso_pick(s, config, span, W, hd), "recovery_rate", "recovery_ci", "recovery rate",
                    ylim=(-0.03, 1.03), percent=True)
-    return _save(fig, out_dir, f"iso_recovery_vs_ber_{config}_{span}_W{W}",
+    return _save(fig, out_dir, f"iso_recovery_vs_ber_{config}_{span}_W{W}{_hd_tag(hd)}",
                  f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}; g=6, T=6 targets/seed, GF(2^8), "
-                 f"HD 2, budget 20000, acceptance width W={W}. Lighter = longer data segments. Hollow = sparse.")
+                 f"HD {hd}, budget 20000, acceptance width W={W}. Lighter = longer data segments. Hollow = sparse.")
 
 
-def plot_iso_silent_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=1):
-    fig = _grid_by(_iso_pick(s, config, span, W), "silent_rate", "silent_ci", "silent-decode rate",
+def plot_iso_silent_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=1, hd=2):
+    fig = _grid_by(_iso_pick(s, config, span, W, hd), "silent_rate", "silent_ci", "silent-decode rate",
                    ylim=(-0.03, 1.03), percent=True)
-    return _save(fig, out_dir, f"iso_silent_vs_ber_{config}_{span}_W{W}",
+    return _save(fig, out_dir, f"iso_silent_vs_ber_{config}_{span}_W{W}{_hd_tag(hd)}",
                  f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}; wrong-accept per target at W={W}; "
-                 "g=6, GF(2^8), HD 2, budget 20000.")
+                 f"g=6, GF(2^8), HD {hd}, budget 20000.")
 
 
-def plot_iso_ops_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=6):
-    sub = _iso_pick(s, config, span, W)
+def plot_iso_ops_vs_ber(s, out_dir, config="arc_only_a", span="payload", W=6, hd=2):
+    sub = _iso_pick(s, config, span, W, hd)
     sub = sub[sub["mean_ops"] > 0]
     fig = _grid_by(sub, "mean_ops", None, "recovery field ops (mean/seed)", logy=True)
-    return _save(fig, out_dir, f"iso_ops_vs_ber_{config}_{span}_W{W}",
+    return _save(fig, out_dir, f"iso_ops_vs_ber_{config}_{span}_W{W}{_hd_tag(hd)}",
                  f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}; GF ops (mul+add) of the repair call per "
-                 f"seed (6 targets), W={W}; zero-op cells (nothing to repair) omitted on the log axis.")
+                 f"seed (6 targets), W={W}, HD {hd}; zero-op cells (nothing to repair) omitted on the log axis.")
 
 
-def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a", span="payload", W=6):
+def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a", span="payload", W=6, hd=2):
     """Same L, bigger df: recovery vs segment length, a line per df, one panel per BER."""
-    sub = _iso_pick(s, config, span, W)
+    sub = _iso_pick(s, config, span, W, hd)
     bers = [b for b in bers if b in set(sub["bit_error_rate"])]
     fig, axes = plt.subplots(1, len(bers), figsize=(4.3 * len(bers), 3.4), sharey=True, squeeze=False)
     dfs = sorted(sub["data_fields"].unique())
@@ -236,8 +241,8 @@ def plot_iso_vs_seglen(s, out_dir, bers=(1e-4, 1e-3, 3e-3), config="arc_only_a",
         ax.set_xlabel("data-segment length L (bytes)", color=INK, fontsize=9)
     axes[0][0].set_ylabel("recovery rate", color=INK, fontsize=9)
     axes[0][0].legend(fontsize=7, frameon=False, labelcolor=INK, title="keyless, payload", title_fontsize=7)
-    return _save(fig, out_dir, f"iso_recovery_vs_seglen_{config}_{span}_W{W}",
-                 f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}, W={W}. Line per payload size "
+    return _save(fig, out_dir, f"iso_recovery_vs_seglen_{config}_{span}_W{W}{_hd_tag(hd)}",
+                 f"Isolated harness, ACR-only, {CONFIG_TXT[(config, span)]}, W={W}, HD {hd}. Line per payload size "
                  "(lighter = smaller); circle/solid = keyless, square/dashed = keyed.")
 
 
