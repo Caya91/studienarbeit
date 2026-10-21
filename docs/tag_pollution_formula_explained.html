@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Why 1/(q+1)?</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,750&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column (~68ch), steps as numbered sections, math in mono "formula strips", side notes as tinted boxes. */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #18212f;
+  --muted: #586579;
+  --line: #d5dbe5;
+  --accent: #2f5bd3;
+  --accent-soft: #e4ebfb;
+  --pass: #b4321f;        /* polluted packet passes = bad for us */
+  --pass-soft: #fbe6e1;
+  --caught: #1f7a4d;      /* caught = good */
+  --caught-soft: #dff1e7;
+  --seen: #8a6400;
+  --seen-soft: #f8edcc;
+  --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161f; --surface: #19202c; --ink: #e5e9f0; --muted: #9aa6b8; --line: #2c3646;
+    --accent: #87a7ff; --accent-soft: #1f2a45;
+    --pass: #ff8f7a; --pass-soft: #3a1f1b; --caught: #6fd3a0; --caught-soft: #173326;
+    --seen: #e8c15a; --seen-soft: #352c12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161f; --surface: #19202c; --ink: #e5e9f0; --muted: #9aa6b8; --line: #2c3646;
+  --accent: #87a7ff; --accent-soft: #1f2a45;
+  --pass: #ff8f7a; --pass-soft: #3a1f1b; --caught: #6fd3a0; --caught-soft: #173326;
+  --seen: #e8c15a; --seen-soft: #352c12;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 1.0625rem; line-height: 1.62;
+  padding-inline: 16px; padding-block: 0 64px;
+}
+main { max-width: 44rem; margin: 0 auto; display: flex; flex-direction: column; gap: 2.5rem; }
+header.top { max-width: 44rem; margin: 0 auto; padding-block: 3rem 2rem; }
+.eyebrow { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 .6rem; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2.1rem, 6vw, 3.1rem); font-weight: 750; letter-spacing: -.01em; }
+h1 .frac { color: var(--accent); }
+h2 { font-size: 1.55rem; font-weight: 750; }
+h3 { font-size: 1.12rem; font-weight: 600; }
+p { margin: 0; }
+section { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.step-tag { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+code, .m { font-family: var(--font-mono); font-size: .9em; }
+.m { white-space: nowrap; }
+.formula {
+  font-family: var(--font-mono); font-size: .95rem; line-height: 1.75;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: .85rem 1rem; overflow-x: auto; white-space: pre; color: var(--ink);
+}
+.formula .hl { color: var(--accent); font-weight: 600; }
+.formula .note { color: var(--muted); }
+.story {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 1.2rem 1.25rem; display: flex; flex-direction: column; gap: .7rem;
+}
+.story p { font-size: 1.08rem; }
+.concept {
+  background: var(--accent-soft); border-radius: 8px; padding: 1rem 1.15rem;
+  display: flex; flex-direction: column; gap: .6rem;
+}
+.concept .label { font-family: var(--font-mono); font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+.concept .formula { background: var(--surface); }
+.key {
+  border: 2px solid var(--accent); border-radius: 8px; padding: 1rem 1.15rem; background: var(--surface);
+}
+.key strong { font-family: var(--font-display); }
+.speak {
+  background: var(--seen-soft); border-radius: 8px; padding: 1.2rem 1.25rem;
+  display: flex; flex-direction: column; gap: .7rem;
+}
+.speak .label { font-family: var(--font-mono); font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; color: var(--seen); font-weight: 600; }
+.speak blockquote { margin: 0; font-style: italic; font-size: 1.08rem; }
+ul, ol { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .35rem; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: .95rem; }
+th, td { padding: .5rem .75rem; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-family: var(--font-mono); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.mono { font-family: var(--font-mono); }
+.chip { display: inline-block; font-family: var(--font-mono); font-size: .78rem; padding: .1rem .5rem; border-radius: 99px; font-weight: 600; }
+.chip.pass { background: var(--pass-soft); color: var(--pass); }
+.chip.caught { background: var(--caught-soft); color: var(--caught); }
+.chip.seen { background: var(--seen-soft); color: var(--seen); }
+tr.excluded td { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted); }
+tr.excluded td:last-child { text-decoration: none; }
+figure { margin: 0; display: flex; flex-direction: column; gap: .5rem; }
+figure .svg-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: .75rem; }
+figure svg { display: block; width: 100%; max-width: 640px; height: auto; margin: 0 auto; min-width: 320px; }
+figcaption { font-size: .9rem; color: var(--muted); }
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: .7rem 1rem; }
+details > summary { cursor: pointer; font-family: var(--font-display); font-weight: 600; }
+details[open] > summary { margin-bottom: .7rem; }
+details > div { display: flex; flex-direction: column; gap: .8rem; }
+summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.qa { display: flex; flex-direction: column; gap: .8rem; }
+.muted { color: var(--muted); }
+.honest { border-left: 3px solid var(--seen); padding-left: .9rem; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
+nav.toc ol { font-size: .95rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <p class="eyebrow">Keyless scheme · tag pollution · g = 6, attacker saw r = 4</p>
+  <h1>Why the polluted packet slips through with probability <span class="frac">1/(q+1)</span></h1>
+</header>
+
+<main>
+
+<section aria-labelledby="story">
+  <h2 id="story">The whole story in three sentences</h2>
+  <div class="story">
+    <p>A check against an honest witness packet passes the polluted packet exactly when the witness's coefficient row is "perpendicular" to one fixed list of numbers <span class="m">v</span> that the attacker's change creates.</p>
+    <p>The attacker uses the 4 packets it saw to make <span class="m">v</span> perpendicular to those 4 rows (and so to every mix of them), so the only witness that can catch it is the 5th, unseen one.</p>
+    <p>Counting the possible rows for that 5th witness gives <span class="m">(q⁵ − q⁴) / (q⁶ − q⁴) = 1/(q+1)</span> chance of passing, so detection is <span class="m">q/(q+1)</span>: 80% for q = 4, 94% for q = 16, 99.6% for q = 256.</p>
+  </div>
+  <p class="muted">If those sentences don't make sense yet, that is fine. The rest of the page builds every word in them from scratch, one idea at a time.</p>
+  <nav class="toc" aria-label="Steps">
+    <ol>
+      <li><a href="#s0">The tools: lists of numbers and the "dot" product</a></li>
+      <li><a href="#s1">Step 1: what a single check computes</a></li>
+      <li><a href="#s2">Step 2: turning it into a question about rows</a></li>
+      <li><a href="#s3">Step 3: what the attacker's knowledge buys</a></li>
+      <li><a href="#s4">Step 4: counting rows</a></li>
+      <li><a href="#toy">A toy case you can count by hand</a></li>
+      <li><a href="#s5">Step 5: why not just 1/q?</a></li>
+      <li><a href="#s6">Step 6: the general formula</a></li>
+      <li><a href="#s7">Step 7: the straight line in the plot</a></li>
+      <li><a href="#speak">How to say it to your supervisors</a></li>
+      <li><a href="#faq">Common questions</a></li>
+    </ol>
+  </nav>
+</section>
+
+<hr>
+
+<section aria-labelledby="s0">
+  <p class="step-tag">Before we start</p>
+  <h2 id="s0">The tools: lists of numbers and the "dot" product</h2>
+
+  <div class="concept">
+    <p class="label">Idea · a vector is just a list of numbers</p>
+    <p>Mathematicians say "vector". You can read it as "a list of numbers in a fixed order". A packet is a vector: its bytes are the numbers. A coefficient row like <span class="m">(c1, c2, …, c6)</span> is also a vector, with 6 entries.</p>
+  </div>
+
+  <div class="concept">
+    <p class="label">Idea · inner product (dot product)</p>
+    <p>Take two lists of the same length. Multiply them position by position, then add everything up. The result is a single number, written <span class="m">⟨a, b⟩</span> or <span class="m">a · b</span>.</p>
+    <div class="formula">a = (1, 2, 3)     b = (4, 5, 6)
+⟨a, b⟩ = 1·4 + 2·5 + 3·6 = 4 + 10 + 18 = <span class="hl">32</span></div>
+    <p>Two handy rules, both just "multiplication spreads over addition":</p>
+    <div class="formula">⟨a + d, b⟩ = ⟨a, b⟩ + ⟨d, b⟩        <span class="note">(split a sum)</span>
+⟨k·a, b⟩  = k · ⟨a, b⟩             <span class="note">(pull out a factor)</span></div>
+  </div>
+
+  <div class="concept">
+    <p class="label">Idea · orthogonal = inner product is zero</p>
+    <p>If <span class="m">⟨a, b⟩ = 0</span> we call <span class="m">a</span> and <span class="m">b</span> orthogonal. In 2D this really means "at a right angle", but for us it only means "the dot product comes out 0".</p>
+    <div class="formula">(1, 2) · (2, −1) = 2 − 2 = <span class="hl">0</span>     <span class="note">→ orthogonal</span></div>
+    <p>Your keyless scheme builds every honest packet so that any two honest packets are orthogonal. The receiver's test is simply: compute the dot product of the new packet with a trusted packet. 0 means pass, anything else means caught.</p>
+  </div>
+
+  <div class="concept">
+    <p class="label">Idea · linear combination = a "mix"</p>
+    <p>Multiply some vectors by numbers and add them. That is all RLNC does to make a coded packet.</p>
+    <div class="formula">2·(1, 0, 1) + 3·(0, 1, 1) = (2, 0, 2) + (0, 3, 3) = <span class="hl">(2, 3, 5)</span></div>
+    <p>A coded packet is <span class="m">c1·P1 + c2·P2 + … + c6·P6</span>. The numbers <span class="m">(c1, …, c6)</span> are its coefficient row, and they travel inside the packet.</p>
+  </div>
+
+  <div class="concept">
+    <p class="label">Idea · finite field GF(q): numbers that never grow</p>
+    <p>All the arithmetic happens in a number system with only <span class="m">q</span> values (q = 4, 16 or 256). You can add, subtract, multiply and divide by anything nonzero, and the answer is always one of the same q values. Think of clock arithmetic, where 11 + 3 lands on 2 instead of 14.</p>
+    <p>One difference from a clock matters: in these fields (sizes 2, 4, 16, 256 = powers of 2), addition works like XOR on bits, so <strong>adding a number to itself gives 0</strong>. In the smallest field GF(2) = {0, 1}:</p>
+    <div class="formula">0 + 0 = 0    0 + 1 = 1    1 + 1 = <span class="hl">0</span>
+0 · 0 = 0    0 · 1 = 0    1 · 1 = 1</div>
+    <p>That also means minus is the same as plus here. For the rest of this page you only need: "there are q possible values, and + − × ÷ behave the way you are used to."</p>
+    <details>
+      <summary>Optional: GF(4) in full</summary>
+      <div>
+        <p>GF(4) has the four values 0, 1, a, b (stored as bit pairs 00, 01, 10, 11). Addition is XOR on the bits, so for example 1 + a = b and a + b = 1. Multiplication follows the rule a·a = b, a·b = 1, b·b = a. Every nonzero value has an inverse: a and b are each other's inverse, 1 is its own.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section aria-labelledby="s1">
+  <p class="step-tag">Step 1</p>
+  <h2 id="s1">What a single check computes</h2>
+  <p>The attacker takes an honest packet <span class="m">p</span> and changes only its tag bytes. Call the change <span class="m">δ</span> ("delta"): a list that is 0 everywhere except in the tag positions. The polluted packet is</p>
+  <div class="formula">p' = p + δ</div>
+  <p>The receiver checks <span class="m">p'</span> against an honest witness <span class="m">h</span>. Using the "split a sum" rule:</p>
+  <div class="formula">⟨p', h⟩ = ⟨p, h⟩ + ⟨δ, h⟩
+        =    0    + ⟨δ, tags of h⟩</div>
+  <p>The first part is 0 because <span class="m">p</span> and <span class="m">h</span> are both honest, so they are orthogonal. In the second part, δ is zero outside the tags, so only the tag positions of <span class="m">h</span> contribute.</p>
+  <div class="key"><p><strong>Result:</strong> the polluted packet passes the check with witness <span class="m">h</span> exactly when <span class="m">⟨δ, tags of h⟩ = 0</span>.</p></div>
+</section>
+
+<section aria-labelledby="s2">
+  <p class="step-tag">Step 2</p>
+  <h2 id="s2">Turning it into a question about rows</h2>
+  <p>The witness <span class="m">h</span> is itself a coded packet: <span class="m">h = c1·P1 + … + c6·P6</span>. Tags are linear, so the tags of <span class="m">h</span> are the same mix of the source packets' tags. Apply both dot-product rules:</p>
+  <div class="formula">⟨δ, tags of h⟩ = c1·⟨δ, tags of P1⟩ + … + c6·⟨δ, tags of P6⟩
+              = c1·v1 + c2·v2 + … + c6·v6
+              = <span class="hl">c · v</span></div>
+  <p>Here <span class="m">vi = ⟨δ, tags of Pi⟩</span>. These six numbers depend only on δ (and the fixed source packets). Once the attacker has chosen δ, the list <span class="m">v = (v1, …, v6)</span> is fixed.</p>
+  <div class="key"><p><strong>The key reframing:</strong> a witness lets the polluted packet through exactly when its coefficient row <span class="m">c</span> satisfies <span class="m">c · v = 0</span>. The whole question is now: <em>is a random row orthogonal to one fixed list v?</em></p></div>
+  <p class="muted">We assume v is not all zeros. If it were, the change would be invisible to every honest packet, and no check could ever catch it.</p>
+</section>
+
+<section aria-labelledby="s3">
+  <p class="step-tag">Step 3</p>
+  <h2 id="s3">What the attacker's knowledge buys</h2>
+  <p>The attacker has seen 4 honest packets. Their coefficient rows <span class="m">c1, c2, c3, c4</span> are public (they are in the packet header), and so are their tags. It wants:</p>
+  <div class="formula">c1 · v = 0
+c2 · v = 0
+c3 · v = 0
+c4 · v = 0</div>
+  <p>Each line is one equation, and the unknowns are the tag-change numbers in δ. This is the same kind of task as school "simultaneous equations" (two equations, two unknowns, find x and y). When there are more unknowns than equations, there are always solutions, including ones where δ is not all zeros. No key or secret is needed, only the public packets and ordinary algebra.</p>
+
+  <div class="concept">
+    <p class="label">Idea · mixes of zeros are zero</p>
+    <p>If <span class="m">c1 · v = 0</span> and <span class="m">c2 · v = 0</span>, then any mix also gives 0:</p>
+    <div class="formula">(a·c1 + b·c2) · v = a·(c1 · v) + b·(c2 · v) = a·0 + b·0 = <span class="hl">0</span></div>
+  </div>
+  <p>So the 4 witnesses the attacker saw can never catch it, and neither can any witness whose row is a mix of those 4 rows.</p>
+</section>
+
+<section aria-labelledby="s4">
+  <p class="step-tag">Step 4</p>
+  <h2 id="s4">Counting rows</h2>
+
+  <div class="concept">
+    <p class="label">Idea · probability by counting</p>
+    <p>When every case is equally likely: probability = good cases ÷ all cases. A fair die shows an even number with probability 3/6 = 1/2. Here a "case" is a coefficient row, and RLNC picks the entries uniformly at random.</p>
+  </div>
+
+  <h3>All rows: q⁶</h3>
+  <p>A row has 6 entries, each with q options: <span class="m">q · q · q · q · q · q = q⁶</span> rows. (For q = 4 that is 4096.)</p>
+
+  <h3>Rows that pass, c · v = 0: q⁵</h3>
+  <div class="concept">
+    <p class="label">Idea · one equation removes one free choice</p>
+    <p>Small example in GF(2) with rows of length 3 and <span class="m">v = (1, 1, 0)</span>. The condition <span class="m">c · v = 0</span> reads <span class="m">c1 + c2 = 0</span>, so <span class="m">c1 = c2</span>. Choose <span class="m">c2</span> and <span class="m">c3</span> freely (2 · 2 = 4 ways); then <span class="m">c1</span> is forced. That gives 4 = 2² passing rows out of 2³ = 8.</p>
+    <p>In general: pick any entry where v is nonzero. Choose the other 5 entries freely (<span class="m">q⁵</span> ways), then solve for that last one. Division works in the field, so there is exactly one answer.</p>
+  </div>
+
+  <h3>Mixes of the 4 seen rows: q⁴</h3>
+  <p>A mix <span class="m">a1·c1 + a2·c2 + a3·c3 + a4·c4</span> needs 4 numbers, each with q options, so there are <span class="m">q⁴</span> mixes. They are all different rows because the 4 seen rows are linearly independent (next box). By Step 3, all <span class="m">q⁴</span> of them pass.</p>
+
+  <div class="concept">
+    <p class="label">Idea · linear independence = "brings something new"</p>
+    <p>A row is linearly independent of some others if you can't build it as a mix of them. An RLNC receiver only keeps packets that bring something new, because a mix of what it already has can't help decoding. So the receiver's 5th witness is <strong>not</strong> one of the <span class="m">q⁴</span> mixes of the first four.</p>
+  </div>
+
+  <figure>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 640 330" role="img" aria-labelledby="boxes-t boxes-d">
+        <title id="boxes-t">Nested sets of rows</title>
+        <desc id="boxes-d">Outer box: all q to the 6 rows. Inside it, q to the 5 passing rows. Inside that, q to the 4 mixes of the seen rows, which can't be the 5th witness.</desc>
+        <rect x="10" y="10" width="620" height="310" rx="10" fill="var(--caught-soft)" stroke="var(--caught)" stroke-width="1.5"/>
+        <text x="28" y="40" fill="var(--caught)" font-family="JetBrains Mono, monospace" font-size="15" font-weight="600">all rows: q⁶</text>
+        <text x="28" y="62" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="12">c · v ≠ 0 out here → caught</text>
+        <rect x="150" y="82" width="460" height="222" rx="10" fill="var(--pass-soft)" stroke="var(--pass)" stroke-width="1.5"/>
+        <text x="168" y="110" fill="var(--pass)" font-family="JetBrains Mono, monospace" font-size="15" font-weight="600">c · v = 0: q⁵ rows → pass</text>
+        <rect x="330" y="150" width="260" height="134" rx="10" fill="var(--seen-soft)" stroke="var(--seen)" stroke-width="1.5" stroke-dasharray="6 4"/>
+        <text x="348" y="180" fill="var(--seen)" font-family="JetBrains Mono, monospace" font-size="15" font-weight="600">mixes of seen</text>
+        <text x="348" y="200" fill="var(--seen)" font-family="JetBrains Mono, monospace" font-size="15" font-weight="600">rows: q⁴</text>
+        <text x="348" y="232" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="12">can't be the 5th</text>
+        <text x="348" y="250" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="12">witness (not new)</text>
+        <text x="168" y="200" fill="var(--ink)" font-family="JetBrains Mono, monospace" font-size="13">5th witness</text>
+        <text x="168" y="218" fill="var(--ink)" font-family="JetBrains Mono, monospace" font-size="13">passes here:</text>
+        <text x="168" y="236" fill="var(--ink)" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600">q⁵ − q⁴</text>
+      </svg>
+    </div>
+    <figcaption>The 5th witness can be any row outside the dashed box: <span class="m">q⁶ − q⁴</span> choices. It lets the attacker through only if it sits in the red ring between the boxes: <span class="m">q⁵ − q⁴</span> choices.</figcaption>
+  </figure>
+
+  <h3>Putting it together</h3>
+  <div class="formula">            passing choices      q⁵ − q⁴
+P(pass) = ───────────────── = ─────────
+            all choices          q⁶ − q⁴</div>
+  <p>Now factor slowly. Top: take <span class="m">q⁴</span> out.</p>
+  <div class="formula">q⁵ − q⁴ = q⁴·q − q⁴·1 = q⁴ · (q − 1)</div>
+  <p>Bottom: take <span class="m">q⁴</span> out, then use the school pattern <span class="m">x² − 1 = (x − 1)(x + 1)</span>.</p>
+  <div class="formula">q⁶ − q⁴ = q⁴ · (q² − 1) = q⁴ · (q − 1) · (q + 1)</div>
+  <p>Divide. <span class="m">q⁴</span> and <span class="m">(q − 1)</span> appear on both sides and cancel:</p>
+  <div class="formula">           q⁴ · (q − 1)                1
+P(pass) = ─────────────────────── = <span class="hl">─────</span>
+           q⁴ · (q − 1) · (q + 1)       <span class="hl">q + 1</span>
+
+P(caught) = 1 − 1/(q+1) = <span class="hl">q/(q+1)</span></div>
+</section>
+
+<section aria-labelledby="toy">
+  <p class="step-tag">Check by hand</p>
+  <h2 id="toy">A toy case you can count by hand</h2>
+  <p>Shrink everything: field GF(2) = {0, 1} (so q = 2), rows of length 3 instead of 6 (g = 3), attacker saw 1 row (r = 1). Like the real case, g − r = 2, so the formula predicts 1/(q+1) = 1/3.</p>
+  <p>Pick <span class="m">v = (1, 1, 0)</span> and the seen row <span class="m">c1 = (1, 1, 0)</span>. Check: <span class="m">c1 · v = 1 + 1 + 0 = 0</span> in GF(2), so the attacker is safe against <span class="m">c1</span>. The mixes of <span class="m">c1</span> are <span class="m">0·c1 = 000</span> and <span class="m">1·c1 = 110</span>; neither can be the new witness.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>row c</th><th>c · v = c1 + c2</th><th>result</th></tr></thead>
+      <tbody>
+        <tr class="excluded"><td class="mono">000</td><td class="mono">0</td><td><span class="chip seen">mix of seen, excluded</span></td></tr>
+        <tr><td class="mono">001</td><td class="mono">0 + 0 = 0</td><td><span class="chip pass">pass</span></td></tr>
+        <tr><td class="mono">010</td><td class="mono">0 + 1 = 1</td><td><span class="chip caught">caught</span></td></tr>
+        <tr><td class="mono">011</td><td class="mono">0 + 1 = 1</td><td><span class="chip caught">caught</span></td></tr>
+        <tr><td class="mono">100</td><td class="mono">1 + 0 = 1</td><td><span class="chip caught">caught</span></td></tr>
+        <tr><td class="mono">101</td><td class="mono">1 + 0 = 1</td><td><span class="chip caught">caught</span></td></tr>
+        <tr class="excluded"><td class="mono">110</td><td class="mono">1 + 1 = 0</td><td><span class="chip seen">mix of seen, excluded</span></td></tr>
+        <tr><td class="mono">111</td><td class="mono">1 + 1 = 0</td><td><span class="chip pass">pass</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>All 8 rows = 2³. Rows with <span class="m">c · v = 0</span>: 000, 001, 110, 111, which is 4 = 2². Remove the 2 = 2¹ mixes of the seen row, leaving 6 possible new witnesses. Of those, 2 pass (001 and 111).</p>
+  <div class="formula">counted:  2 / 6 = <span class="hl">1/3</span>
+formula:  (q^(g−1) − q^r) / (q^g − q^r) = (2² − 2¹) / (2³ − 2¹) = (4 − 2) / (8 − 2) = <span class="hl">1/3</span>
+short:    1/(q+1) = 1/(2+1) = <span class="hl">1/3</span></div>
+</section>
+
+<section aria-labelledby="s5">
+  <p class="step-tag">Step 5</p>
+  <h2 id="s5">Sanity check: why not just 1/q?</h2>
+  <p>A completely random row passes with probability <span class="m">q⁵ / q⁶ = 1/q</span>. The 5th witness is not completely random: it is guaranteed not to be a mix of the 4 seen rows. All of those excluded rows were passing rows. Removing "sure passes" from the pool makes passing slightly less likely: <span class="m">1/(q+1)</span> instead of <span class="m">1/q</span>.</p>
+  <p>For big q the difference is tiny (1/256 vs 1/257). For q = 4 it is 25% vs 20%, so it is worth getting right.</p>
+</section>
+
+<section aria-labelledby="s6">
+  <p class="step-tag">Step 6</p>
+  <h2 id="s6">The general formula</h2>
+  <p>Nothing above depended on the exact numbers 6 and 4. With generation size <span class="m">g</span>, <span class="m">r</span> rows observed by the attacker, and one new independent witness:</p>
+  <div class="formula">           q^(g−1) − q^r      q^(d−1) − 1
+P(pass) = ─────────────── = ─────────────      where d = g − r
+             q^g − q^r          q^d − 1</div>
+  <p>The second form comes from dividing top and bottom by <span class="m">q^r</span>. The number <span class="m">d</span> says how many "directions" the attacker has not seen.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>d = g − r</th><th>P(pass)</th><th>meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">1</td><td class="mono">(1 − 1)/(q − 1) = 0</td><td>one unseen direction left: the new witness always catches it</td></tr>
+        <tr><td class="mono">2</td><td class="mono">(q − 1)/(q² − 1) = 1/(q+1)</td><td>our case (g = 6, r = 4)</td></tr>
+        <tr><td class="mono">large</td><td class="mono">≈ 1/q</td><td>attacker knows little, the witness is almost a random row</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section aria-labelledby="s7">
+  <p class="step-tag">Step 7</p>
+  <h2 id="s7">How this makes the straight line in the plot</h2>
+  <p>At its first check the receiver holds g − 1 = 5 witnesses: 4 the attacker saw, 1 unseen. If it checks W of them, picked at random, the unseen one is among them with probability <span class="m">W/5</span>. Only that one can catch the packet, and it does so with probability <span class="m">q/(q+1)</span>:</p>
+  <div class="formula">detection(W) = (W/5) · q/(q+1)        <span class="note">← a straight line in W</span></div>
+  <p>The keyed scheme with 1 polluted tag out of g = 6 gives <span class="m">detection = W/6</span>, also a straight line. Same structure: one hidden item that has to be among the ones you check, and the check catches it when it is.</p>
+  <h3>Predicted vs measured, when the unseen witness is checked</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>field</th><th>q</th><th>P(pass) = 1/(q+1)</th><th>detection</th><th>measured</th></tr></thead>
+      <tbody>
+        <tr><td>GF(2²)</td><td class="mono">4</td><td class="mono">1/5 = 20%</td><td class="mono">80%</td><td class="mono">≈ 78%</td></tr>
+        <tr><td>GF(2⁴)</td><td class="mono">16</td><td class="mono">1/17 ≈ 5.9%</td><td class="mono">≈ 94%</td><td class="mono">≈ 94%</td></tr>
+        <tr><td>GF(2⁸)</td><td class="mono">256</td><td class="mono">1/257 ≈ 0.4%</td><td class="mono">≈ 99.6%</td><td class="mono">≈ 99.6%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="honest">For GF(2²) the measurement is about 2 percentage points below the formula. That is a small-field effect we have not explained yet. Say so openly if asked. The two larger fields match.</p>
+</section>
+
+<section aria-labelledby="speak">
+  <h2 id="speak">How to explain it to your supervisors</h2>
+  <div class="speak">
+    <p class="label">Spoken version, about 30 seconds</p>
+    <blockquote>"Because tags are linear, a check with witness h passes the forged packet exactly when h's coefficient row is orthogonal to a fixed vector v that the attacker's tag change defines. The attacker can make v orthogonal to the 4 rows it observed, so those witnesses and all their combinations never catch it. The receiver's 5th witness is a uniformly random row outside that span, which is q⁶ − q⁴ possibilities, and q⁵ − q⁴ of them are orthogonal to v. That ratio simplifies to 1/(q+1), and checking W of 5 witnesses scales detection linearly as (W/5)·q/(q+1), which matches the simulation for q = 16 and 256 and is about 2 points high for q = 4."</blockquote>
+  </div>
+</section>
+
+<section aria-labelledby="faq">
+  <h2 id="faq">Common questions</h2>
+  <div class="qa">
+    <details>
+      <summary>Why isn't it just 1/q?</summary>
+      <div><p>1/q is the chance for a completely random row. The 5th witness must be new (not a mix of the 4 seen rows), and every row it is forbidden to be would have passed. Taking away q⁴ sure passes leaves (q⁵ − q⁴) passes out of (q⁶ − q⁴), which is 1/(q+1).</p></div>
+    </details>
+    <details>
+      <summary>Why can the attacker always beat the 4 witnesses it saw?</summary>
+      <div><p>Making c1·v = … = c4·v = 0 is 4 linear equations in the tag-change numbers δ. The rows and tags are public, so the attacker can set up these equations. With more unknowns than equations, a solution with δ not all zero always exists, and it can be found with ordinary Gaussian elimination. No secret is involved, which is exactly what "keyless" means.</p></div>
+    </details>
+    <details>
+      <summary>Why does the 5th witness count as random?</summary>
+      <div><p>RLNC picks coefficients uniformly at random, and the attacker never saw this packet. The receiver only keeps it because it is independent of the others, so the only thing we know is "not in the span of the 4 seen rows". Every row outside that span is equally likely, which gives the q⁶ − q⁴ equally likely cases.</p></div>
+    </details>
+    <details>
+      <summary>What if the attacker saw all 5 witnesses?</summary>
+      <div><p>Then it makes v orthogonal to all 5 rows, and no check at the first stage can catch it: pass probability 1 there. Detection has to wait for a packet the attacker hasn't seen. That one does catch it every time: with r = 5 we get d = 1 and P(pass) = 0, because the q⁵ passing rows are then exactly the mixes of the 5 seen rows, and a new packet can't be one of those.</p></div>
+    </details>
+    <details>
+      <summary>Why does the content of p not matter?</summary>
+      <div><p>p is an honest packet, so ⟨p, h⟩ = 0 for every honest witness h. That part cancels out in Step 1. Only the change δ is left, and δ lives in the tags only.</p></div>
+    </details>
+  </div>
+</section>
+
+</main>
+</body>
+</html>

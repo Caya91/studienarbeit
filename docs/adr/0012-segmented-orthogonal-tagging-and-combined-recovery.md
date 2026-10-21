@@ -1,0 +1,59 @@
+# Split packets into a coeff-segment and N-1 data-segments, each independently orthogonal-tagged, to enable Combined-Recovery-style pairing
+
+Today's `OrthogonalTagGenerator.generate_all_tags` treats a whole packet `[coefficients | data]` as one vector: one self inner product and one cross inner product per pair, forced to 0 by one appended tag column per relationship. This has a real gap `localize_errors` (`playground/arc_pl.py`) exposes: ACR takes `broken_packet[0:gen_size]` (the coefficients) as ground truth to re-derive expected data from a trusted basis, and only ever reports candidate corrupted columns inside the data+tag region. Corruption inside the coefficient block is invisible to the recovery pipeline today — the whole-packet tag would flag the packet as broken, but ACR has no way to localize or repair *where* in the coefficient block the error is.
+
+Separately, we want to mimic Fathi & Pahlevani's Combined Recovery ("Enhancing Partial Packet Recovery in RLNC Using Homomorphic MACs") on this project's own keyless scheme: pair two broken same-length segments, XOR the segments and their tags, brute-force-correct the combined segment once instead of twice, then cross-reconstruct each original. That trick needs two same-length, same-kind segments to pair — which the current whole-packet tag doesn't give us, since coefficients and data are different lengths and serve different roles.
+
+## Decision
+
+Generalize the tag scheme from one whole-packet pool to `N` independent self/cross-orthogonal pools per packet ([[Segment]]s, see CONTEXT.md): a fixed **coeff-segment** plus `N-1` equal-length **data-segments** that the data block is split into. `N=1` is exactly today's scheme (retained, unmodified, as the baseline). Segments are never cross-orthogonal to each other — only same-type segments across the generation are tagged against one another.
+
+This gives us two things at once: coefficients finally get their own detectable/repairable orthogonality check, and same-type segments across different packets become valid XOR-pairing partners for [[Segment pairing]] (our name for applying the paper's trick to this scheme, to avoid confusion with the already-deferred pairing optimization on the *benchmark* homomorphic-MAC arm — see CONTEXT.md).
+
+**Pairing model**: pair packet A's segment `i` with packet B's segment `i` of the *same type* (both broken) — never a packet's own coeff-segment with its own data-segment (different lengths; not mutually orthogonal by construction anyway). FIFO partner selection when 3+ packets are broken in the same segment type simultaneously. An unpaired broken packet always falls back to the existing single-packet linear solve ([ADR-0002](0002-recovery-solves-linear-system-instead-of-bitflip-search.md)) — identically in both recovery options below, so the comparison isolates the search-method question from the pairing-availability question.
+
+**Two recovery strategies, measured against each other**:
+- **Uniform HD recovery** (Option 1): the pairing's brute-force correction step is bounded only by Hamming distance (reusing the CRC baseline's HD-search technique, [ADR-0011](0011-crc-single-packet-hd-search-recovery.md)), applied identically to every segment type. No ACR involved anywhere.
+- **Coefficient-first recovery** (Option 2): repair the coeff-segment the same HD-bounded way first, then hand the now-corrected coefficients to ACR exactly as it works today, to narrow candidate columns for the data-segment(s) before pairing/solving. Hypothesis: this is faster, because it makes ACR's existing trust assumption (coefficients are clean) actually true instead of silently violated.
+
+**Trust becomes segment-scoped**: extends [[Sniffing]] ([ADR-0004](0004-sniffing-trust-model.md)) so a packet can be coeff-trusted/data-broken simultaneously, rather than one binary flag for the whole packet. This has no counterpart in the paper — its ACR operates at the column level (`IC`), not a persistent packet-level trust state — so this is new design territory for the project, not a port.
+
+**Salt-byte fallback is required, not optional**: each segment gets its own salt byte ([ADR-0010](0010-zero-self-tag-resample-appended-block.md)), resampled independently until that segment's self-tag is nonzero. We verified experimentally (GF(2⁴), `binary_ext_fields/orthogonal_tag_creator.py`) that a bad salt only breaks cross-orthogonality *indirectly* — by landing a self-tag on 0, which forces the cross-tag solve into ADR-0010's documented random-fallback path. A well-chosen salt never needs special-casing against cross-orthogonality directly; the existing self-tag-nonzero criterion is sufficient per segment. Where per-segment salt resampling exhausts its budget without finding a nonzero self-tag (the small-field non-guarantee ADR-0010 already documents), that segment must surface the existing `ok=False` give-up behavior unchanged — not silently ship a degenerate segment. This matters more here than in ADR-0010's original single-pool case, because zero-tag failure probability compounds across all `N` segments (`~1-(1-1/q)^N` for at least one failure), so the give-up path will be exercised more often as `N` grows.
+
+## Consequences
+
+- Tag overhead grows to `N * gen_size` bytes total per packet (vs. today's `gen_size`).
+- Zero-tag failure probability across all segments grows with `N`; mitigated, not eliminated, by the per-segment salt fallback above — the give-up rate itself is one of the things the `N`-sweep should surface.
+- `generate_all_tags` and friends remain valid and unchanged for `N=1`; segmentation is additive, implemented as new code paths alongside the existing whole-packet scheme, not a replacement.
+
+
+## Resolved (2026-08-11)
+
+  - **`N` sweep range**: `N ∈ {1, 2, 3, 5}` (`num_data_segments ∈ {0, 1, 2, 4}`), swept as its own axis against BER (N × BER), not fixed. N is this scheme's headline knob, so a 2D sweep is the informative result, not a footnote.
+  - **`data_fields` for this experiment**: `build_segments`' own rank-deficiency floor (each segment's payload length must be `>= gen_size - 1`, or that segment is a guaranteed give-up — no salt draw can fix it) rules out the harness's
+  existing default (`gen_size=10, data_fields=10`) for `N >= 3`: at `data_fields=10`, 2 data-segments are only 5 bytes each, below the floor of 9. Bumped `data_fields` to **48** for the whole comparison (applied to every scheme in the
+  sweep, not just segmented, so it stays a fair comparison — overhead ratios and decode-success don't depend on payload size). Segment sizes at `data_fields=48`: N=2 → 48, N=3 → 24 each, N=5 → 12 each — all clear the floor with margin.
+  - **Uneven split**: confirmed to have no mathematical blocker — self/cross-orthogonality and pairing only ever compare segment `i` of one packet against segment `i` of another (trivially equal length by construction), never segment `i`
+  against segment `j`, so segments can differ in length from each other freely. `build_segments`' equal-length rule was a scoping choice, not a requirement. Remainder policy: **round-robin** (+1 byte to the first `r` segments, where `r
+  = data_len % num_data_segments`) rather than dumping the whole remainder on the last segment — keeps segment lengths closer to equal, minimizing variance in per-segment rank-deficiency risk. Sweep example: `data_fields=50,
+  num_data_segments=4` → lengths `13, 13, 12, 12`.
+  - **IC-refinement (paper Case 1/2)**: measure only, not implemented. `recover_uniform_hd`/`recover_coefficient_first` already fail honestly (`pairs_failed`) on same-bit-position overlapping errors; the sim reports that failure rate per
+  (N, BER) as a documented gap vs. Fathi & Pahlevani's Combined Recovery, rather than porting the paper's single-position swap search. Keeps scope bounded for the first full sim pass — can be revisited if the measured rate turns out to
+  matter. **[Superseded 2026-08-24 — reversed to PORT; see the 2026-08-24 resolution below and ticket 07. Recovery is this scheme's headline advantage, so overlapping-error pairs should be recovered, not merely measured.]**
+
+
+## Resolved (2026-08-24)
+
+  - **IC-refinement (paper Case 1/2) — PORT it** (reverses the 2026-08-11 "measure-only" call). Recovery is this scheme's headline advantage and the whole point of the comparison, so we recover every pair we can — including the same-bit-position overlapping-error pairs that `recover_uniform_hd` / `recover_coefficient_first` and the keyed-MAC arm currently detect and drop (`pairs_failed`). Implement the paper's IC-refinement + single-position-swap in **both** arms, each in its own tag language:
+    - **Keyed MAC arm**: brute-force each segment against its own homomorphic tag over the refined IC — the paper's `Correct(S_i, T_i, IC')` ported literally.
+    - **Keyless orthogonal arm**: route each failed-pair packet into the existing single-packet linear solve ([ADR-0002](0002-recovery-solves-linear-system-instead-of-bitflip-search.md)) over the refined IC — the keyless analog, since there is no per-packet keyed tag to brute-force against.
+
+    Each recovered half is re-verified against its real acceptance oracle before admission, so no new silent decodes. This also answers the Deferred question below (does the segmented pool need adaptation? — yes, the keyless arm uses the linear-solve fallback rather than a literal tag-swap). Tracked in ticket 07.
+
+    **Status (2026-08-31): keyed-MAC arm DONE.** Ported in `binary_ext_fields/segmented_mac_recovery.py` as the Stage-2 fallback inside `_search_pair_mac` (each half brute-forced against its own homomorphic tag over the same candidate columns via `_bitflip_search_mac`), toggle `ic_refinement=True` (default), sharing the pair's `candidates_budget` (None = unlimited). Verified: `pairs_failed` 68→5 and `pairs_recovered` 132→195 on a BER=3e-3 A/B (40 gens), `silent_decode_rate` stays 0 in the sweep, and `test_recover_uniform_hd_mac_recovers_overlapping_errors_via_ic_refinement` proves off→fail / on→exact-recover.
+
+    **Status (2026-09-01): keyless orthogonal arm DONE.** Ported in `segmented_recovery.py` as `_ic_refine_pair`, dispatched from `repair_segment` when the combined search fails; `ic_refinement=True` default. **Key correctness decision:** the keyless fallback is the ADR-0002 **EXACT** solve (`recover_packet_linear`) over each half's ACR-narrowed columns, gated on self+cross-orthogonality to the trusted pool AND mutual orthogonality of the two halves — deliberately NOT `recover_unpaired_segment`'s blind whole-segment bit-flip. A first cut using the bit-flip fallback measurably RAISED the silent-decode rate (BER=3e-3 A/B: silent 2→6, and 2→5 even with the mutual-orthogonality guard) because, with no keyed tag, the weak ~1/q orthogonality oracle accepts collision fixes — violating ticket-07 decision 4. The exact solve is deterministic: it recovers where ACR pins the error column (K≤#trusted, i.e. coefficient_first) and returns None (honest failure) when underdetermined (uniform_hd, no narrowing). Result (BER=3e-3 A/B, 40 gens): silent-safe both strategies (uniform_hd 2→2, coefficient_first 1→1); modest recovery lift (`pairs_failed` uniform_hd 47→42, coefficient_first 126→121). The honest keyless↔keyed asymmetry: the MAC's strong tag licensed a broad per-half search (big lift), the keyless arm can only safely take the exact-solve column ACR hands it (small lift, zero new silent). Tests: `test_recover_coefficient_first_recovers_overlapping_errors_via_ic_refinement` (off→fail / on→exact-recover) + `test_ic_refinement_uniform_hd_overlap_fails_honestly_without_arc` (safe no-op). **Ticket 07 complete (both arms).**
+
+## Deferred
+
+- (Resolved 2026-08-24 — see above.) Combined Recovery's IC-refinement (paper Case 1/2) is being ported to both arms; the keyless pool's adaptation is the ADR-0002 linear-solve fallback over the refined IC.

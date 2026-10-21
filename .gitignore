@@ -3,8 +3,9 @@ venv/
 env/
 ENV/
 results/
-.claude/
+.claude/*
 claude.md
+!.claude/CLAUDE.md
 env.bak/
 venv.bak/
 .vscode
@@ -14,16 +15,13 @@ __pycache__/
 *$py.class
 
 
-docs/
 misc/misc.py
 misc/string_print_test.py
-CONTEXT.md
 .VSCodeCounter/
 
 structure.txt
 
 
-pyproject.toml
 __init__.py
 binary_2pow4.egg-info
 

@@ -1,0 +1,36 @@
+# The CRC arm is a single-packet Hamming-distance search: corrupt one packet at HD 1–3, recover it by brute-forcing bit-combinations checked against a bare CRC
+
+> **Superseded in part (2026-10-14):** for the keyless-vs-CRC-32 comparison (ADR-0014) the CRC is the library `zlib.crc32`, not the pure-Python table CRC below. The standalone CRC-8/16/32 study (`simulation/crc_recovery.py`) keeps the pure-Python CRC.
+
+Supersedes the CRC-arm scope of ADR-0009. (An earlier draft of this file specified a Fly-PRAC segmented-CRC + dependent-group-algebra scheme; that was a misunderstanding of what the supervisors wanted and was never used — this file replaces it entirely, no supersede-chain.)
+
+The supervisors fixed the CRC baseline as the simplest honest thing: **take one packet whose CRC no longer verifies, and try to repair it by searching bit-flip candidates at Hamming distance 1, 2, 3, accepting the first candidate whose CRC matches.** No dependent groups, no algebraic localization, no segmentation. The point is to measure what a *bare* CRC can and cannot do as an error-*correction* (not just detection) primitive — its recovery rate, its **false-repair** rate (a wrong candidate passing the CRC by collision), and its cost — so the orthogonal tag and the homomorphic-MAC benchmark have an honest, minimal CRC floor to be compared against.
+
+## The experiment (standalone, `simulation/crc_recovery_sim.py`)
+
+- **Packet** = an opaque blob of `data_fields` data bytes. No coefficients, no RLNC structure — coefficients are irrelevant to this arm (contrast ADR-0009's coeffs-trusted framing; here there simply are none). Everything in the packet is data and everything is repairable.
+- **Corruption** = flip exactly `k` random distinct **bits**, with `k ∈ {1, 2, 3}` the independent variable (a deterministic Hamming distance, *not* a BER).
+- **Recovery** = whole-packet bit-combination search: try all 1-bit flips, then all 2-bit, then all 3-bit combinations of the `n = 8·data_fields` bit positions, recompute the CRC on each candidate, **stop at the first match**. Hamming distance is measured in individual bits, so a candidate is "flip `j` bit positions out of `n`" — a new search primitive (`C(n,1)+C(n,2)+C(n,3)` candidates), *not* the existing per-symbol `binary_ext_fields/bitops.py::bit_flip_candidates` (which only flips bits within one byte). The receiver does not know the true `k`, so it always searches up to HD 3.
+- **Outcome** of each trial, labelled against ground truth (known only to the sim, used only *after* the search stops): **correct** (recovered == original), **false-repair** (a CRC-passing candidate ≠ original — the dangerous silent-error case, the CRC analogue of the orthogonal scheme's silent-decode), or **no-repair** (nothing passed within HD 3).
+- **Cost** = number of CRC checks performed (candidates tried) — the same `correction_trials` currency the retired code used.
+
+## Decisions
+
+- **Real, pure-Python table CRCs — not `zlib.crc32` truncated.** Since this *is* the whole CRC experiment now (not a throwaway tag), collision behaviour must be honest at each width, so each width uses a genuine generator polynomial. Pure-Python (no `zlib`/C) so the eventual cross-scheme **wall-clock** comparison is like-for-like against the pure-Python orthogonal and homomorphic-MAC arms (see below).
+- **Width sweep `w ∈ {8, 16, 32}`**, anchored on CRC-16 (the width the PRAC/S-PRAC/QPPR family uses); CRC-8 and CRC-32 bracket it to expose the collision cliff.
+- **Size sweep `data_fields ∈ {4, 8, 16, 32, 64}` bytes** (`n = 32…512` bits) — small enough that HD≤3 exhaustive search stays a seconds-per-cell Monte Carlo, wide enough to show false-repair climbing with `n`.
+- **~1000 trials per (size × width × HD) cell.** False-repair is reported both from Monte Carlo (nails the small-width cells) and analytically (≈ candidate-count · `2⁻ʷ`, which covers the CRC-32 tail MC can't observe).
+- **`correct()` accepts an optional suspect-column/bit hint.** The standalone experiment runs it with *no* hint (whole-packet search, the supervisor's version — the primary result). But the function is written so the later comparison can pass an ACR-localized suspect set and give CRC the *same* localization the homomorphic-MAC and orthogonal arms get — ACR is coefficient algebra, independent of the checksum (it is exactly what the paper's own CRC baselines S-PRAC/QPPR do), so a localization-free CRC in the comparison would be a strawman. Support both; lead with the no-localization number.
+
+## Consequences / relationships
+
+- **Retires the Fly-PRAC group machinery.** `simulation/fly_prac.py`'s `dependent_packet`, `syndrome_columns`, `repair_group`, `GroupEntry`, `FlyPracConfig.s`/segmentation, ICRC/OCRC split, and `scheme_comparison_sim.py::run_fly_prac_trial` are all removed. The reusable idea that survives is the CRC-guided bit-flip search, now generalized to a whole-packet bit-combination search with no syndrome hint.
+- **Feeds a three-way comparison (later phases).** The eventual shared scenario is a small generation transmitted end-to-end (single-hop; CRC cannot survive recoding, per ADR-0009), comparing four metrics across CRC / homomorphic-MAC / orthogonal: **recovery rate, silent pollutions (= false-repair / checksum collisions), average completion time per packet (both logical ticks *and* wall-clock), and overhead in bytes counted as the extra packets a scheme is forced to retransmit.** The standalone CRC sim emits the per-packet correct/false/no-repair/cost figures those metrics build on, in that vocabulary, so it drops into the comparison without rework.
+- **Shared-substrate principle (fixes the wall-clock confound).** All three arms run in the same pure-Python substrate. The homomorphic-MAC arm (Agrawal–Boneh, `tᵢ=⊕ⱼ(p'ⱼ·kᵢⱼ)`) is *literally the orthogonal tag's field inner product with a random key*, so those two share GF(2⁸) (`CountingField`) and their field-mul op counts are directly comparable; CRC is GF(2) polynomial division, so it can't share the field, and its native op-count currency (CRC checks / byte-ops) stays separate — but pure-Python execution makes wall-clock a fair bridge across all three.
+- **Still not a security mechanism** (unchanged from the retired draft and ADR-0009): a white-box forger recomputes the CRC trivially. CRC is compared only against random bit-errors; the homomorphic MAC remains the only arm compared against the intelligent attacker.
+
+## Deferred, explicitly
+
+1. **Homomorphic-MAC benchmark arm** (phase 2) — option (b) *homomorphic-MAC-as-checker*: the "Enhancing Partial Packet Recovery in RLNC Using Homomorphic MACs" (Fathi & Pahlevani 2025) primitive as the checker in place of CRC, widths HMAC-8/16. The paper's *Combined Recovery* segment-pairing optimization (its Algorithm 1) is **not** reproduced — it changes recovery *cost*, not *outcome* (collisions are zero either way), so it's a documented possible extension, not the benchmark.
+2. **The full three-way comparison harness** (phase 3) — the four-metric shared-generation driver.
+3. **Localized CRC in the comparison** — supported by the `correct()` hint parameter, reported as a fair-fight contrast to the primary no-localization number.

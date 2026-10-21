@@ -1,0 +1,7 @@
+# Recovery acceptance oracle checks full-generation orthogonality, not self-tag alone
+
+`recover_packet_bitflip` accepted a candidate as soon as `check_orth_packet` (self-inner-product == 0) held. Because squaring is additive and bijective on GF(2^m) (char-2 field), that single equation always has exactly one solution for any single unknown byte — so it always "succeeds," at the true error column or a wrong one, giving zero discriminating power. This is the mechanism behind the false positives demonstrated in `false_positive_packets.py`.
+
+We considered checking against one other packet's cross-tag (cuts coincidental acceptance on a wrong column to ~1/field_size, e.g. ~1/256 in GF(2^8), since it adds one more independent linear equation in the same unknown) versus checking against all other packets in the generation (drops it to ~1/field_size^(gen_size-1), effectively impossible). We picked full-generation cross-check: the verification itself is a cheap O(packet_length) inner product regardless of how many packets it's run against, so the cost savings from checking fewer packets are negligible compared to the combinatorial candidate search that dominates recovery's runtime — there's no real trade-off to give up safety for.
+
+Revisit this if `gen_size` becomes large enough (hundreds+) that the linear scan over packets during verification is a measured hotspot; until then, always verify against the whole generation.

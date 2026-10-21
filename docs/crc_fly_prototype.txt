@@ -1,0 +1,30 @@
+## Recommended skill order (CRC from fly-prac)
+
+You have a codebase, so main flow applies:
+
+1. **`/research`** (optional first) — background agent reads fly-prac CRC against primary sources, drops cited MD in repo. Feeds step 2. Skip if you already understand the algo fully.
+2. **`/grill-with-docs`** — sharpen the idea by interview; leaves paper trail (`CONTEXT.md` + ADRs). Start here. Key questions for your project: does CRC replace/complement orthogonal tag? recoding behavior? 
+field-arithmetic interaction? op-count currency (ties to your [[crc_hmac_comparison_baselines]] work).
+3. **Prototype detour** — during grilling, when a question needs a runnable answer: `/handoff` out → **`/prototype`** (throwaway, answer one design Q, e.g. "does CRC-over-coded-packet survive recoding?") → 
+`/handoff` back. Keep the answer, delete the code.
+4. **`/to-spec`** → **`/to-tickets`** — since you called it multi-step. Splits into tracer-bullet tickets, blockers-first.
+5. **`/implement`** per ticket, fresh context each — drives `/tdd` internally, closes with `/code-review`.
+
+**Context hygiene:** keep steps 2→4 in one unbroken window (don't compact/clear until after `/to-tickets`).
+
+**Shortcut:** if after grilling it's actually single-session, skip 4 — go straight `/implement`.
+
+## Prototype — yes
+
+Fits cleanly at step 3. You already flagged a good candidate (CRC baseline not yet implemented). `/prototype` is exactly for "does this feel right on coded packets" before committing to the real module.
+
+## Wayfinder + tickets without git
+
+Two separate concerns — **tickets ≠ git**.
+
+- Wayfinder writes to the **issue tracker** (local `.scratch/<feature>/issues/` files, or a real tracker). Produces **decisions/ADRs, not code**. It does **not** commit, branch, or push. So "don't want git 
+interaction" is fully compatible — ticket creation touches the tracker, not git.
+- **But:** for *this* CRC task, wayfinder is likely overkill. It's for huge foggy efforts where the destination isn't visible. Implementing a specified algorithm from a paper is 
+idea-you-can-hold-in-one-session territory → `/grill-with-docs`, not wayfinder.
+
+Reach for wayfinder only if the CRC integration opens up genuinely unknown design space (recoding + tagging + field constraints all uncertain at once). Otherwise main flow above.

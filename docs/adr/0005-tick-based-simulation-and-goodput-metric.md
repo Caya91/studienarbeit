@@ -1,0 +1,9 @@
+# Throughput simulation uses discrete-event ticks and reports goodput, not wall-clock time or raw packet rate
+
+The KPI sweep needs many Monte Carlo trials across a grid of field sizes and generation sizes to get statistically meaningful mean/std results, the same way the existing acceptance-probability scripts already run thousands of trials per configuration. Reusing the wall-clock `asyncio.sleep()`-based timing sketched in `playground/full_node_setup_pl.py` would make every trial take real seconds — an impractical sweep — and would mix real OS/Python scheduling noise into a number meant to isolate the algorithm's own overhead.
+
+Decision: the simulator advances in logical ticks. One tick lets every link carry exactly one packet, regardless of that packet's byte size — there is no bandwidth model. This makes comparisons between configurations (and, later, between competing pollution-detection schemes run through the same simulator) attributable to the algorithm rather than measurement noise. The trade-off is that tick counts aren't an absolute wall-clock number and can't be checked against real link rates without a separate calibration step — not needed for this thesis's internal comparisons.
+
+Throughput is reported as **goodput** (payload bytes recovered at the Sink, divided by ticks to full rank), not raw packets/sec. Goodput is sensitive to tag overhead — a heavier-tagged scheme needs more ticks to deliver the same payload — which is the thing actually being measured. Raw packet rate is kept only as a secondary sanity check on the simulator itself.
+
+This first pass measures a clean channel (no pollution). Nothing in the tick/goodput model depends on channel cleanliness, so a pollution-rate parameter can later become another swept axis without changing the timing model — sniffing, ACR, and recovery would simply add per-tick cost at the affected nodes.

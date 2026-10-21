@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binary_2pow4"
+version = "0.1.0"
+description = "Binary GF(2^4) operations for thesis"
+authors = [{name = "Your Name", email = "you@example.com"}]
+dependencies = ["icecream"]  # Add your deps like numpy
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
