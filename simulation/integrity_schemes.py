@@ -17,9 +17,10 @@ Two schemes here:
 The CRC baseline is not here: ADR-0011 refocused it as a standalone single-packet
 Hamming-distance recovery study (`simulation/crc_recovery.py` /
 `crc_recovery_sim.py`) with its own pure functions, not an `IntegrityScheme`.
-(The plain CRC-32 detect-and-drop `CrcScheme` once here, and its short-lived
-Fly-PRAC dependent-group replacement, were both retired.) The homomorphic-MAC
-benchmark that will join this file as a second recovery-capable scheme is the
+(The plain CRC-32 detect-and-drop `CrcScheme`, its short-lived Fly-PRAC dependent-group
+replacement, and the later CRC-16 repair `CrcScheme` (crc_localized / crc_whole) were all
+retired -- the CRC comparison now lives in the isolated harness as CRC-32 arms, ADR-0014.)
+The homomorphic-MAC benchmark that will join this file as a second recovery-capable scheme is the
 deferred phase 2 (ADR-0011).
 
 The decisive asymmetry (see ADR-0009): the orthogonal tag survives RLNC recoding
@@ -58,23 +59,17 @@ from binary_ext_fields.segmented_mac_recovery import (
     classify_segment_trust_mac, recover_acr_only_mac, recover_coefficient_first_mac, recover_uniform_hd_mac,
 )
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
-from simulation.crc_recovery import CrcInstrument, recover as crc_recover
-from playground.arc_pl import localize_errors
-from playground.new_recovery import _basis_full_rank
 
 
 # ── Tag widths (ADR-0009) ─────────────────────────────────────────────────────
 HMAC_TAG_BYTES = 16        # HMAC-SHA-256 truncated to 128 bits
-CRC_WIDTH = 16             # comparison CRC width -- CRC-16, the PRAC/S-PRAC/QPPR anchor
-CRC_TAG_BYTES = 2          # 16-bit tag = 2 bytes
-CRC_WHOLE_BUDGET = 100_000 # whole-packet (no-localization) per-packet candidate cap
 SEGMENTED_PAIR_BUDGET = 100_000  # recover_pair_by_combined_search candidate cap, per pair (ADR-0012)
 
 
 @dataclass
 class AdmitConfig:
-    """Receiver-side admission knobs. Only the orthogonal scheme reads them; CRC and
-    HMAC ignore all of it (a MAC is self-sufficient -- no cross-verify, no warm-up)."""
+    """Receiver-side admission knobs. Only the orthogonal scheme reads them;
+    HMAC ignores all of it (a MAC is self-sufficient -- no cross-verify, no warm-up)."""
     hamming_distance: int = 1
     mode: str = "per_column"
     # Number of trusted witness packets each self-passing packet is cross-checked
@@ -272,105 +267,6 @@ class HmacScheme(_MacScheme):
 
     def primary_ops(self, instrument) -> int:
         return instrument.block_ops
-
-
-# ── CRC recovery baseline (ADR-0011, phase 3) ─────────────────────────────────
-# Unlike HMAC (detect-and-drop), the CRC arm REPAIRS: a packet whose CRC fails is
-# bit-flip searched (HD 1..3) for a candidate whose CRC matches, exactly the
-# standalone crc_recovery.recover primitive, now embedded in the send-until-decodable
-# generation loop. Two variants share this class:
-#   crc_localized -- ACR-localized (localize_errors flags the suspect byte-columns
-#     from the trusted basis; only those bits are searched). Gives CRC the SAME
-#     algebraic localization the orthogonal arm gets -- the fair fight (ADR-0011).
-#   crc_whole     -- no localization: search every bit, budget-capped. The bare-CRC
-#     floor; slow, and blind to structure.
-# Channel model: the whole wire (tag included) rides the BER, same as every other
-# arm. A corrupted tag makes the CRC target wrong, so such a packet just fails to
-# repair and is dropped -> a retransmission, folded into overhead + completion time.
-
-@dataclass
-class CrcBundle:
-    """Per-trial CRC state: the field (for ARC localization), the native CRC op
-    counter, and a repair cache. Because a failing packet's bytes never change and
-    localization is basis-independent once the basis is full rank, each distinct
-    failing packet need be searched only once per trial -- the cache makes the
-    whole-packet variant tractable inside the every-round pool re-scan."""
-    base_field: TableField
-    crc: CrcInstrument
-    repair_cache: dict = field(default_factory=dict)
-
-
-def _suspect_bits(base_field, basis, code: bytes, gen_size: int) -> set[int]:
-    """ARC-localized suspect bit positions for `code` (coeffs+data, no tag): the bits
-    of every byte-column localize_errors flags as corrupted. Empty when the error is
-    in the coefficient block (localize_errors' intrinsic blind spot) -> that packet is
-    unrepairable in localized mode, a measurable gap vs whole-packet search."""
-    cols = localize_errors(base_field, [bytearray(b) for b in basis], bytearray(code), gen_size)
-    return {8 * c + b for c in cols for b in range(8)}
-
-
-class CrcScheme(_MacScheme):
-    """CRC-16 tag + bit-flip repair. Reuses _MacScheme's make_source/attach/overhead
-    (identical [coeffs|data]+tag layout); only admit differs (repair, not drop)."""
-    width = CRC_WIDTH
-    tag_bytes = CRC_TAG_BYTES
-    whole_budget = CRC_WHOLE_BUDGET
-
-    def __init__(self, localized: bool, name: str):
-        self.localized = localized
-        self.name = name
-
-    def new_instrument(self, base_field):
-        return CrcBundle(base_field=base_field, crc=CrcInstrument())
-
-    def _tag(self, instrument, code: bytes) -> bytes:
-        return instrument.crc.crc(bytes(code), self.width).to_bytes(self.tag_bytes, "big")
-
-    def admit(self, instrument, wire_pool, gen_size, cfg: AdmitConfig):
-        tb, w = self.tag_bytes, self.width
-        verified: list[bytearray] = []
-        failing: list[tuple[bytes, int]] = []
-        for wire in wire_pool:
-            code = bytes(wire[:-tb])
-            recv_tag = int.from_bytes(bytes(wire[-tb:]), "big")
-            if instrument.crc.crc(code, w) == recv_tag:
-                verified.append(bytearray(code))          # CRC-clean -> straight into basis
-            else:
-                failing.append((code, recv_tag))
-        accepted = list(verified)
-        if not failing:
-            return accepted
-
-        basis = None
-        if self.localized:
-            # ARC needs a full-rank gen_size basis of CRC-clean packets; until then we
-            # admit only the clean ones (the failing ones wait / get retransmitted).
-            if len(verified) >= gen_size and _basis_full_rank(instrument.base_field, verified[:gen_size], gen_size):
-                basis = verified[:gen_size]
-            else:
-                return accepted
-
-        max_hd = cfg.hamming_distance          # HD-matched to the orthogonal arm (fair comparison)
-        cache = instrument.repair_cache
-        for code, recv_tag in failing:
-            if code in cache:
-                repaired = cache[code]
-            elif self.localized:
-                suspect = _suspect_bits(instrument.base_field, basis, code, gen_size)
-                repaired, _ = crc_recover(instrument.crc, code, recv_tag, w, max_hd=max_hd, suspect_bits=suspect)
-                cache[code] = repaired
-            else:
-                repaired, _ = crc_recover(instrument.crc, code, recv_tag, w, max_hd=max_hd, budget=self.whole_budget)
-                cache[code] = repaired
-            if repaired is not None:
-                accepted.append(bytearray(repaired))
-        return accepted
-
-    def op_counts(self, instrument) -> dict:
-        return {"crc_checks": instrument.crc.correction_trials, "crc_bytes": instrument.crc.crc_ops}
-
-    def primary_ops(self, instrument) -> int:
-        return instrument.crc.correction_trials
 
 
 # ── Segmented orthogonal tagging (ADR-0012) ────────────────────────────────────
@@ -771,14 +667,12 @@ SEGMENTED_MAC_SCHEMES = {
 
 SCHEMES = {s.name: s for s in (
     OrthogonalScheme(), HmacScheme(),
-    CrcScheme(localized=True, name="crc_localized"),
-    CrcScheme(localized=False, name="crc_whole"),
     *SEGMENTED_SCHEMES.values(),
     *SEGMENTED_MAC_SCHEMES.values(),
 )}
 
 
-# ── Attack-side forging (ADR-0009 HMAC arm; CRC/Fly-PRAC not tested vs attacker) ─
+# ── Attack-side forging (ADR-0009 HMAC arm) ─
 def forge_orthogonal(atk_field, saved_code_packets, gen_size, data_fields, threshold,
                      avoid_coeff_rows, rng):
     """Targeted forgery against the orthogonal oracle -- the existing white-box
