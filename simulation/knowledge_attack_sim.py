@@ -216,26 +216,30 @@ def forge_coeff_keyless(setup, observed_packets, forged_row, atk_rng, cnt, new_r
                 break
             row = list(new_row())
         b = []
-        for o in obs:
+        with cnt.phase("knowledge_dot"):     # r dot products over the g payload symbols (= keyed's k*g)
+            for o in obs:
+                acc = 0
+                for x, y in zip(row, o[:g]):
+                    acc = cnt.add(acc, cnt.mul(x, y))
+                b.append(acc)
             acc = 0
-            for x, y in zip(row, o[:g]):
-                acc = cnt.add(acc, cnt.mul(x, y))
+            for x in row:
+                acc = cnt.add(acc, x)
             b.append(acc)
-        acc = 0
-        for x in row:
-            acc = cnt.add(acc, x)
-        b.append(acc)
         x0 = [atk_rng.randint(0, cnt.max_value) for _ in range(g + 1)]
         b_shift = []
-        for a_row, bj in zip(A, b):
-            acc = bj
-            for a, x in zip(a_row, x0):
-                acc = cnt.add(acc, cnt.mul(a, x))
-            b_shift.append(acc)
-        y = _gf_solve(cnt, A, b_shift)
+        with cnt.phase("randomise"):         # b + A x0: (r+1)(g+1) muls (incl. g+1 muls by 1 of the XOR row)
+            for a_row, bj in zip(A, b):
+                acc = bj
+                for a, x in zip(a_row, x0):
+                    acc = cnt.add(acc, cnt.mul(a, x))
+                b_shift.append(acc)
+        with cnt.phase("solve"):             # Gauss-Jordan on (r+1) x (g+2): <= (r+1)^2 (g+2) muls
+            y = _gf_solve(cnt, A, b_shift)
         if y is None:
             continue
-        rest = [cnt.add(a, c) for a, c in zip(x0, y)]
+        with cnt.phase("randomise"):
+            rest = [cnt.add(a, c) for a, c in zip(x0, y)]
         return bytearray(row + rest), attempt
     return None, attempt
 
@@ -245,7 +249,8 @@ def forge_coeff_keyed(setup, leaked_keys: int, forged_row, atk_rng, cnt):
     vectors (i.i.d. keys, so which subset leaks is immaterial), uniform guesses for the rest."""
     s = next(i for i, seg in enumerate(setup.segments) if seg.kind == "coeff")
     keys = setup.keyset[s]
-    tags = [inner_product_bytes(cnt, forged_row, keys[j]) for j in range(leaked_keys)]
+    with cnt.phase("knowledge_dot"):         # k dot products over the g payload symbols
+        tags = [inner_product_bytes(cnt, forged_row, keys[j]) for j in range(leaked_keys)]
     tags += [atk_rng.randint(0, cnt.max_value) for _ in range(len(keys) - leaked_keys)]
     return bytearray(forged_row) + bytearray(tags)
 
