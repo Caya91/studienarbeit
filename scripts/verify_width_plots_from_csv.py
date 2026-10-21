@@ -84,11 +84,12 @@ def _pct(yv):
     return f"{100 * yv:.1f}%" if yv < 0.995 else "100%"
 
 
-def _measured(ax, c, color, marker, label=None, low=None):
-    """low: dict x -> list of (y, text, color) collecting near-zero labels for _place_low (None = label all here)."""
-    # silent-decode rate (every admitted forgery decoded wrong in all runs so far; plot the silent count itself)
-    x, y = c["knowledge"].to_numpy(), c["silent_rate"].to_numpy()
-    ci = [wilson(int(sv), int(t)) for sv, t in zip(c["silent"], c["trials"])]
+def _measured(ax, c, color, marker, label=None, low=None, count="silent"):
+    """low: dict x -> list of (y, text, color) collecting near-zero labels for _place_low (None = label all here).
+    count: summary column counted per trial -- S2 plots "silent", S3 (tag pollution) "admitted"."""
+    # S2: silent-decode rate (every admitted forgery decoded wrong in all runs so far; plot the silent count itself)
+    x, y = c["knowledge"].to_numpy(), (c[count] / c["trials"]).to_numpy()
+    ci = [wilson(int(sv), int(t)) for sv, t in zip(c[count], c["trials"])]
     lo, hi = np.array([a for a, _ in ci]), np.array([b for _, b in ci])
     ax.errorbar(x, y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)], fmt="none", ecolor=color,
                 elinewidth=1.2, capsize=3, zorder=2)
