@@ -35,6 +35,11 @@ Two localization variants (ADR-0014 point 3):
 Both drop coeff-corrupted targets before pairing (their coefficients are untrusted;
 symmetric with the keyless/keyed ARC-only drop), so blind differs from acr ONLY in
 the columns searched.
+
+End to end (ADR-0015): `recover_acr_only_crc` is the production (sniffed-trust) ACR-only repair
+used by integrity_schemes.SegmentedCrcScheme(repair="acr") -- the S-PRAC-like arm of the
+end-to-end sweep and the CRC sink of the two-hop sim; `repair_segment_crc` gained an optional
+per-pair cache for that repeated-admit use (default off, harness unchanged).
 """
 import zlib
 from dataclasses import dataclass
@@ -245,10 +250,15 @@ def _search_pair_crc(instrument: Crc32Instrument, slice_a: bytearray, slice_b: b
 def repair_segment_crc(instrument: Crc32Instrument, packets: list[bytearray], segment: CrcSegment,
                        candidate_columns_for, max_combined_hd: int = 2, candidates_budget: int | None = None,
                        ic_refinement: bool = True, drop_unlocalized: bool = False,
-                       injected_trust: SegmentTrust | None = None) -> SegmentRepairOutcome:
+                       injected_trust: SegmentTrust | None = None,
+                       pair_cache: dict | None = None) -> SegmentRepairOutcome:
     """Repair one segment across the pool in place (repair_segment_mac, oracle = CRC).
     candidate_columns_for(i) -> columns | None; None = unlocalized (dropped when
-    drop_unlocalized, else whole segment)."""
+    drop_unlocalized, else whole segment).
+
+    pair_cache (ADR-0015, default None = off): per-pair search results persisted across calls,
+    like the keyless/keyed per-pair cache. The CRC oracle is self-sufficient (no trusted set), so
+    the key is the two slices + the searched columns + the search knobs."""
     trust = injected_trust if injected_trust is not None \
         else classify_segment_trust_crc(instrument, packets, segment)
     if drop_unlocalized:
@@ -268,9 +278,21 @@ def repair_segment_crc(instrument: Crc32Instrument, packets: list[bytearray], se
         cols_b = candidate_columns_for(pair.packet_b)
         columns = pair_columns if (cols_a is None or cols_b is None) else sorted(set(cols_a) | set(cols_b))
         halves = None if (cols_a is None or cols_b is None) else (cols_a, cols_b)
-        result = _search_pair_crc(instrument, segment_slice(packets[pair.packet_a], segment),
-                                  segment_slice(packets[pair.packet_b], segment), segment, columns,
-                                  max_combined_hd, candidates_budget, ic_refinement, half_columns=halves)
+        slice_a = segment_slice(packets[pair.packet_a], segment)
+        slice_b = segment_slice(packets[pair.packet_b], segment)
+        key = None
+        if pair_cache is not None:
+            key = (bytes(slice_a), bytes(slice_b), tuple(columns),
+                   None if halves is None else (tuple(halves[0]), tuple(halves[1])),
+                   max_combined_hd, candidates_budget, ic_refinement)
+            result = pair_cache.get(key)
+        else:
+            result = None
+        if result is None:
+            result = _search_pair_crc(instrument, slice_a, slice_b, segment, columns,
+                                      max_combined_hd, candidates_budget, ic_refinement, half_columns=halves)
+            if key is not None:
+                pair_cache[key] = result
         if result.ok:
             _write_segment(packets[pair.packet_a], segment, result.fixed_a)
             _write_segment(packets[pair.packet_b], segment, result.fixed_b)
@@ -330,6 +352,33 @@ def recover_arc_only_crc(field, instrument: Crc32Instrument, packets: list[bytea
         per_segment.append(repair_segment_crc(instrument, tmp, segment, localizer, max_combined_hd,
                                               candidates_budget, ic_refinement, drop_unlocalized=True,
                                               injected_trust=injected))
+
+    ok = all(check_crc_segmented(instrument, tmp, segments).values()) if final_check else None
+    return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)
+
+
+def recover_acr_only_crc(field, instrument: Crc32Instrument, packets: list[bytearray], segments: list[CrcSegment],
+                         gen_size: int, max_combined_hd: int = 2, candidates_budget: int | None = None,
+                         pair_cache: dict | None = None, ic_refinement: bool = True,
+                         repair_span: str = "payload", final_check: bool = True) -> SegmentedRecoveryReport:
+    """Production ACR-only CRC arm (ADR-0015, end to end; S-PRAC-like): the CRC mirror of
+    segmented_recovery.recover_acr_only / recover_acr_only_mac, with SNIFFED per-segment CRC trust
+    instead of the harness's injected helper basis. No coeff repair; each data segment is repaired
+    only where ACR localizes the broken packet (gen_size packets CRC-clean in both the coeff segment
+    and that data segment); an unlocalizable broken packet stays untouched in the pool until a later
+    admit. Same pairing / combined search / IC halves / budget as the other arms, oracle = CRC."""
+    tmp = [bytearray(p) for p in packets]
+    coeff_segment = next(s for s in segments if s.kind == "coeff")
+    coeff_trust = classify_segment_trust_crc(instrument, tmp, coeff_segment)
+
+    per_segment = []  # coeff segment intentionally NOT repaired (ACR-only)
+    for segment in (s for s in segments if s.kind == "data"):
+        data_trust = classify_segment_trust_crc(instrument, tmp, segment)
+        localizer = _make_arc_localizer(field, tmp, coeff_segment, segment, gen_size,
+                                        coeff_trust.trusted, data_trust.trusted, repair_span=repair_span)
+        per_segment.append(repair_segment_crc(instrument, tmp, segment, localizer, max_combined_hd,
+                                              candidates_budget, ic_refinement, drop_unlocalized=True,
+                                              injected_trust=data_trust, pair_cache=pair_cache))
 
     ok = all(check_crc_segmented(instrument, tmp, segments).values()) if final_check else None
     return SegmentedRecoveryReport(packets=tmp, per_segment=per_segment, ok=ok)

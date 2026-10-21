@@ -37,7 +37,7 @@ from icecream import ic
 ic.disable()
 
 from binary_ext_fields.custom_field import create_field, CountingField
-from binary_ext_fields.generate_symbols import recode_rlnc_without_coeffs
+from binary_ext_fields.generate_symbols import code_with_given_coefficients, recode_rlnc_without_coeffs
 from binary_ext_fields.pollution import pollute_generation, pollute_random
 from simulation.recovery_decode_sim import _try_decode
 from simulation.integrity_schemes import (
@@ -117,9 +117,28 @@ def _pollute_positions(field, packet: bytearray, bit_error_rate: float, position
     return out
 
 
+def _fill_trace(trace: dict, base_field, accepted, gen_size, source_suffix, corrupted_keys: set,
+                n_corrupted: int, op_counts: dict) -> None:
+    """ADR-0015 repair-activity ground truth for one finished trial (see run_recovery_trial `trace`).
+    A code packet is identified by its coefficient vector (first gen_size symbols; never corrupted
+    under the restricted error scopes, and distinct with overwhelming probability), its expected
+    information = coefficients x source_suffix. Uses the UNcounted base field: grading, not work."""
+    repaired_used = wrong_used = 0
+    for code in accepted or []:
+        coeffs = bytes(code[:gen_size])
+        expected = code_with_given_coefficients(source_suffix, bytearray(coeffs), base_field)
+        if bytes(code[gen_size:]) != bytes(expected):
+            wrong_used += 1
+        elif coeffs in corrupted_keys:
+            repaired_used += 1
+    trace.update(n_corrupted_rx=n_corrupted, n_accepted_final=len(accepted or []),
+                 repaired_used=repaired_used, wrong_used=wrong_used, op_counts=op_counts)
+
+
 def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate,
                        cfg: AdmitConfig, max_packets_factor=MAX_PACKETS_FACTOR,
-                       deadline_s: float | None = None, error_scope: str = "whole_packet") -> SchemeTrialResult:
+                       deadline_s: float | None = None, error_scope: str = "whole_packet",
+                       trace: dict | None = None) -> SchemeTrialResult:
     """One receiver lifetime for a given scheme: keep pulling fresh recoded packets,
     tag -> pollute -> admit -> try decode, until decodable or the arrival cap. The
     scheme's native op counter charges tagging/verification/repair; a separate
@@ -133,7 +152,15 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
     `error_scope` (2026-09-29): "whole_packet" (default, unchanged behaviour) flips bits over
     the whole wire packet; "data_payload" / "data_segment" restrict the flips to the
     data-segment payload (+ its salt/tag bytes) of a segmented scheme -- the coeff segment
-    is never hit (see integrity_schemes.ERROR_SCOPES)."""
+    is never hit (see integrity_schemes.ERROR_SCOPES); "data_tags_only" (2026-10-17) flips only the
+    data segments' salt/tag / MAC / CRC bytes, payload clean.
+
+    `trace` (ADR-0015; None = off, the default path is untouched): a dict the call fills with
+    repair-activity ground truth -- n_corrupted_rx (received packets with >= 1 flipped bit),
+    n_accepted_final (size of the last admitted set), repaired_used (wire-corrupted packets
+    inside that set with the RIGHT information, i.e. repaired and used), wrong_used (admitted
+    packets with wrong information) and op_counts (scheme.op_counts). Bookkeeping only: it draws
+    no randomness and charges no ops, so the trial itself is identical with or without it."""
     source, source_suffix = scheme.make_source(base_field, data_fields, gen_size)
     positions = None if error_scope == "whole_packet" else scheme.error_positions(gen_size, error_scope)
     instrument = scheme.new_instrument(base_field)
@@ -144,6 +171,9 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
     received = 0
     decoded = correct = False
     hit_deadline = False
+    corrupted_keys: set = set()   # trace only: coefficient vectors of wire-corrupted packets
+    n_corrupted = 0
+    accepted = None
 
     start = time.perf_counter()
     while received < max_packets:
@@ -158,6 +188,9 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
             polluted = _pollute_positions(base_field, wire, bit_error_rate, positions)
         pool.append(bytearray(polluted))
         received += 1
+        if trace is not None and polluted != wire:
+            n_corrupted += 1
+            corrupted_keys.add(bytes(wire[:gen_size]))
 
         accepted = scheme.admit(instrument, pool, gen_size, cfg)
         if accepted is None:          # orthogonal "waiting" -- no basis yet
@@ -166,6 +199,9 @@ def run_recovery_trial(base_field, scheme, data_fields, gen_size, bit_error_rate
         if decoded:
             break
     wall_time_s = time.perf_counter() - start
+    if trace is not None:
+        _fill_trace(trace, base_field, accepted, gen_size, source_suffix, corrupted_keys, n_corrupted,
+                    scheme.op_counts(instrument))
 
     silent = decoded and not correct
     status = "decoded" if correct else ("silent_decode" if decoded else

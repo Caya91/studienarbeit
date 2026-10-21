@@ -41,6 +41,23 @@ setup used for the size/BER study:
 acr_only repairs by bit-flip over the ACR columns (default); --acr-exact-solve switches the keyless
 arm back to the ADR-0002 exact solve + whole-segment fallback (schema v3 column acr_bitflip_only).
 
+2026-10-16 (ADR-0015, end-to-end throughput vs conventional ARQ, schema v4): two more arms,
+zlib CRC-32 per segment (integrity_schemes.SegmentedCrcScheme, ADR-0014 layout):
+  --arm crc_arq   conventional ARQ: any failing segment drops the packet, pull another (no repair)
+  --arm crc_acr   S-PRAC-like: production ACR-only repair with the CRC as oracle
+--strategy is ignored by the CRC arms. Schema v4 appends n_corrupted_rx, repaired_used, wrong_used,
+n_accepted_final (run_recovery_trial `trace`: repaired_used = wire-corrupted packets inside the final
+decode basis) and crc_bytes (receiver CRC-32 bytes; 0 for keyless/keyed). wire_symbols is measured on
+the attached wire packet (for keyless/keyed attach is the identity -> unchanged). The ADR-0015 run is
+scripts/e2e_throughput_runs.sh (gen 4, df 100/300/1000 -> N 3/7/21, payload-only errors).
+
+2026-10-17 (ADR-0015 follow-up, three channel-error models x search depth): --hamming-distance (max search
+depth; default HAMMING_DISTANCE = 2, unchanged), --no-final-check (AdmitConfig.final_check=False: skips the
+acr_only post-repair whole-pool check admit never reads -> identical admitted packets, fewer ops), and the
+error scope data_tags_only (only the data segments' salt/tag / MAC / CRC bytes). Schema unchanged (v4: rows
+already carry hamming_distance + error_scope; final_check is in run_config.json admit_config).
+Run: scripts/e2e_three_models_runs.sh.
+
 Run (PowerShell, from the worktree; memory how_to_run_sims):
   $env:LOG_FOLDER="./logs"; $env:PYTHONPATH="."
   & "E:/projects/studienarbeit/.venv/Scripts/python.exe" scripts/pareto_sweep.py --stage smoke
@@ -68,10 +85,13 @@ os.environ.setdefault("LOG_FOLDER", str(_ROOT / "logs"))
 import numpy as np
 
 from binary_ext_fields.custom_field import create_field
-from simulation.integrity_schemes import AdmitConfig, SegmentedMacScheme, SegmentedScheme
+from simulation.integrity_schemes import AdmitConfig, SegmentedCrcScheme, SegmentedMacScheme, SegmentedScheme
 from simulation.scheme_comparison_sim import SEGMENTED_MAX_PACKETS_FACTOR, run_recovery_trial
 
-SCHEMA_VERSION = 3   # v2 (2026-09-29): + error_scope, repair_span; v3 (2026-09-30): + acr_bitflip_only
+SCHEMA_VERSION = 4   # v2 (2026-09-29): + error_scope, repair_span; v3 (2026-09-30): + acr_bitflip_only;
+#                      v4 (2026-10-16, ADR-0015): CRC-32 arms + n_corrupted_rx .. crc_bytes
+ARMS = ("keyless", "keyed", "crc_arq", "crc_acr")
+CRC_REPAIR = {"crc_arq": "none", "crc_acr": "acr"}   # ADR-0015 CRC-32 arms -> SegmentedCrcScheme(repair=...)
 GEN_SIZE = 10
 FIELD_M = 8
 STRATEGY = "coefficient_first"
@@ -95,6 +115,7 @@ RAW_FIELDS = [
     "scheme_ops", "decode_ops", "detection_ops", "recovery_ops",
     "pairs_recovered", "pairs_failed", "unpaired_recovered", "unpaired_failed",
     "wall_time_s", "time_per_packet_s", "info_bits_delivered", "wire_bits_sent",
+    "n_corrupted_rx", "repaired_used", "wrong_used", "n_accepted_final", "crc_bytes",
 ]
 
 
@@ -106,6 +127,9 @@ def n_values_for(df: int, gen_size: int) -> list[int]:
 
 
 def make_scheme(arm: str, n_segments: int, df: int, strategy: str = STRATEGY):
+    if arm in CRC_REPAIR:   # ADR-0015: strategy does not apply (ARQ / CRC + ACR-only repair)
+        return SegmentedCrcScheme(num_data_segments=n_segments - 1, data_fields=df, repair=CRC_REPAIR[arm],
+                                  name=f"{arm}_n{n_segments}_df{df}")
     cls = SegmentedScheme if arm == "keyless" else SegmentedMacScheme
     prefix = "segmented" if arm == "keyless" else "mac"
     return cls(num_data_segments=n_segments - 1, data_fields=df, strategy=strategy,
@@ -156,9 +180,10 @@ def run_task(task: Task) -> dict:
     cell = task.cell
     scheme = make_scheme(cell.arm, cell.n, cell.df, task.strategy)
     cfg = AdmitConfig(**task.cfg)
+    trace = {}
     res = run_recovery_trial(field, scheme, cell.df, task.gen_size, cell.ber, cfg,
                              max_packets_factor=task.max_packets_factor,
-                             deadline_s=task.trial_deadline_s, error_scope=task.error_scope)
+                             deadline_s=task.trial_deadline_s, error_scope=task.error_scope, trace=trace)
     r = asdict(res)
     info_bits = task.gen_size * cell.df * task.field_m if res.correct else 0
     wire_bits = res.packets_to_decode * task.wire_symbols * task.field_m
@@ -175,16 +200,21 @@ def run_task(task: Task) -> dict:
         "bit_error_rate": cell.ber, "trial_idx": task.trial_idx, "seed": task.seed,
         **{k: r[k] for k in RAW_FIELDS if k in r},
         "info_bits_delivered": info_bits, "wire_bits_sent": wire_bits,
+        **{k: trace[k] for k in ("n_corrupted_rx", "repaired_used", "wrong_used", "n_accepted_final")},
+        "crc_bytes": trace["op_counts"].get("crc_bytes", 0),
     }
 
 
 def _layout(arm: str, n: int, df: int, gen_size: int, field) -> tuple[int, int, int]:
     """(wire_symbols, seg_len_min, seg_len_max) measured from a real tagged source, so
-    the bit accounting is whatever the scheme actually puts on the wire (salt included)."""
+    the bit accounting is whatever the scheme actually puts on the wire (salt included).
+    Measured on the ATTACHED packet: identity for keyless/keyed, + the CRCs for the CRC arms."""
     from binary_ext_fields.segmented_tagging import build_segments
-    packets, _ = make_scheme(arm, n, df).make_source(field, df, gen_size)
+    scheme = make_scheme(arm, n, df)
+    packets, _ = scheme.make_source(field, df, gen_size)
+    wire = scheme.attach(scheme.new_instrument(field), bytearray(packets[0]))
     data_lens = [s.length for s in build_segments(gen_size, df, n - 1) if s.kind != "coeff"]
-    return len(packets[0]), min(data_lens), max(data_lens)
+    return len(wire), min(data_lens), max(data_lens)
 
 
 def _est_cost(cell: Cell, wire_symbols: int, seg_len_max: int, gen_size: int = GEN_SIZE) -> float:
@@ -210,18 +240,27 @@ def run_sweep(arm, dfs, n_by_df, bers, trials, cell_budget_s, trial_deadline_s, 
               gen_size: int = GEN_SIZE, strategy: str = STRATEGY, error_scope: str = "whole_packet",
               repair_span: str = "payload", min_pool_size: int | None = None,
               acr_bitflip_only: bool = True,
-              max_packets_factor: int = SEGMENTED_MAX_PACKETS_FACTOR) -> Path:
+              max_packets_factor: int = SEGMENTED_MAX_PACKETS_FACTOR,
+              hamming_distance: int = HAMMING_DISTANCE, final_check: bool = True) -> Path:
     field = create_field(FIELD_M)
-    cfg = dict(hamming_distance=HAMMING_DISTANCE, pair_budget=pair_budget, repair_span=repair_span,
+    cfg = dict(hamming_distance=hamming_distance, pair_budget=pair_budget, repair_span=repair_span,
                acr_bitflip_only=acr_bitflip_only)
     if min_pool_size is not None:
         cfg["min_pool_size"] = min_pool_size
+    if not final_check:   # 2026-10-17 opt-in; absent = AdmitConfig default True (old Task cfg unchanged)
+        cfg["final_check"] = False
     cfg_obj = AdmitConfig(**cfg)
 
     tag = "" if (strategy, error_scope) == (STRATEGY, "whole_packet") else f"_{strategy}_{error_scope}_{repair_span}"
     run_dir = resume or out_root / f"{datetime.now():%Y%m%d_%H%M%S}_{arm}_gen{gen_size}_m{FIELD_M}_t{trials}{tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_path = run_dir / "raw_trials.csv"
+    if raw_path.exists():   # appending rows of another schema would misalign every column
+        with raw_path.open(newline="") as f:
+            header = next(csv.reader(f), [])
+        if header and header != RAW_FIELDS:
+            raise SystemExit(f"--resume {run_dir}: raw_trials.csv has another schema "
+                             f"(not v{SCHEMA_VERSION}); resume it with the code that wrote it")
     done = _load_done(raw_path)
 
     cells, layout = [], {}
@@ -321,7 +360,8 @@ def run_sweep(arm, dfs, n_by_df, bers, trials, cell_budget_s, trial_deadline_s, 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="Keyless segmented Pareto sweep: N x df x BER.")
     p.add_argument("--stage", choices=list(STAGES), default="smoke")
-    p.add_argument("--arm", choices=["keyless", "keyed"], default="keyless")
+    p.add_argument("--arm", choices=list(ARMS), default="keyless",
+                   help="keyless | keyed | crc_arq (CRC-32 ARQ, ADR-0015) | crc_acr (CRC-32 + ACR repair)")
     p.add_argument("--configs", type=str, default=None,
                    help='override grid, e.g. "48:3,96:5" (df:N pairs; for keyed runs at Pareto points)')
     p.add_argument("--bers", type=str, default=None, help="comma list, overrides stage")
@@ -335,12 +375,17 @@ def main(argv=None) -> None:
     p.add_argument("--resume", type=Path, default=None, help="existing run dir to continue")
     p.add_argument("--gen-size", type=int, default=GEN_SIZE)
     p.add_argument("--strategy", default=STRATEGY, help="uniform_hd | coefficient_first | acr_only")
-    p.add_argument("--error-scope", default="whole_packet", help="whole_packet | data_payload | data_segment")
+    p.add_argument("--error-scope", default="whole_packet",
+                   help="whole_packet | data_payload | data_segment | data_tags_only")
     p.add_argument("--repair-span", default="payload", help="payload | segment (acr_only)")
     p.add_argument("--min-pool-size", type=int, default=None, help="AdmitConfig.min_pool_size (default 10)")
     p.add_argument("--max-packets-factor", type=int, default=SEGMENTED_MAX_PACKETS_FACTOR)
     p.add_argument("--acr-exact-solve", action="store_true",
                    help="acr_only, keyless arm: ADR-0002 exact solve instead of the default bit-flip repair")
+    p.add_argument("--hamming-distance", type=int, default=HAMMING_DISTANCE,
+                   help=f"max bit-flip search depth (AdmitConfig.hamming_distance; default {HAMMING_DISTANCE})")
+    p.add_argument("--no-final-check", action="store_true",
+                   help="AdmitConfig.final_check=False: skip the unused acr_only post-repair pool check")
     a = p.parse_args(argv)
 
     st = dict(STAGES[a.stage])
@@ -361,7 +406,8 @@ def main(argv=None) -> None:
               pair_budget=None if a.pair_budget.lower() == "none" else int(a.pair_budget),
               out_root=a.out_root, resume=a.resume, gen_size=a.gen_size, strategy=a.strategy,
               error_scope=a.error_scope, repair_span=a.repair_span, min_pool_size=a.min_pool_size,
-              max_packets_factor=a.max_packets_factor, acr_bitflip_only=not a.acr_exact_solve)
+              max_packets_factor=a.max_packets_factor, acr_bitflip_only=not a.acr_exact_solve,
+              hamming_distance=a.hamming_distance, final_check=not a.no_final_check)
 
 
 if __name__ == "__main__":

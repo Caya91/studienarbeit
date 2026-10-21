@@ -22,6 +22,10 @@ replacement, and the later CRC-16 repair `CrcScheme` (crc_localized / crc_whole)
 retired -- the CRC comparison now lives in the isolated harness as CRC-32 arms, ADR-0014.)
 The homomorphic-MAC benchmark that will join this file as a second recovery-capable scheme is the
 deferred phase 2 (ADR-0011).
+ADR-0015 adds `SegmentedCrcScheme` (zlib CRC-32 per segment, ADR-0014 layout) for the END-TO-END
+sweep: repair="none" is the conventional-ARQ baseline (detect, drop, pull another coded packet),
+repair="acr" the S-PRAC-like CRC + ACR repair arm. Not registered in SCHEMES (drivers pick it
+explicitly), so every existing default path is unchanged.
 
 The decisive asymmetry (see ADR-0009): the orthogonal tag survives RLNC recoding
 and REPAIRS, so it needs fewer transmissions; HMAC does not survive recoding
@@ -59,6 +63,10 @@ from binary_ext_fields.segmented_mac_recovery import (
     classify_segment_trust_mac, recover_acr_only_mac, recover_coefficient_first_mac, recover_uniform_hd_mac,
 )
 from simulation.recovery_decode_sim import _accepted_packets, recover_generation_bitflip
+from simulation.segmented_crc import (
+    CRC_BYTES, Crc32Instrument, CrcSegment, crc_verify_segment, layout_crc_segments,
+    recover_acr_only_crc, segment_slice as crc_segment_slice,
+)
 
 
 # ── Tag widths (ADR-0009) ─────────────────────────────────────────────────────
@@ -108,6 +116,11 @@ class AdmitConfig:
     # The repair search keeps verifying all g tags (stricter), so this caps only the
     # admission check of unrepaired packets.
     mac_verify_count: int | None = None
+    # Segmented / MAC "acr_only" admit only (ADR-0015, opt-in): False skips the strategy's post-repair
+    # whole-pool check (report.ok -- keyless check_orth_segmented is O(M^2) per admit round). admit never
+    # reads report.ok, so the admitted packets are identical; only ops / wall time drop (cf. ticket 20).
+    # Default True = unchanged behaviour of every existing driver.
+    final_check: bool = True
 
 
 # ── Native op-count instruments ───────────────────────────────────────────────
@@ -312,18 +325,23 @@ SEGMENTED_STRATEGY_NAMES = ("uniform_hd", "coefficient_first", "acr_only")
 # (the original model); the two restricted scopes never touch the coeff segment:
 #   data_payload -- data-segment payload bytes only
 #   data_segment -- data-segment payload + that segment's salt/tag bytes
-ERROR_SCOPES = ("whole_packet", "data_payload", "data_segment")
+#   data_tags_only -- (2026-10-17, ADR-0015) ONLY the data segments' redundancy bytes: keyless salt +
+#                     tags, keyed MAC tags, CRC-32 bytes; payload clean. Same byte set as the isolated
+#                     harness's inject_paired model "data_tags_only" (ADR-0014): the complement of
+#                     data_payload inside data_segment, coeff segment never hit.
+ERROR_SCOPES = ("whole_packet", "data_payload", "data_segment", "data_tags_only")
 
 
 def _segment_error_positions(segments, scope: str) -> list[int]:
     """Wire byte indices a channel error may hit under `scope` (restricted scopes only)."""
-    assert scope in ("data_payload", "data_segment"), f"no position list for scope {scope!r}"
+    assert scope in ("data_payload", "data_segment", "data_tags_only"), f"no position list for scope {scope!r}"
     out = []
     for seg in segments:
         if seg.kind != "data":
             continue
+        begin = seg.payload_length if scope == "data_tags_only" else 0
         end = seg.payload_length if scope == "data_payload" else seg.total_length
-        out.extend(range(seg.start, seg.start + end))
+        out.extend(range(seg.start + begin, seg.start + end))
     return out
 
 
@@ -430,7 +448,7 @@ class SegmentedScheme(IntegrityScheme):
                                       max_combined_hd=cfg.hamming_distance, candidates_budget=cfg.pair_budget,
                                       pair_cache=instrument.pair_cache, verify_count=cfg.verify_count,
                                       repair_span=cfg.repair_span, witness_rank=wrank,
-                                      bitflip_only=cfg.acr_bitflip_only)
+                                      bitflip_only=cfg.acr_bitflip_only, final_check=cfg.final_check)
         else:
             report = recover_coefficient_first(field, wire_pool, segments, gen_size,
                                                max_combined_hd=cfg.hamming_distance,
@@ -594,7 +612,7 @@ class SegmentedMacScheme(IntegrityScheme):
                                           max_combined_hd=cfg.hamming_distance,
                                           candidates_budget=cfg.pair_budget,
                                           pair_cache=instrument.pair_cache, early_exit=True,
-                                          repair_span=cfg.repair_span)
+                                          repair_span=cfg.repair_span, final_check=cfg.final_check)
         else:
             report = recover_coefficient_first_mac(field, keyset, wire_pool, segments, gen_size,
                                                    max_combined_hd=cfg.hamming_distance,
@@ -632,6 +650,133 @@ class SegmentedMacScheme(IntegrityScheme):
         }
 
     def primary_ops(self, instrument) -> int:
+        return instrument.field.mul_count
+
+
+# ── Segmented CRC-32, end to end (ADR-0015) ───────────────────────────────────
+# The conventional-ARQ baseline (repair="none") and the S-PRAC-like CRC + ACR arm (repair="acr")
+# of the end-to-end sweep. ADR-0014 layout: the keyless payload segments, each followed by one
+# zlib CRC-32 (4 B) instead of salt + gen_size tags. A CRC does not survive RLNC recoding over
+# GF(2^8), so the SOURCE computes the CRCs of every coded packet (attach) -- single hop, or a relay
+# that re-CRCs (two-hop sim). Replaces nothing: the retired CRC-16 CrcScheme stays retired.
+
+CRC_REPAIRS = ("none", "acr")
+
+
+@dataclass
+class SegmentedCrcInstrument:
+    """Receiver-side zlib CRC-32 (bytes fed counted), sender-side CRC-32 (attach, counted apart),
+    a CountingField for the ACR localization ops (repair="acr"), the per-arrival ARQ verdict cache,
+    and the same repair counters + per-pair cache as the keyless/keyed instruments."""
+    field: CountingField
+    crc: Crc32Instrument = field(default_factory=Crc32Instrument)
+    sender: Crc32Instrument = field(default_factory=Crc32Instrument)
+    verdict: list = field(default_factory=list)   # ARQ: verdict[i] = every segment of pool[i] passes
+    pairs_recovered: int = 0
+    pairs_failed: int = 0
+    unpaired_recovered: int = 0
+    unpaired_failed: int = 0
+    pair_cache: dict = field(default_factory=dict)
+
+
+class SegmentedCrcScheme(IntegrityScheme):
+    """zlib CRC-32 per segment, end to end.
+
+    repair="none" -- conventional ARQ (docs/arq_baseline_framing.md): every arrival is checked once
+      (verdict cached -- the pool is append-only), any failing segment drops the whole packet, the
+      receiver keeps pulling coded packets until the clean ones are decodable. No repair.
+    repair="acr"  -- S-PRAC-like: production ACR-only repair (recover_acr_only_crc: sniffed CRC trust
+      per segment, ACR-localized bit-flip search, same pairing / budget as keyless), then a packet is
+      admitted only if EVERY segment's CRC passes."""
+
+    def __init__(self, num_data_segments: int, data_fields: int, repair: str, name: str):
+        assert repair in CRC_REPAIRS, f"repair must be one of {CRC_REPAIRS}, got {repair!r}"
+        self.num_data_segments = num_data_segments
+        self.data_fields = data_fields
+        self.repair = repair
+        self.name = name
+
+    def wire_segments(self, gen_size) -> list[CrcSegment]:
+        """[payload | CRC-32] blocks of the on-wire packet (the keyless payload split)."""
+        return layout_crc_segments(layout_segments(gen_size, self.data_fields, self.num_data_segments))
+
+    def _plain_segments(self, gen_size) -> list[CrcSegment]:
+        """The same segments inside the untagged [coeff | data] code packet (no CRC bytes)."""
+        out, cursor = [], 0
+        for seg in layout_segments(gen_size, self.data_fields, self.num_data_segments):
+            out.append(CrcSegment(seg.name, seg.kind, cursor, seg.payload_length))
+            cursor += seg.payload_length
+        return out
+
+    def make_source(self, base_field, data_fields, gen_size):
+        assert data_fields == self.data_fields, f"{self.name} is fixed to data_fields={self.data_fields}"
+        max_int = base_field.max_value
+        data_rows = [bytearray(random.randint(0, max_int) for _ in range(data_fields))
+                     for _ in range(gen_size)]
+        return generate_identity_coefficients(base_field, data_rows), [bytearray(row) for row in data_rows]
+
+    def new_instrument(self, base_field):
+        return SegmentedCrcInstrument(field=CountingField(base_field))
+
+    def frame(self, crc: Crc32Instrument, code_packet: bytearray) -> bytearray:
+        """[coeff | data] -> [seg payload | CRC-32] per segment, CRC bytes charged to `crc`. Used by
+        the source (attach) and by a re-CRCing relay (two-hop sim)."""
+        gen_size = len(code_packet) - self.data_fields
+        out = bytearray()
+        for seg in self._plain_segments(gen_size):
+            payload = bytes(code_packet[seg.start: seg.start + seg.payload_length])
+            out += payload + crc.crc(payload).to_bytes(CRC_BYTES, "big")
+        return out
+
+    def attach(self, instrument, code_packet: bytearray) -> bytearray:
+        return self.frame(instrument.sender, code_packet)
+
+    def packet_ok(self, crc: Crc32Instrument, packet: bytearray, segments) -> bool:
+        """Every segment's CRC passes (stops at the first failing segment)."""
+        return all(crc_verify_segment(crc, crc_segment_slice(packet, s), s) for s in segments)
+
+    def admit(self, instrument, wire_pool, gen_size, cfg: AdmitConfig):
+        segments = self.wire_segments(gen_size)
+        if self.repair == "none":
+            assert len(instrument.verdict) <= len(wire_pool), "ARQ verdict cache assumes an append-only pool"
+            for i in range(len(instrument.verdict), len(wire_pool)):
+                instrument.verdict.append(self.packet_ok(instrument.crc, wire_pool[i], segments))
+            return [_strip_to_code(wire_pool[i], segments) for i, ok in enumerate(instrument.verdict) if ok]
+
+        if len(wire_pool) < max(gen_size, cfg.min_pool_size):
+            return None
+        already_good = [i for i, p in enumerate(wire_pool) if self.packet_ok(instrument.crc, p, segments)]
+        if len(already_good) >= gen_size:
+            return [_strip_to_code(wire_pool[i], segments) for i in already_good]
+        report = recover_acr_only_crc(instrument.field, instrument.crc, wire_pool, segments, gen_size,
+                                      max_combined_hd=cfg.hamming_distance, candidates_budget=cfg.pair_budget,
+                                      pair_cache=instrument.pair_cache, repair_span=cfg.repair_span,
+                                      final_check=False)
+        for outcome in report.per_segment:
+            instrument.pairs_recovered += outcome.pairs_recovered
+            instrument.pairs_failed += outcome.pairs_failed
+            instrument.unpaired_recovered += outcome.unpaired_recovered
+            instrument.unpaired_failed += outcome.unpaired_failed
+        return [_strip_to_code(p, segments) for p in report.packets if self.packet_ok(instrument.crc, p, segments)]
+
+    def error_positions(self, gen_size, scope: str) -> list[int]:
+        return _segment_error_positions(self.wire_segments(gen_size), scope)
+
+    def tag_overhead_bits(self, gen_size, m) -> int:
+        return CRC_BYTES * 8 * (1 + self.num_data_segments)
+
+    def op_counts(self, instrument) -> dict:
+        return {
+            "field_mul": instrument.field.mul_count, "field_add": instrument.field.add_count,
+            "crc_bytes": instrument.crc.crc_ops, "sender_crc_bytes": instrument.sender.crc_ops,
+            "correction_trials": instrument.crc.correction_trials,
+            "pairs_recovered": instrument.pairs_recovered, "pairs_failed": instrument.pairs_failed,
+            "unpaired_recovered": instrument.unpaired_recovered, "unpaired_failed": instrument.unpaired_failed,
+        }
+
+    def primary_ops(self, instrument) -> int:
+        # field muls, like the keyless/keyed arms (ACR localization; 0 for ARQ). CRC work is in
+        # op_counts()["crc_bytes"] -- a different unit, never summed with field ops (ADR-0009).
         return instrument.field.mul_count
 
 
