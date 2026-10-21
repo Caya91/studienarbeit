@@ -22,6 +22,10 @@ What is held identical (ADR-0013):
 - Injected trust: recovery is handed the helper set directly (SegmentTrust from
   ground truth); classify_segment_trust(_mac) is never run here.
 
+CRC-32 arms (ADR-0014, `arms=`): crc_acr / crc_blind -- one CRC-32 per segment instead of
+salt + tags, same pairing/combined-search repair, ACR-localized or blind columns, ARC-only
+configs only. Default arms stay keyless + keyed.
+
 Three configs, each in both arms:
   coefficient_first  -- whole-packet BER, coeff repaired (full recovery incl. coeffs).
   ARC-only (a)       -- data-only BER, coeffs clean, ARC always applies (ticket 12).
@@ -41,7 +45,7 @@ W sweep (ticket 14) -> logs/isolated_recovery/<run>/raw_trials.csv (long: run in
   $env:PYTHONPATH="."; $env:LOG_FOLDER="./logs"; .\.venv\Scripts\python.exe simulation\isolated_recovery_sim.py --sweep --workers 6
 Replot without re-running: scripts/isolated_recovery_plots_from_csv.py (pools every run dir).
 
-FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 4; `CSV_COLUMNS` enforces it)
+FROZEN CSV SCHEMA (raw_trials.csv, CSV_SCHEMA_VERSION = 5; `CSV_COLUMNS` enforces it)
 One row per (config, arm, repair_span, W, bit_error_rate, max_combined_hd, candidates_budget,
 seed) -- max_combined_hd/candidates_budget are sweep dimensions since v3 (ticket 19). A "trial" is one
 seed's full T-target pool. Pooling across seeds = sum counts, then divide (never
@@ -53,9 +57,10 @@ average per-seed rates when T could differ).
                            | acr_only_data_tags (2026-09-29: ACR-only with data payload + data
                            salt/tag flips; value extension only)
   error_model        str   whole_packet | data_only | info_only | data_segment (fixed by config)
-  arm                str   keyless | keyed
+  arm                str   keyless | keyed | crc_acr | crc_blind (v5, ADR-0014: CRC-32 per segment,
+                           ACR-localized or blind columns; ARC-only configs only)
   repair_span        str   payload | segment (ticket 16, matched across arms)
-  W                  int   recovery-acceptance width
+  W                  int   recovery-acceptance width (-1 for CRC arms: fixed oracle, run once per cell)
   bit_error_rate     float
   seed               int   pool + injection seed; injection is independent of W and
                            repair_span, so rows differing only in those are paired too
@@ -86,10 +91,15 @@ average per-seed rates when T could differ).
   final_check_ops    int   (v4) ops of the post-repair whole-pool check, costed separately: keyless
                            check_orth_segmented (all packet pairs, O(M^2)), keyed check_mac_segmented (O(M))
   final_check_time_s float (v4) wall-clock of that check
-  h2h_keyless_only   int   per-target head-to-head on 'recovered' (same on both arm rows)
-  h2h_keyed_only     int
+  h2h_keyless_only   int   per-target head-to-head on 'recovered', keyless vs keyed (same on both arm
+  h2h_keyed_only     int   rows); -1 when the two did not run together (e.g. CRC rows)
   h2h_both           int
   h2h_neither        int
+  target_outcomes    str   (v5) per-target outcome letters in target order, R/S/F = recovered/silent/
+                           failed -- pair any two arms offline on the same seed/cell
+  recovery_crc_bytes int   (v5) CRC arms: bytes fed through CRC-32 by the recovery call (0 otherwise);
+                           recovery_ops of a CRC arm = field ops of ACR localization only
+  final_check_crc_bytes int (v5) CRC arms: bytes of the post-repair whole-pool CRC check
 """
 from __future__ import annotations
 
@@ -123,6 +133,15 @@ from binary_ext_fields.segmented_mac_recovery import (
 )
 from binary_ext_fields.operations import inner_product_bytes
 from binary_ext_fields.generate_symbols import check_orth_packet
+from simulation.segmented_crc import (
+    Crc32Instrument,
+    layout_crc_segments,
+    tag_packets_crc,
+    crc_verify_segment,
+    check_crc_segmented,
+    recover_arc_only_crc,
+    segment_slice as crc_slice,
+)
 
 
 # ── Pool building: paired, common random numbers ──────────────────────────────
@@ -138,6 +157,8 @@ class PairedPools:
     keyset: list                     # keyed keyset (per segment)
     helper_idx: list[int]
     target_idx: list[int]
+    crc_clean: list[bytearray] = dc_field(default_factory=list)   # CRC-32 pool (ADR-0014), pre-corruption
+    crc_segments: list = dc_field(default_factory=list)           # CrcSegment[]
 
 
 def build_paired_pools(field: CountingField, gen_size: int, data_fields: int,
@@ -169,12 +190,18 @@ def build_paired_pools(field: CountingField, gen_size: int, data_fields: int,
 
     kl_pool = [bytearray(p) for p in kl_res.packets] + [bytearray(p) for p in kl_targets]
     kd_pool = [bytearray(p) for p in kd_helpers] + [bytearray(p) for p in kd_targets]
+    # CRC-32 arm (ADR-0014): the keyless pool's [coeff | data] columns re-framed with one CRC
+    # per segment. The source CRCs every coded packet itself (single hop), and no RNG is
+    # drawn here, so adding this arm leaves the keyless/keyed pools byte-identical.
+    crc_segments = layout_crc_segments(kl_res.segments)
+    crc_pool = tag_packets_crc(Crc32Instrument(), kl_pool, kl_res.segments, crc_segments)
     return PairedPools(
         field=field, gen_size=gen_size,
         kl_clean=kl_pool, kl_segments=kl_res.segments,
         kd_clean=kd_pool, kd_segments=kd_segments, keyset=keyset,
         helper_idx=list(range(gen_size)),
         target_idx=list(range(gen_size, gen_size + T)),
+        crc_clean=crc_pool, crc_segments=crc_segments,
     )
 
 
@@ -194,6 +221,10 @@ def assert_paired_info_columns(pools: PairedPools) -> None:
         assert info_columns(pools.kl_clean[i], pools.kl_segments) == \
                info_columns(pools.kd_clean[i], pools.kd_segments), \
             f"paired invariant broken: packet {i} info columns differ across arms"
+        if pools.crc_clean:
+            assert info_columns(pools.kl_clean[i], pools.kl_segments) == \
+                   info_columns(pools.crc_clean[i], pools.crc_segments), \
+                f"paired invariant broken: packet {i} info columns differ keyless vs CRC"
 
 
 # ── Paired error injection ────────────────────────────────────────────────────
@@ -203,6 +234,7 @@ class InjectedErrors:
     kl: list[bytearray]                 # keyless corrupted pool
     kd: list[bytearray]                 # keyed corrupted pool
     per_target: dict[int, list]         # target -> [(segment_name, col, bit), ...] (info-column flips)
+    crc: list[bytearray] | None = None  # CRC-32 corrupted pool (ADR-0014); None = hand-built kl/kd-only injection
 
 
 def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> InjectedErrors:
@@ -224,15 +256,18 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
     bits = pools.field.bit_lenght
     kl = [bytearray(p) for p in pools.kl_clean]
     kd = [bytearray(p) for p in pools.kd_clean]
+    crc = [bytearray(p) for p in pools.crc_clean]
+    crc_segments = pools.crc_segments or [None] * len(pools.kl_segments)
     info_rng = random.Random(seed)
     kl_red_rng = random.Random(seed + 1)
     kd_red_rng = random.Random(seed + 2)
+    crc_red_rng = random.Random(seed + 3)
     per_target: dict[int, list] = {}
 
     for t in pools.target_idx:
         descs = []
-        # Information columns -- identical flips both arms.
-        for sl, sd in zip(pools.kl_segments, pools.kd_segments):
+        # Information columns -- identical flips in every arm.
+        for sl, sd, sc in zip(pools.kl_segments, pools.kd_segments, crc_segments):
             if model in ("data_only", "data_segment") and sl.kind != "data":
                 continue
             for col in range(sl.payload_length):
@@ -240,6 +275,8 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
                     if info_rng.random() < ber:
                         kl[t][sl.start + col] ^= (1 << bit)
                         kd[t][sd.start + col] ^= (1 << bit)
+                        if sc is not None:
+                            crc[t][sc.start + col] ^= (1 << bit)
                         descs.append((sl.name, col, bit))
         # Redundancy region -- per-arm, seed-matched (whole-packet: every segment;
         # data_segment: data segments only).
@@ -258,8 +295,15 @@ def inject_paired(pools: PairedPools, ber: float, model: str, seed: int) -> Inje
                     for bit in range(bits):
                         if kd_red_rng.random() < ber:
                             kd[t][sd.start + b] ^= (1 << bit)
+            for sc in pools.crc_segments:   # CRC bytes: own seed-matched stream (ADR-0014)
+                if model == "data_segment" and sc.kind != "data":
+                    continue
+                for b in range(sc.payload_length, sc.total_length):
+                    for bit in range(bits):
+                        if crc_red_rng.random() < ber:
+                            crc[t][sc.start + b] ^= (1 << bit)
         per_target[t] = descs
-    return InjectedErrors(kl=kl, kd=kd, per_target=per_target)
+    return InjectedErrors(kl=kl, kd=kd, per_target=per_target, crc=crc if pools.crc_clean else None)
 
 
 def assert_identical_info_corruption(pools: PairedPools, inj: InjectedErrors) -> None:
@@ -268,6 +312,9 @@ def assert_identical_info_corruption(pools: PairedPools, inj: InjectedErrors) ->
     for i in range(len(inj.kl)):
         assert info_columns(inj.kl[i], pools.kl_segments) == info_columns(inj.kd[i], pools.kd_segments), \
             f"info-column corruption differs across arms at packet {i}"
+        if inj.crc is not None:
+            assert info_columns(inj.kl[i], pools.kl_segments) == info_columns(inj.crc[i], pools.crc_segments), \
+                f"info-column corruption differs keyless vs CRC at packet {i}"
 
 
 # ── Injected trust (ground truth, no sniffing) ────────────────────────────────
@@ -356,6 +403,18 @@ def score_keyed(pools, recovered_pool, W):
     return outcomes
 
 
+def score_crc(pools, recovered_pool):
+    """CRC arms (ADR-0014): accepted iff every segment passes its CRC-32. No W (fixed oracle)."""
+    instrument = Crc32Instrument()  # scoring is not part of the arm's measured cost
+    outcomes = {}
+    for t in pools.target_idx:
+        correct = info_columns(recovered_pool[t], pools.crc_segments) == info_columns(pools.crc_clean[t], pools.crc_segments)
+        accepted = all(crc_verify_segment(instrument, crc_slice(recovered_pool[t], seg), seg)
+                       for seg in pools.crc_segments)
+        outcomes[t] = _score_target(correct, accepted)
+    return outcomes
+
+
 # ── Running one (config x arm) ────────────────────────────────────────────────
 
 @dataclass
@@ -370,6 +429,8 @@ class ArmResult:
     time_s: float = 0.0   # wall-clock of the recovery call (perf_counter); scoring excluded
     final_check_ops: int = 0        # ticket 20: the post-repair whole-pool check, costed separately
     final_check_time_s: float = 0.0  # (keyless all-pairs orthogonality, keyed per-packet MAC)
+    crc_bytes: int = 0               # ADR-0014 CRC arms: bytes fed through CRC-32 by the recovery call
+    final_check_crc_bytes: int = 0   # ... and by the post-repair whole-pool CRC check
 
 
 def _tally(outcomes) -> tuple[int, int, int]:
@@ -402,16 +463,29 @@ _CONFIG_LABEL = {
 }
 
 
+W_ARMS = ("keyless", "keyed")         # recovery-acceptance width W applies
+CRC_ARMS = ("crc_acr", "crc_blind")   # ADR-0014: fixed CRC-32 oracle, no W
+ARMS = W_ARMS + CRC_ARMS
+_CRC_LOCALIZATION = {"crc_acr": "acr", "crc_blind": "blind"}
+
+
 @dataclass
 class ConfigResult:
     config: str
     inj: InjectedErrors
-    keyless: ArmResult
-    keyed: ArmResult
+    keyless: ArmResult | None   # None = arm not run (see run_config `arms`)
+    keyed: ArmResult | None
     kl_packets: list[bytearray] = dc_field(default_factory=list)   # keyless pool after recovery
     kd_packets: list[bytearray] = dc_field(default_factory=list)   # keyed pool after recovery
     kl_report: object = None   # SegmentedRecoveryReport (per-segment pairs/unpaired/dropped counts)
     kd_report: object = None
+    crc: dict = dc_field(default_factory=dict)           # CRC arm name -> ArmResult (ADR-0014)
+    crc_packets: dict = dc_field(default_factory=dict)   # CRC arm name -> pool after recovery
+
+    def arm_results(self) -> dict:
+        """Every arm that ran, name -> ArmResult, in ARMS order."""
+        every = {"keyless": self.keyless, "keyed": self.keyed, **self.crc}
+        return {a: every[a] for a in ARMS if every.get(a) is not None}
 
 
 def _final_check_cost(field, check) -> tuple[int, float]:
@@ -424,12 +498,12 @@ def _final_check_cost(field, check) -> tuple[int, float]:
     return field.mul_count + field.add_count, time.perf_counter() - t0
 
 
-def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
+def run_config(pools: PairedPools, config: str, ber: float, W: int | None, seed: int,
                max_combined_hd: int = 2, candidates_budget: int | None = 20000,
                repair_span: str = "payload", inj: InjectedErrors | None = None,
-               keyed_early_exit: bool = True) -> ConfigResult:
-    """Inject the config's error model (paired), then run BOTH arms with injected trust
-    and score the T targets. The two arms see identical [coeff|payload] corruption.
+               keyed_early_exit: bool = True, arms=W_ARMS) -> ConfigResult:
+    """Inject the config's error model (paired), then run the chosen arms with injected
+    trust and score the T targets. All arms see identical [coeff|payload] corruption.
 
     repair_span (ADR-0013 ticket 16, matched across arms): "payload" = repair the
     ARC-narrowed data columns only (default); "segment" = also search the salt/tag
@@ -441,69 +515,102 @@ def run_config(pools: PairedPools, config: str, ber: float, W: int, seed: int,
 
     keyed_early_exit (ticket 18): keyed MAC verification stops at the first mismatching
     tag, matching the keyless oracle's self-check short-circuit, so ops/time are compared
-    fairly. Outcomes are identical either way; False reproduces the pre-ticket-18 ops."""
+    fairly. Outcomes are identical either way; False reproduces the pre-ticket-18 ops.
+
+    arms (ADR-0014): subset of ARMS; default = keyless + keyed (unchanged behaviour). The
+    CRC arms ignore W (pass W=None when only CRC arms run) and support the ARC-only
+    configs only (no coefficient repair)."""
+    unknown = set(arms) - set(ARMS)
+    assert not unknown, f"unknown arms {sorted(unknown)}; choose from {ARMS}"
+    assert W is not None or not set(arms) & set(W_ARMS), "keyless/keyed arms need an int W"
     model = _CONFIG_MODEL[config]
     if inj is None:
         inj = inject_paired(pools, ber, model, seed=seed * 131 + 7)
     assert_identical_info_corruption(pools, inj)
-
-    kl_trust = injected_trust_map(pools.kl_clean, inj.kl, pools.kl_segments, pools.helper_idx, pools.target_idx)
-    kd_trust = injected_trust_map(pools.kd_clean, inj.kd, pools.kd_segments, pools.helper_idx, pools.target_idx)
+    res = ConfigResult(config=config, inj=inj, keyless=None, keyed=None)
 
     # ---- keyless (bit-flip only: the ADR-0002 exact solve is bypassed so both arms
     #      run the identical search and the only surviving difference is the oracle) ----
-    pools.field.reset()
-    t0 = time.perf_counter()
-    if _CONFIG_METHOD[config] == "coefficient_first":
-        rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
-                                           max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                           W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                           repair_span=repair_span, final_check=False)
-    else:
-        ccl = coeff_clean_targets(pools.kl_clean, inj.kl, pools.kl_segments, pools.target_idx)
-        rep_kl = recover_arc_only(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
-                                  basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
-                                  max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                  W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
-                                  repair_span=repair_span, final_check=False)
-    kl_time = time.perf_counter() - t0
-    kl_mul, kl_add = pools.field.mul_count, pools.field.add_count
-    kl_ops = kl_mul + kl_add
-    kl_fc_ops, kl_fc_time = _final_check_cost(pools.field, lambda: check_orth_segmented(
-        pools.field, rep_kl.packets, pools.kl_segments))
-    kl_out = score_keyless(pools, rep_kl.packets, W)
-
-    # ---- keyed ----
-    pools.field.reset()
-    t0 = time.perf_counter()
-    if _CONFIG_METHOD[config] == "coefficient_first":
-        rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
+    if "keyless" in arms:
+        kl_trust = injected_trust_map(pools.kl_clean, inj.kl, pools.kl_segments, pools.helper_idx, pools.target_idx)
+        pools.field.reset()
+        t0 = time.perf_counter()
+        if _CONFIG_METHOD[config] == "coefficient_first":
+            rep_kl = recover_coefficient_first(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                                max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                               W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
-                                               early_exit=keyed_early_exit, final_check=False)
-    else:
-        ccl = coeff_clean_targets(pools.kd_clean, inj.kd, pools.kd_segments, pools.target_idx)
-        rep_kd = recover_arc_only_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
+                                               W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
+                                               repair_span=repair_span, final_check=False)
+        else:
+            ccl = coeff_clean_targets(pools.kl_clean, inj.kl, pools.kl_segments, pools.target_idx)
+            rep_kl = recover_arc_only(pools.field, inj.kl, pools.kl_segments, pools.gen_size,
                                       basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
                                       max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
-                                      W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
-                                      early_exit=keyed_early_exit, final_check=False)
-    kd_time = time.perf_counter() - t0
-    kd_mul, kd_add = pools.field.mul_count, pools.field.add_count
-    kd_ops = kd_mul + kd_add
-    kd_fc_ops, kd_fc_time = _final_check_cost(pools.field, lambda: check_mac_segmented(
-        pools.field, pools.keyset, rep_kd.packets, pools.kd_segments))
-    kd_out = score_keyed(pools, rep_kd.packets, W)
+                                      W=W, injected_trust_by_segment=kl_trust, bitflip_only=True,
+                                      repair_span=repair_span, final_check=False)
+        kl_time = time.perf_counter() - t0
+        kl_mul, kl_add = pools.field.mul_count, pools.field.add_count
+        kl_fc_ops, kl_fc_time = _final_check_cost(pools.field, lambda: check_orth_segmented(
+            pools.field, rep_kl.packets, pools.kl_segments))
+        kl_out = score_keyless(pools, rep_kl.packets, W)
+        res.keyless = ArmResult(kl_out, kl_mul + kl_add, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time,
+                                final_check_ops=kl_fc_ops, final_check_time_s=kl_fc_time)
+        res.kl_packets, res.kl_report = rep_kl.packets, rep_kl
 
-    return ConfigResult(
-        config=config, inj=inj,
-        keyless=ArmResult(kl_out, kl_ops, *_tally(kl_out), mul=kl_mul, add=kl_add, time_s=kl_time,
-                          final_check_ops=kl_fc_ops, final_check_time_s=kl_fc_time),
-        keyed=ArmResult(kd_out, kd_ops, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time,
-                        final_check_ops=kd_fc_ops, final_check_time_s=kd_fc_time),
-        kl_packets=rep_kl.packets, kd_packets=rep_kd.packets,
-        kl_report=rep_kl, kd_report=rep_kd,
-    )
+    # ---- keyed ----
+    if "keyed" in arms:
+        kd_trust = injected_trust_map(pools.kd_clean, inj.kd, pools.kd_segments, pools.helper_idx, pools.target_idx)
+        pools.field.reset()
+        t0 = time.perf_counter()
+        if _CONFIG_METHOD[config] == "coefficient_first":
+            rep_kd = recover_coefficient_first_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
+                                                   max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                                                   W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
+                                                   early_exit=keyed_early_exit, final_check=False)
+        else:
+            ccl = coeff_clean_targets(pools.kd_clean, inj.kd, pools.kd_segments, pools.target_idx)
+            rep_kd = recover_arc_only_mac(pools.field, pools.keyset, inj.kd, pools.kd_segments, pools.gen_size,
+                                          basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
+                                          max_combined_hd=max_combined_hd, candidates_budget=candidates_budget,
+                                          W=W, injected_trust_by_segment=kd_trust, repair_span=repair_span,
+                                          early_exit=keyed_early_exit, final_check=False)
+        kd_time = time.perf_counter() - t0
+        kd_mul, kd_add = pools.field.mul_count, pools.field.add_count
+        kd_fc_ops, kd_fc_time = _final_check_cost(pools.field, lambda: check_mac_segmented(
+            pools.field, pools.keyset, rep_kd.packets, pools.kd_segments))
+        kd_out = score_keyed(pools, rep_kd.packets, W)
+        res.keyed = ArmResult(kd_out, kd_mul + kd_add, *_tally(kd_out), mul=kd_mul, add=kd_add, time_s=kd_time,
+                              final_check_ops=kd_fc_ops, final_check_time_s=kd_fc_time)
+        res.kd_packets, res.kd_report = rep_kd.packets, rep_kd
+
+    # ---- CRC-32 (ADR-0014): same ARC-only pipeline, oracle = per-segment CRC ----
+    crc_arms = [a for a in CRC_ARMS if a in arms]
+    if crc_arms:
+        assert _CONFIG_METHOD[config] == "arc_only", f"CRC arms support ARC-only configs only, not {config!r}"
+        assert inj.crc is not None, "CRC arms need an injection that includes the CRC pool"
+        assert pools.field.bit_lenght == 8, "CRC arms assume byte symbols (GF(2^8))"
+        crc_trust = injected_trust_map(pools.crc_clean, inj.crc, pools.crc_segments, pools.helper_idx, pools.target_idx)
+        ccl = coeff_clean_targets(pools.crc_clean, inj.crc, pools.crc_segments, pools.target_idx)
+    for arm in crc_arms:
+        instrument = Crc32Instrument()
+        pools.field.reset()  # crc_acr: localize_errors' field ops land here
+        t0 = time.perf_counter()
+        rep = recover_arc_only_crc(pools.field, instrument, inj.crc, pools.crc_segments, pools.gen_size,
+                                   basis_idx=pools.helper_idx, coeff_clean_target_idx=ccl,
+                                   localization=_CRC_LOCALIZATION[arm], max_combined_hd=max_combined_hd,
+                                   candidates_budget=candidates_budget, injected_trust_by_segment=crc_trust,
+                                   repair_span=repair_span, final_check=False)
+        elapsed = time.perf_counter() - t0
+        mul, add = pools.field.mul_count, pools.field.add_count
+        fc_instrument = Crc32Instrument()
+        t0 = time.perf_counter()
+        check_crc_segmented(fc_instrument, rep.packets, pools.crc_segments)
+        fc_time = time.perf_counter() - t0
+        out = score_crc(pools, rep.packets)
+        res.crc[arm] = ArmResult(out, mul + add, *_tally(out), mul=mul, add=add, time_s=elapsed,
+                                 final_check_time_s=fc_time, crc_bytes=instrument.crc_ops,
+                                 final_check_crc_bytes=fc_instrument.crc_ops)
+        res.crc_packets[arm] = rep.packets
+    return res
 
 
 def head_to_head(kl_out, kd_out) -> dict[str, int]:
@@ -545,46 +652,62 @@ def print_smoke(pools: PairedPools, results: list[ConfigResult], W: int, seed: i
     G, T = len(pools.helper_idx), len(pools.target_idx)
     print("\nLegend:  [OK] recovered   [x] SILENT (wrong-accept, oracle passed but bytes wrong)   [-] honest fail")
     print(f"Fixed:   seed={seed}  W={W}  G={G}  T={T}  BER={ber}  repair_span={repair_span}"
-          f"  (helpers 0..{G-1} clean, never scored)")
+          f"  (helpers 0..{G-1} clean, never scored{'; CRC arms have no W' if any(r.crc for r in results) else ''})")
 
     overall = {"keyless_only": 0, "keyed_only": 0, "both": 0, "neither": 0}
     for res in results:
-        print(f"\n=== config: {_CONFIG_LABEL[res.config]}  |  arm pair, W={W}, seed={seed}, G={G}, T={T} ===")
+        arms = res.arm_results()
+        width = max(7, *(len(a) for a in arms))
+        label = "arm pair" if tuple(arms) == W_ARMS else f"arms {', '.join(arms)}"
+        print(f"\n=== config: {_CONFIG_LABEL[res.config]}  |  {label}, W={W}, seed={seed}, G={G}, T={T} ===")
         if _CONFIG_MODEL[res.config] == "whole_packet":
             print("  (whole-packet BER: 'injected errs' lists the paired [coeff|payload] flips only;"
                   " tag/salt bytes are also corrupted per-arm, seed-matched)")
-        print(f" {'t#':>3} | {'injected errs':<26} | {'KEYLESS':<26} | {'KEYED':<26}")
+        print(f" {'t#':>3} | {'injected errs':<26} | " + " | ".join(f"{a.upper():<26}" for a in arms))
         for t in pools.target_idx:
             print(f" {t:>3} | {_fmt_errs(res.inj.per_target[t]):<26} | "
-                  f"{_MARK[res.keyless.outcomes[t]]:<26} | {_MARK[res.keyed.outcomes[t]]:<26}")
-        kl, kd = res.keyless, res.keyed
-        print(f" summary  keyless: rec {kl.recovered}/{T}  silent {kl.silent}  fail {kl.failed}  ops {kl.ops:.3g}")
-        print(f"          keyed  : rec {kd.recovered}/{T}  silent {kd.silent}  fail {kd.failed}  ops {kd.ops:.3g}")
-        h2h = head_to_head(kl.outcomes, kd.outcomes)
-        print(f" head-to-head    keyless-only-win {h2h['keyless_only']}  keyed-only-win {h2h['keyed_only']}  "
-              f"both {h2h['both']}  neither {h2h['neither']}")
-        for k in overall:
-            overall[k] += h2h[k]
+                  + " | ".join(f"{_MARK[ar.outcomes[t]]:<26}" for ar in arms.values()))
+        for i, (arm, ar) in enumerate(arms.items()):
+            lead = " summary  " if i == 0 else "          "
+            extra = f"  crc_bytes {ar.crc_bytes:.3g}" if arm in CRC_ARMS else ""
+            # no wall-clock here: the smoke must stay byte-identical across re-runs (ADR-0013)
+            print(f"{lead}{arm:<{width}}: rec {ar.recovered}/{T}  silent {ar.silent}  fail {ar.failed}  "
+                  f"ops {ar.ops:.3g}{extra}")
+        if res.keyless is not None and res.keyed is not None:
+            h2h = head_to_head(res.keyless.outcomes, res.keyed.outcomes)
+            print(f" head-to-head    keyless-only-win {h2h['keyless_only']}  keyed-only-win {h2h['keyed_only']}  "
+                  f"both {h2h['both']}  neither {h2h['neither']}")
+            for k in overall:
+                overall[k] += h2h[k]
+        if res.keyless is not None:
+            for arm, ar in res.crc.items():
+                h2h = head_to_head(res.keyless.outcomes, ar.outcomes)
+                print(f" head-to-head    keyless-only-win {h2h['keyless_only']}  {arm}-only-win {h2h['keyed_only']}  "
+                      f"both {h2h['both']}  neither {h2h['neither']}")
 
-    print(f"\n overall head-to-head  keyless-only-win {overall['keyless_only']}  keyed-only-win {overall['keyed_only']}  "
-          f"both {overall['both']}  neither {overall['neither']}")
+    if any(r.keyless is not None and r.keyed is not None for r in results):
+        print(f"\n overall head-to-head  keyless-only-win {overall['keyless_only']}  keyed-only-win {overall['keyed_only']}  "
+              f"both {overall['both']}  neither {overall['neither']}")
 
 
 def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: float = 0.006,
               data_fields: int = 18, num_data_segments: int = 3,
-              repair_span: str = "payload") -> list[ConfigResult]:
+              repair_span: str = "payload", arms=W_ARMS) -> list[ConfigResult]:
     field = CountingField(create_field(8))
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
-    results = [run_config(pools, cfg, ber, W, seed, repair_span=repair_span) for cfg in CONFIGS]
+    # CRC arms run the ARC-only configs only (ADR-0014)
+    configs = CONFIGS if not set(arms) & set(CRC_ARMS) else tuple(c for c in CONFIGS if _CONFIG_METHOD[c] == "arc_only")
+    results = [run_config(pools, cfg, ber, W, seed, repair_span=repair_span, arms=arms) for cfg in configs]
     print_smoke(pools, results, W, seed, ber, repair_span)
     return results
 
 
 # ── W sweep (ticket 14) ───────────────────────────────────────────────────────
 
-CSV_SCHEMA_VERSION = 4  # v2: + recovery_mul/add/time_s; v3: + keyed_early_exit; v4 (2026-09-25): repair-only
-#                        recovery_* (final pool check excluded) + final_check_ops/_time_s
+CSV_SCHEMA_VERSION = 5  # v2: + recovery_mul/add/time_s; v3: + keyed_early_exit; v4 (2026-09-25): repair-only
+#                        recovery_* (final pool check excluded) + final_check_ops/_time_s; v5 (2026-10-13,
+#                        ADR-0014): CRC arms + target_outcomes + recovery_crc_bytes/final_check_crc_bytes
 CSV_COLUMNS = (
     "schema_version", "config", "error_model", "arm", "repair_span", "W", "bit_error_rate", "seed",
     "gen_size", "T", "data_fields", "num_data_segments", "field_bits", "max_combined_hd",
@@ -593,29 +716,36 @@ CSV_COLUMNS = (
     "recovery_ops", "recovery_mul", "recovery_add", "recovery_time_s",
     "final_check_ops", "final_check_time_s",
     "h2h_keyless_only", "h2h_keyed_only", "h2h_both", "h2h_neither",
+    "target_outcomes", "recovery_crc_bytes", "final_check_crc_bytes",
 )
 
 SWEEP_W = (1, 2, 3)
 SWEEP_BERS = (1e-3, 2e-3, 4e-3, 6e-3, 1e-2)
 SWEEP_SPANS = ("payload", "segment")
 SWEEP_SEEDS = 30
+_OUTCOME_LETTER = {RECOVERED: "R", SILENT: "S", FAILED: "F"}
 
 
 def _n_changed(clean_pool, corrupt_pool, idx) -> int:
     return sum(1 for t in idx if corrupt_pool[t] != clean_pool[t])
 
 
-def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, seed: int, repair_span: str,
+def result_rows(pools: PairedPools, res: ConfigResult, *, W: int | None, ber: float, seed: int, repair_span: str,
                 data_fields: int, num_data_segments: int, max_combined_hd: int,
                 candidates_budget: int | None, keyed_early_exit: bool = True) -> list[dict]:
-    """The two frozen-schema rows (keyless, keyed) for one run_config result."""
+    """One frozen-schema row per arm that ran in this run_config result. CRC rows carry
+    W = -1 (no acceptance width). h2h_* = keyless vs keyed when both ran, else -1; the
+    per-target `target_outcomes` string (R/S/F in target order) allows any paired
+    comparison offline."""
     T = len(pools.target_idx)
-    h2h = head_to_head(res.keyless.outcomes, res.keyed.outcomes)
+    both = res.keyless is not None and res.keyed is not None
+    h2h = head_to_head(res.keyless.outcomes, res.keyed.outcomes) if both else \
+        {"keyless_only": -1, "keyed_only": -1, "both": -1, "neither": -1}
     n_info = sum(1 for t in pools.target_idx if res.inj.per_target[t])
     n_coeff = T - len(coeff_clean_targets(pools.kl_clean, res.inj.kl, pools.kl_segments, pools.target_idx))
     common = {
         "schema_version": CSV_SCHEMA_VERSION, "config": res.config, "error_model": _CONFIG_MODEL[res.config],
-        "repair_span": repair_span, "W": W, "bit_error_rate": ber, "seed": seed,
+        "repair_span": repair_span, "bit_error_rate": ber, "seed": seed,
         "gen_size": pools.gen_size, "T": T, "data_fields": data_fields,
         "num_data_segments": num_data_segments, "field_bits": pools.field.bit_lenght,
         "max_combined_hd": max_combined_hd,
@@ -625,15 +755,20 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
         "h2h_keyless_only": h2h["keyless_only"], "h2h_keyed_only": h2h["keyed_only"],
         "h2h_both": h2h["both"], "h2h_neither": h2h["neither"],
     }
+    pools_by_arm = {"keyless": (pools.kl_clean, res.inj.kl), "keyed": (pools.kd_clean, res.inj.kd),
+                    **{a: (pools.crc_clean, res.inj.crc) for a in CRC_ARMS}}
     rows = []
-    for arm, ar, clean, corrupt in (("keyless", res.keyless, pools.kl_clean, res.inj.kl),
-                                    ("keyed", res.keyed, pools.kd_clean, res.inj.kd)):
-        row = dict(common, arm=arm, n_arm_corrupted=_n_changed(clean, corrupt, pools.target_idx),
+    for arm, ar in res.arm_results().items():
+        clean, corrupt = pools_by_arm[arm]
+        row = dict(common, arm=arm, W=-1 if arm in CRC_ARMS else W,
+                   n_arm_corrupted=_n_changed(clean, corrupt, pools.target_idx),
                    recovered=ar.recovered, silent=ar.silent, failed=ar.failed,
                    recovery_rate=ar.recovered / T, silent_decode_rate=ar.silent / T,
                    failed_rate=ar.failed / T, recovery_ops=ar.ops,
                    recovery_mul=ar.mul, recovery_add=ar.add, recovery_time_s=ar.time_s,
-                   final_check_ops=ar.final_check_ops, final_check_time_s=ar.final_check_time_s)
+                   final_check_ops=ar.final_check_ops, final_check_time_s=ar.final_check_time_s,
+                   target_outcomes="".join(_OUTCOME_LETTER[ar.outcomes[t]] for t in pools.target_idx),
+                   recovery_crc_bytes=ar.crc_bytes, final_check_crc_bytes=ar.final_check_crc_bytes)
         assert set(row) == set(CSV_COLUMNS), f"row drifted from frozen schema: {set(row) ^ set(CSV_COLUMNS)}"
         rows.append(row)
     return rows
@@ -641,29 +776,36 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int, ber: float, se
 
 def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_segments: int,
                field_bits: int, Ws, bers, spans, configs, hds, budgets,
-               keyed_early_exit: bool = True) -> list[dict]:
+               keyed_early_exit: bool = True, arms=W_ARMS) -> list[dict]:
     """Every (BER, config, span, HD, budget, W) cell for ONE seed -- the unit of parallel
     work. One pool per seed; the injection is drawn from (seed, BER) only, so all
-    W/span/HD/budget variants of a cell see the same corruption (paired)."""
+    W/span/HD/budget variants of a cell -- and every arm -- see the same corruption (paired).
+    CRC arms (ADR-0014) have no W: they run once per (BER, config, span, HD, budget) cell."""
     from icecream import ic
     ic.disable()  # playground/arc_pl.py debug prints would flood every worker's stderr
     field = CountingField(create_field(field_bits))
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
+    w_arms = tuple(a for a in W_ARMS if a in arms)
+    crc_arms = tuple(a for a in CRC_ARMS if a in arms)
     rows = []
     for ber in bers:
         for config in configs:
             for span in spans:
                 for hd in hds:
                     for budget in budgets:
-                        for W in Ws:
+                        cell = dict(ber=ber, seed=seed, repair_span=span, data_fields=data_fields,
+                                    num_data_segments=num_data_segments, max_combined_hd=hd,
+                                    candidates_budget=budget, keyed_early_exit=keyed_early_exit)
+                        for W in (Ws if w_arms else ()):
                             res = run_config(pools, config, ber, W, seed, max_combined_hd=hd,
                                              candidates_budget=budget, repair_span=span,
-                                             keyed_early_exit=keyed_early_exit)
-                            rows += result_rows(pools, res, W=W, ber=ber, seed=seed, repair_span=span,
-                                                data_fields=data_fields, num_data_segments=num_data_segments,
-                                                max_combined_hd=hd, candidates_budget=budget,
-                                                keyed_early_exit=keyed_early_exit)
+                                             keyed_early_exit=keyed_early_exit, arms=w_arms)
+                            rows += result_rows(pools, res, W=W, **cell)
+                        if crc_arms:
+                            res = run_config(pools, config, ber, None, seed, max_combined_hd=hd,
+                                             candidates_budget=budget, repair_span=span, arms=crc_arms)
+                            rows += result_rows(pools, res, W=None, **cell)
     return rows
 
 
@@ -681,8 +823,9 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
               num_data_segments: int = 3, field_bits: int = 8, Ws=SWEEP_W, bers=SWEEP_BERS,
               spans=SWEEP_SPANS, configs=CONFIGS, max_combined_hd: int = 2,
               candidates_budget: int | None = 20000, workers: int = 1, out_dir=None,
-              hds=None, budgets=None, keyed_early_exit: bool = True):
+              hds=None, budgets=None, keyed_early_exit: bool = True, arms=W_ARMS):
     """W x BER x config x arm x repair_span (x HD x budget) sweep -> raw_trials.csv.
+    arms (ADR-0014): subset of ARMS, default keyless + keyed; CRC arms need ARC-only configs.
     hds/budgets (ticket 19) default to the single (max_combined_hd, candidates_budget);
     a budget of None = unlimited. Seeds run in parallel (`workers` processes); rows are
     appended as each seed lands, then rewritten seed-sorted at the end. Returns run dir."""
@@ -700,7 +843,8 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
                   num_data_segments=num_data_segments, field_bits=field_bits, Ws=tuple(Ws),
                   bers=tuple(bers), spans=tuple(spans), configs=tuple(configs),
                   hds=tuple(hds or (max_combined_hd,)),
-                  budgets=tuple(budgets or (candidates_budget,)), keyed_early_exit=keyed_early_exit)
+                  budgets=tuple(budgets or (candidates_budget,)), keyed_early_exit=keyed_early_exit,
+                  arms=tuple(arms))
     seeds = list(seeds)
     by_seed: dict[int, list[dict]] = {}
 
@@ -759,11 +903,15 @@ def main(argv=None) -> None:
     parser.add_argument("--ber", type=float, default=0.006)
     parser.add_argument("--repair-span", choices=("payload", "segment"), default="payload",
                         help="which columns the repair may touch: payload only, or +salt/tag redundancy")
+    parser.add_argument("--arms", default=",".join(W_ARMS),
+                        help=f"comma list of arms from {','.join(ARMS)} (CRC arms: ADR-0014, ARC-only configs)")
     args = parser.parse_args(argv)
+    arms = tuple(a.strip() for a in args.arms.split(","))
 
     if args.smoke:
         run_smoke(seed=args.seed, gen_size=args.gen_size, T=args.targets, W=args.W, ber=args.ber,
-                  repair_span=args.repair_span)
+                  data_fields=args.data_fields, num_data_segments=args.num_data_segments,
+                  repair_span=args.repair_span, arms=arms)
     elif args.sweep:
         # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
@@ -775,7 +923,7 @@ def main(argv=None) -> None:
                       hds=tuple(int(h) for h in args.hds.split(",")),
                       budgets=tuple(None if b.strip().lower() == "none" else int(b) for b in args.budgets.split(",")),
                       keyed_early_exit=not args.no_keyed_early_exit,
-                      spans=tuple(x.strip() for x in args.spans.split(",")))
+                      spans=tuple(x.strip() for x in args.spans.split(",")), arms=arms)
         print(f"sweep done -> {d}")
     else:
         parser.print_help()

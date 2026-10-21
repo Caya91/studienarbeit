@@ -15,11 +15,10 @@ orthogonal/HMAC live in `integrity_schemes.py`); the validated
    relay lacks structurally blocks the targeted forgery (silent-accept == 0); the
    orthogonal arm is the existing attack sim.
 
-The CRC arm is no longer here: ADR-0011 refocused it as a standalone single-packet
-Hamming-distance recovery study (`simulation/crc_recovery_sim.py`); its earlier
-Fly-PRAC dependent-group form (and this driver's `run_fly_prac_trial`) was retired.
-The homomorphic-MAC benchmark and the three-way CRC/HMAC/orthogonal comparison on
-this harness are the deferred phases 2 and 3 (ADR-0011).
+The CRC arms are no longer here: the standalone single-packet HD study lives in
+`simulation/crc_recovery_sim.py` (ADR-0011); the Fly-PRAC dependent-group form and the
+later CRC-16 crc_localized / crc_whole arms (+ the HD-parity sweep built for them) were
+retired -- the CRC comparison is now the CRC-32 arms of the isolated harness (ADR-0014).
 
 Computation is reported in native units + the tag-overhead figure; wall-clock is
 deliberately not produced here (see docs/comparison_methodology_notes.md).
@@ -56,15 +55,13 @@ DATA_FIELDS = 10
 NUM_TRIALS = 100
 BIT_ERROR_RATES = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] # 5e-3, 1e-2
 MAX_PACKETS_FACTOR = 12
-# Recovery comparison (ADR-0011 phase 3): the orthogonal self-tag against the CRC
-# baseline in both its localized (fair-fight) and whole-packet (bare floor) forms.
-# HMAC stays registered in SCHEMES for the attack comparison but is off this axis.
-SCHEME_NAMES = ("orthogonal", "crc_localized", "crc_whole")
+# Recovery sweep arms. The CRC-16 arms once here were retired (ADR-0014: the CRC
+# comparison moved to the isolated harness). HMAC stays registered in SCHEMES for the
+# attack comparison but is off this axis.
+SCHEME_NAMES = ("orthogonal",)
 
-SCHEME_COLORS = {"orthogonal": "#2a6f97", "hmac": "#3d405b",
-                 "crc_localized": "#e07a5f", "crc_whole": "#f2a65a"}
-SCHEME_OP_UNIT = {"orthogonal": "field muls", "hmac": "HMAC block-ops",
-                  "crc_localized": "CRC checks", "crc_whole": "CRC checks"}
+SCHEME_COLORS = {"orthogonal": "#2a6f97", "hmac": "#3d405b"}
+SCHEME_OP_UNIT = {"orthogonal": "field muls", "hmac": "HMAC block-ops"}
 # Segmented scheme (ADR-0012) native op unit -- same primitive as orthogonal (field
 # muls), one entry per registered N/strategy combination so _print_op_table can
 # look any of them up by name.
@@ -78,11 +75,6 @@ SCHEME_OP_UNIT.update({
     f"mac_{strategy}_n{n}": "field muls"
     for n in SEGMENTED_N_VALUES for strategy in MAC_STRATEGIES
 })
-# HD-parity sweep: same bit-flip repair reach (HD 1/2/3) for both schemes, so the
-# comparison is fair. Colour = scheme, linestyle = Hamming distance.
-HD_LINESTYLE = {1: "-", 2: "--", 3: ":"}
-HD_SCHEME_NAMES = ("orthogonal", "crc_localized", "crc_whole")   # fair pairing + the no-localization floor
-HAMMING_DISTANCES = (1, 2, 3)
 
 
 @dataclass
@@ -280,65 +272,6 @@ def run_recovery_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIEL
     return run_dir
 
 
-# ── HD-parity sweep: HD 1/2/3 x BER x scheme, fair repair reach ───────────────
-def run_hd_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=DATA_FIELDS,
-                 num_trials=NUM_TRIALS, bit_error_rates=BIT_ERROR_RATES,
-                 hamming_distances=HAMMING_DISTANCES, scheme_names=HD_SCHEME_NAMES) -> Path:
-    """The fair comparison: give both schemes the SAME bit-flip repair reach (HD in
-    {1,2,3}) and sweep it against BER. cfg.hamming_distance now drives both arms --
-    the orthogonal per-column oracle AND the CRC candidate search (integrity_schemes)
-    -- so a HD-k line means both repair up to k bit-flips. One line per (scheme, HD):
-    colour = scheme, linestyle = HD."""
-    run_dir = get_run_log_dir("scheme_comparison_hd_sweep", trials=num_trials, gen=gen_size, m=field_m)
-    base_field = create_field(field_m)
-
-    raw_rows, summary_rows = [], []
-    for name in scheme_names:
-        tag_bits = _tag_overhead_bits_for(name, gen_size, field_m)
-        for hd in hamming_distances:
-            cfg = AdmitConfig(hamming_distance=hd)
-            for ber in bit_error_rates:
-                print(f"=== scheme={name} HD={hd} BER={ber:g} ===")
-                results = [_run_trial(name, base_field, data_fields, gen_size, ber, cfg)
-                           for _ in range(num_trials)]
-                for trial_id, r in enumerate(results):
-                    raw_rows.append({"scheme": name, "hamming_distance": hd,
-                                     "bit_error_rate": ber, "trial_id": trial_id, **asdict(r)})
-                decoded = [r for r in results if r.decoded]
-                summary_rows.append({
-                    "scheme": name,
-                    "hamming_distance": hd,
-                    "bit_error_rate": ber,
-                    "trials": num_trials,
-                    "tag_overhead_bits": tag_bits,
-                    "correct_rate": sum(r.correct for r in results) / num_trials,
-                    "decode_success_rate": len(decoded) / num_trials,
-                    "silent_decode_rate": sum(r.silent_decode for r in results) / num_trials,
-                    "timeout_rate": sum(r.status == "timeout" for r in results) / num_trials,
-                    "mean_overhead_decoded": float(np.mean([r.overhead for r in decoded])) if decoded else float("nan"),
-                    "time_per_packet_s_mean": float(np.mean([r.time_per_packet_s for r in results])),
-                    "wall_time_s_mean": float(np.mean([r.wall_time_s for r in results])),
-                    "scheme_ops_mean": float(np.mean([r.scheme_ops for r in results])),
-                })
-
-    _write_csv(run_dir / "raw_results.csv", raw_rows)
-    _write_csv(run_dir / "summary.csv", summary_rows)
-
-    _plot_by_scheme_hd(summary_rows, scheme_names, hamming_distances, "correct_rate",
-                       "Recovery rate (decoded to correct source)",
-                       run_dir / "recovery_rate_vs_ber_by_hd.png", ylim=(-0.02, 1.02))
-    _plot_by_scheme_hd(summary_rows, scheme_names, hamming_distances, "silent_decode_rate",
-                       "Silent-decode rate", run_dir / "silent_decode_vs_ber_by_hd.png", ylim=(-0.02, 1.02))
-    _plot_by_scheme_hd(summary_rows, scheme_names, hamming_distances, "time_per_packet_s_mean",
-                       "Mean completion time per received packet (s)",
-                       run_dir / "time_per_packet_vs_ber_by_hd.png", ylim=None)
-    _plot_by_scheme_hd(summary_rows, scheme_names, hamming_distances, "mean_overhead_decoded",
-                       "Mean transmission overhead (packets / gen_size)",
-                       run_dir / "overhead_vs_ber_by_hd.png", ylim=None, hline=1.0)
-    print(f"\nDone. Results written to: {run_dir}")
-    return run_dir
-
-
 # ── Segmented scheme sweep: N x BER (ADR-0012 "Resolved" 2026-08-11) ──────────
 # N is this scheme's headline knob (coeff-segment repair + pairing tradeoff), so it
 # gets its own 2D sweep against BER rather than a fixed value. data_fields is fixed
@@ -370,30 +303,20 @@ SEGMENTED_STRATEGY_COLORS = {"orthogonal": SCHEME_COLORS["orthogonal"],
                              # keyed homomorphic-MAC benchmark arm (its own strategy labels)
                              "mac_uniform_hd": "#8338ec", "mac_coefficient_first": "#fb8500"}
 
-# CRC baseline arms folded into the segmented sweep so CRC overhead + recovery sit on
-# the SAME axes as the segmented scheme (the user's compare-CRC-to-segmented ask). Both
-# flow through run_recovery_trial unchanged -- like orthogonal they are non-segmented
-# (N=1) reference arms, not (N, strategy) grid points, so the plotter draws them as
-# flat lines keyed by scheme name (see _flat_reference_schemes / _plot_by_n_strategy).
-SEGMENTED_CRC_SCHEMES = ("crc_localized", "crc_whole")
-# Colour + legend label for every flat (N=1) reference arm the segmented plots draw.
-FLAT_ARM_COLOR = {"orthogonal": SEGMENTED_STRATEGY_COLORS["orthogonal"],
-                  "crc_localized": SCHEME_COLORS["crc_localized"],
-                  "crc_whole": SCHEME_COLORS["crc_whole"]}
-FLAT_ARM_LABEL = {"orthogonal": "orthogonal (N=1)",
-                  "crc_localized": "CRC (localized)", "crc_whole": "CRC (whole-packet)"}
-FLAT_ARM_MARKER = {"orthogonal": "o", "crc_localized": "^", "crc_whole": "D"}
+# Colour + legend label of the flat (N=1) reference arm the segmented plots draw.
+FLAT_ARM_COLOR = {"orthogonal": SEGMENTED_STRATEGY_COLORS["orthogonal"]}
+FLAT_ARM_LABEL = {"orthogonal": "orthogonal (N=1)"}
+FLAT_ARM_MARKER = {"orthogonal": "o"}
 
 
 def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
-                             mac_strategies=MAC_STRATEGIES, crc_schemes=SEGMENTED_CRC_SCHEMES):
-    """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline, the CRC
-    baseline arms, plus every (N, strategy) combination in the segmented sweep -- the
-    keyless orthogonal arm AND the keyed homomorphic-MAC benchmark arm (strategy label
-    prefixed 'mac_'). CRC arms are non-segmented references: N=1, strategy == scheme
-    name, so the (N, strategy) plot loop skips them and they draw as flat lines."""
+                             mac_strategies=MAC_STRATEGIES):
+    """(scheme_name, n, strategy_label) for the N=1 orthogonal baseline plus every
+    (N, strategy) combination in the segmented sweep -- the keyless orthogonal arm AND the
+    keyed homomorphic-MAC benchmark arm (strategy label prefixed 'mac_'). The baseline is
+    a non-segmented reference: N=1, strategy == scheme name, so the (N, strategy) plot
+    loop skips it and it draws as a flat line."""
     rows = [("orthogonal", 1, "orthogonal")]
-    rows += [(name, 1, name) for name in crc_schemes]
     for n in n_values:
         for strategy in strategies:
             rows.append((f"segmented_{strategy}_n{n}", n, strategy))
@@ -405,7 +328,7 @@ def _segmented_sweep_schemes(n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_S
 def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMENTED_DATA_FIELDS,
                           num_trials=SEGMENTED_NUM_TRIALS, bit_error_rates=SEGMENTED_BIT_ERROR_RATES,
                           n_values=SEGMENTED_N_VALUES, strategies=SEGMENTED_STRATEGIES,
-                          mac_strategies=MAC_STRATEGIES, crc_schemes=SEGMENTED_CRC_SCHEMES,
+                          mac_strategies=MAC_STRATEGIES,
                           max_packets_factor=SEGMENTED_MAX_PACKETS_FACTOR,
                           cell_time_budget_s=SEGMENTED_CELL_TIME_BUDGET_S) -> Path:
     """N x BER sweep for the segmented scheme (ADR-0012), against the N=1 orthogonal
@@ -422,7 +345,7 @@ def run_segmented_n_sweep(field_m=FIELD_M, gen_size=GEN_SIZE, data_fields=SEGMEN
     run_dir = get_run_log_dir("scheme_comparison_segmented_n_sweep", trials=num_trials, gen=gen_size, m=field_m)
     base_field = create_field(field_m)
     cfg = AdmitConfig(hamming_distance=2) # if this is less than 2, combined reovery wont work at all
-    sweep_schemes = _segmented_sweep_schemes(n_values, strategies, mac_strategies, crc_schemes)
+    sweep_schemes = _segmented_sweep_schemes(n_values, strategies, mac_strategies)
     # strategy labels to draw one line each (orthogonal baseline is drawn separately)
     plot_strategies = list(strategies) + [f"mac_{s}" for s in mac_strategies]
 
@@ -685,35 +608,6 @@ def _plot_by_scheme(summary_rows, scheme_names, metric, ylabel, output_path,
     print(f"Plot saved: {output_path}")
 
 
-def _plot_by_scheme_hd(summary_rows, scheme_names, hds, metric, ylabel, output_path,
-                       ylim=(-0.02, 1.02), hline=None) -> None:
-    """One line per (scheme, HD): colour = scheme, linestyle = Hamming distance."""
-    fig, ax = plt.subplots(figsize=(9, 6))
-    for name in scheme_names:
-        for hd in hds:
-            points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
-                            if row["scheme"] == name and row["hamming_distance"] == hd)
-            if not points:
-                continue
-            xs = [p[0] for p in points]
-            ys = [p[1] for p in points]
-            ax.plot(xs, ys, HD_LINESTYLE.get(hd, "-"), marker="o", color=SCHEME_COLORS.get(name),
-                    linewidth=2, markersize=5, label=f"{name} HD{hd}")
-    if hline is not None:
-        ax.axhline(hline, color="grey", linestyle="-.", alpha=0.6, label=f"ideal = {hline:g}")
-    ax.set_xscale("log")
-    ax.set_xlabel("Bit error rate", fontsize=12, fontweight="bold")
-    ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
-    ax.set_title(f"{ylabel} vs BER, by scheme x HD", fontsize=13, fontweight="bold")
-    if ylim is not None:
-        ax.set_ylim(*ylim)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(fontsize=8, ncol=len(scheme_names))
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"Plot saved: {output_path}")
-
-
 def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, output_path,
                         ylim=(-0.02, 1.02), hline=None, draw_flat_arms=True) -> None:
     """One line per (N, strategy), plus the N=1 orthogonal baseline: colour =
@@ -721,16 +615,15 @@ def _plot_by_n_strategy(summary_rows, n_values, strategies, metric, ylabel, outp
     NaN points (e.g. ic_refinement_failure_rate with zero pairs attempted) are
     dropped from that line rather than plotted as a gap.
 
-    draw_flat_arms=False suppresses the orthogonal/CRC reference lines -- used for the
+    draw_flat_arms=False suppresses the orthogonal reference line -- used for the
     detection/recovery-op plots, where those arms have no phase-split instrumentation
     and would otherwise draw a misleading flat line at 0 (not "zero cost", just
     un-bucketed)."""
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    # Flat (non-segmented, N=1) reference arms -- orthogonal + the CRC baselines -- each
-    # drawn as its own solid line keyed by scheme, so CRC recovery/overhead sits on the
-    # same axes as the segmented (N, strategy) lines below. Draw in registration order.
-    flat_schemes = [s for s in ("orthogonal",) + tuple(SEGMENTED_CRC_SCHEMES)
+    # Flat (non-segmented, N=1) orthogonal reference arm, drawn as its own solid line so it
+    # sits on the same axes as the segmented (N, strategy) lines below.
+    flat_schemes = [s for s in ("orthogonal",)
                     if draw_flat_arms and any(row["scheme"] == s and row["n"] == 1 for row in summary_rows)]
     for scheme in flat_schemes:
         points = sorted((row["bit_error_rate"], row[metric]) for row in summary_rows
@@ -802,29 +695,23 @@ def main(argv=None) -> None:
 
         python -m simulation.scheme_comparison_sim segmented   # N x BER segmented sweep
         python -m simulation.scheme_comparison_sim smoke       # quick smoke table
-        python -m simulation.scheme_comparison_sim hd          # HD-parity recovery sweep
         python -m simulation.scheme_comparison_sim recovery    # random-error recovery sweep
         python -m simulation.scheme_comparison_sim attack      # orthogonal vs HMAC attack
 
-    (no arg -> the default smoke + hd_sweep, preserving prior behaviour). See
+    (no arg -> the default smoke; the CRC HD-parity sweep was retired, ADR-0014). See
     docs/running_sims.md for the required LOG_FOLDER/PYTHONPATH env + venv."""
     import argparse
     parser = argparse.ArgumentParser(description="Scheme comparison driver (ADR-0009/0011/0012).")
     parser.add_argument("sweep", nargs="?", default=None,
-                        choices=["smoke", "hd", "recovery", "attack", "segmented"],
-                        help="which experiment to run (default: smoke + hd)")
+                        choices=["smoke", "recovery", "attack", "segmented"],
+                        help="which experiment to run (default: smoke)")
     parser.add_argument("--cell-time-budget-s", type=float, default=SEGMENTED_CELL_TIME_BUDGET_S,
                         help="segmented sweep only: per-cell wall-time cap in seconds "
                              "(0 or negative -> one trial/cell; use a large value to effectively disable)")
     args = parser.parse_args(argv)
 
-    if args.sweep is None:
+    if args.sweep is None or args.sweep == "smoke":
         smoke_test()
-        run_hd_sweep()
-    elif args.sweep == "smoke":
-        smoke_test()
-    elif args.sweep == "hd":
-        run_hd_sweep()
     elif args.sweep == "recovery":
         run_recovery_sweep()
     elif args.sweep == "attack":
