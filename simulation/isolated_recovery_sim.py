@@ -26,6 +26,12 @@ CRC-32 arms (ADR-0014, `arms=`): crc_acr / crc_blind -- one CRC-32 per segment i
 salt + tags, same pairing/combined-search repair, ACR-localized or blind columns, ARC-only
 configs only. Default arms stay keyless + keyed.
 
+Field backend (ticket 21, `--field-backend`, binary_ext_fields/field_backends.py): table (default,
+unchanged) | galois | pyerasure | numba swaps ONLY the GF inner product -- the keyless oracle's
+work -- for library code; op counts and outcomes stay identical, only wall-clock moves. The one
+field (pools.field) serves every arm, and ACR's row ops stay on the tables in every backend, so
+ACR localization is shared by keyless and crc_acr and costs the same in both.
+
 Three configs, each in both arms:
   coefficient_first  -- whole-packet BER, coeff repaired (full recovery incl. coeffs).
   ARC-only (a)       -- data-only BER, coeffs clean, ARC always applies (ticket 12).
@@ -109,6 +115,7 @@ import time
 from dataclasses import dataclass, field as dc_field
 
 from binary_ext_fields.custom_field import create_field, CountingField
+from binary_ext_fields.field_backends import FIELD_BACKENDS, make_counting_field
 from binary_ext_fields.generate_symbols import (
     generate_identity_coefficients,
     recode_rlnc_without_coeffs,
@@ -699,8 +706,8 @@ def print_smoke(pools: PairedPools, results: list[ConfigResult], W: int, seed: i
 
 def run_smoke(seed: int = 7, gen_size: int = 6, T: int = 8, W: int = 2, ber: float = 0.006,
               data_fields: int = 18, num_data_segments: int = 3,
-              repair_span: str = "payload", arms=W_ARMS) -> list[ConfigResult]:
-    field = CountingField(create_field(8))
+              repair_span: str = "payload", arms=W_ARMS, field_backend: str = "table") -> list[ConfigResult]:
+    field = make_counting_field(field_backend, 8)  # "table" == CountingField(create_field(8)); output identical
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
     # CRC arms run the ARC-only configs only (ADR-0014)
@@ -783,14 +790,16 @@ def result_rows(pools: PairedPools, res: ConfigResult, *, W: int | None, ber: fl
 
 def sweep_seed(seed: int, *, gen_size: int, T: int, data_fields: int, num_data_segments: int,
                field_bits: int, Ws, bers, spans, configs, hds, budgets,
-               keyed_early_exit: bool = True, arms=W_ARMS) -> list[dict]:
+               keyed_early_exit: bool = True, arms=W_ARMS, field_backend: str = "table") -> list[dict]:
     """Every (BER, config, span, HD, budget, W) cell for ONE seed -- the unit of parallel
     work. One pool per seed; the injection is drawn from (seed, BER) only, so all
     W/span/HD/budget variants of a cell -- and every arm -- see the same corruption (paired).
-    CRC arms (ADR-0014) have no W: they run once per (BER, config, span, HD, budget) cell."""
+    CRC arms (ADR-0014) have no W: they run once per (BER, config, span, HD, budget) cell.
+    field_backend (ticket 21): library backends are built + warmed up (JIT) here, in the worker,
+    before anything is timed."""
     from icecream import ic
     ic.disable()  # playground/arc_pl.py debug prints would flood every worker's stderr
-    field = CountingField(create_field(field_bits))
+    field = make_counting_field(field_backend, field_bits)
     pools = build_paired_pools(field, gen_size, data_fields, num_data_segments, T, seed)
     assert_paired_info_columns(pools)
     w_arms = tuple(a for a in W_ARMS if a in arms)
@@ -830,9 +839,12 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
               num_data_segments: int = 3, field_bits: int = 8, Ws=SWEEP_W, bers=SWEEP_BERS,
               spans=SWEEP_SPANS, configs=CONFIGS, max_combined_hd: int = 2,
               candidates_budget: int | None = 20000, workers: int = 1, out_dir=None,
-              hds=None, budgets=None, keyed_early_exit: bool = True, arms=W_ARMS):
+              hds=None, budgets=None, keyed_early_exit: bool = True, arms=W_ARMS,
+              field_backend: str = "table"):
     """W x BER x config x arm x repair_span (x HD x budget) sweep -> raw_trials.csv.
     arms (ADR-0014): subset of ARMS, default keyless + keyed; CRC arms need ARC-only configs.
+    field_backend (ticket 21): GF inner-product backend, FIELD_BACKENDS; not a CSV column (the
+    schema stays frozen) -- name the run dir after it.
     hds/budgets (ticket 19) default to the single (max_combined_hd, candidates_budget);
     a budget of None = unlimited. Seeds run in parallel (`workers` processes); rows are
     appended as each seed lands, then rewritten seed-sorted at the end. Returns run dir."""
@@ -851,7 +863,7 @@ def run_sweep(seeds=range(SWEEP_SEEDS), gen_size: int = 6, T: int | None = None,
                   bers=tuple(bers), spans=tuple(spans), configs=tuple(configs),
                   hds=tuple(hds or (max_combined_hd,)),
                   budgets=tuple(budgets or (candidates_budget,)), keyed_early_exit=keyed_early_exit,
-                  arms=tuple(arms))
+                  arms=tuple(arms), field_backend=field_backend)
     seeds = list(seeds)
     by_seed: dict[int, list[dict]] = {}
 
@@ -912,13 +924,17 @@ def main(argv=None) -> None:
                         help="which columns the repair may touch: payload only, or +salt/tag redundancy")
     parser.add_argument("--arms", default=",".join(W_ARMS),
                         help=f"comma list of arms from {','.join(ARMS)} (CRC arms: ADR-0014, ARC-only configs)")
+    parser.add_argument("--field-backend", choices=FIELD_BACKENDS, default="table",
+                        help="GF inner-product backend (ticket 21): table = pure-Python loop (default, unchanged); "
+                             "galois / pyerasure = library; numba = own compiled kernel. Same outcomes and op "
+                             "counts, only wall-clock differs")
     args = parser.parse_args(argv)
     arms = tuple(a.strip() for a in args.arms.split(","))
 
     if args.smoke:
         run_smoke(seed=args.seed, gen_size=args.gen_size, T=args.targets, W=args.W, ber=args.ber,
                   data_fields=args.data_fields, num_data_segments=args.num_data_segments,
-                  repair_span=args.repair_span, arms=arms)
+                  repair_span=args.repair_span, arms=arms, field_backend=args.field_backend)
     elif args.sweep:
         # sweep uses its own frozen grid (SWEEP_*), T = gen_size per ADR-0013
         d = run_sweep(seeds=range(args.seed_start, args.seed_start + args.seeds), gen_size=args.gen_size,
@@ -930,7 +946,8 @@ def main(argv=None) -> None:
                       hds=tuple(int(h) for h in args.hds.split(",")),
                       budgets=tuple(None if b.strip().lower() == "none" else int(b) for b in args.budgets.split(",")),
                       keyed_early_exit=not args.no_keyed_early_exit,
-                      spans=tuple(x.strip() for x in args.spans.split(",")), arms=arms)
+                      spans=tuple(x.strip() for x in args.spans.split(",")), arms=arms,
+                      field_backend=args.field_backend)
         print(f"sweep done -> {d}")
     else:
         parser.print_help()

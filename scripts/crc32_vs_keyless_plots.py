@@ -26,6 +26,9 @@ CRC acr #4a3aa7, CRC blind #c98500. Shape/linestyle carry identity too (CVD/prin
 
 CLI (PowerShell):
   $env:PYTHONPATH="."; & "E:/projects/studienarbeit/.venv/Scripts/python.exe" scripts/crc32_vs_keyless_plots.py --root logs/crc32_vs_keyless
+Ticket 21 (field backends): --runs GLOB picks the run dirs under recovery/ (default all), --keyless-backend
+NAME names the keyless inner-product backend in the repair-time legend + titles (default: Python table loop),
+e.g. --runs "*_table_*" / --runs "df*_hd2_seeds50" --keyless-backend galois.
 """
 import argparse
 import glob
@@ -87,9 +90,9 @@ def _save(fig, out_dir, name):
 
 # ── recovery ────────────────────────────────────────────────────────────────
 
-def load_recovery(root: Path) -> pd.DataFrame:
-    files = sorted(glob.glob(str(root / "recovery" / "*" / "raw_trials.csv")))
-    assert files, f"no recovery runs under {root / 'recovery'}"
+def load_recovery(root: Path, runs: str = "*") -> pd.DataFrame:
+    files = sorted(glob.glob(str(root / "recovery" / runs / "raw_trials.csv")))
+    assert files, f"no recovery runs matching {runs!r} under {root / 'recovery'}"
     df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
     df["arm_w"] = np.where(df.arm.str.startswith("crc"), df.arm, df.arm + "_W" + df.W.astype(str))
     df["seg_bytes"] = df.data_fields // df.num_data_segments
@@ -146,7 +149,14 @@ def _per_seed_ms(sd, key):
     return sd[sd.arm_w == key].pivot_table(index="seed", columns="bit_error_rate", values="recovery_time_s") * 1e3
 
 
-def plot_repair_time(df: pd.DataFrame, out: Path):
+def _arm_label(arm, keyless_backend=None):
+    """Legend label; ticket 21: the keyless line names its inner-product backend when given."""
+    if arm == "keyless" and keyless_backend:
+        return f"keyless (W=4, {keyless_backend})"
+    return ARM[arm]["label"]
+
+
+def plot_repair_time(df: pd.DataFrame, out: Path, keyless_backend: str | None = None):
     """Linear y (user preference), keyless vs CRC ACR-localized only -- the like-for-like pair
     (same ACR columns, same search, only the oracle differs). Blind CRC is up to ~23x slower and
     would flatten both bars, so it gets its own log-y figure (plot_repair_time_all)."""
@@ -166,7 +176,7 @@ def plot_repair_time(df: pd.DataFrame, out: Path):
             for i, a in enumerate(arms):
                 m = np.array([t[a][b].mean() for b in bers])
                 c = np.array([Z * t[a][b].std(ddof=1) / math.sqrt(t[a][b].count()) for b in bers])
-                ax.bar(x + (i - 0.5) * width, m, width * 0.92, color=ARM[a]["color"], label=ARM[a]["label"])
+                ax.bar(x + (i - 0.5) * width, m, width * 0.92, color=ARM[a]["color"], label=_arm_label(a, keyless_backend))
                 ax.errorbar(x + (i - 0.5) * width, m, yerr=c, fmt="none", ecolor=INK_MUTED, elinewidth=0.9, capsize=2)
             r = np.array([t["crc_acr"][b].mean() / t["keyless"][b].mean() for b in bers])
             ax2.plot(x, r, ARM["crc_acr"]["ls"], marker=ARM["crc_acr"]["marker"], color=ARM["crc_acr"]["color"],
@@ -186,12 +196,12 @@ def plot_repair_time(df: pd.DataFrame, out: Path):
                 ax2.set_ylabel("CRC-ACR / keyless\n(ratio of means)", color=INK, fontsize=9)
         axes[0][-1].legend(fontsize=7.5, frameon=False, labelcolor=INK, loc="upper left")
         fig.suptitle(f"Repair wall-clock, keyless vs CRC-32 ACR-localized (max HD {hd}; mean, 95 % CI over seeds; "
-                     f"CRC = zlib (C), keyless = Python)",
+                     f"CRC = zlib (C), keyless = {keyless_backend or 'Python'})",
                      color=INK, fontsize=10.5)
         _save(fig, out, f"repair_time_hd{hd}")
 
 
-def plot_repair_time_all(df: pd.DataFrame, out: Path):
+def plot_repair_time_all(df: pd.DataFrame, out: Path, keyless_backend: str | None = None):
     """All three arms incl. blind CRC on a LOG y (the spread is up to ~23x)."""
     arms = {"keyless": "keyless_W4", "crc_acr": "crc_acr", "crc_blind": "crc_blind"}
     for hd, dh in df.groupby("max_combined_hd"):
@@ -208,7 +218,7 @@ def plot_repair_time_all(df: pd.DataFrame, out: Path):
                 ax.fill_between(bers, np.maximum(m - c, m * 0.05), m + c, color=ARM[a]["color"], alpha=0.12, linewidth=0)
                 ax.plot(bers, m, ARM[a]["ls"], marker=ARM[a]["marker"], color=ARM[a]["color"], linewidth=2,
                         markersize=7, markerfacecolor="white" if a == "crc_blind" else ARM[a]["color"],
-                        markeredgewidth=1.4, label=ARM[a]["label"])
+                        markeredgewidth=1.4, label=_arm_label(a, keyless_backend))
             ax.set_xscale("log")
             ax.set_yscale("log")
             ax.set_title(f"payload {d} B, {n} data segments of {d // n} B", color=INK, fontsize=10)
@@ -217,7 +227,7 @@ def plot_repair_time_all(df: pd.DataFrame, out: Path):
         axes[0][0].set_ylabel("ms per recovery call (4 targets, log)", color=INK, fontsize=9)
         axes[0][0].legend(fontsize=7.5, frameon=False, labelcolor=INK, loc="upper left")
         fig.suptitle(f"Repair wall-clock incl. blind CRC-32 (max HD {hd}; mean, 95 % CI over seeds; "
-                     f"CRC = zlib (C), keyless = Python)", color=INK,
+                     f"CRC = zlib (C), keyless = {keyless_backend or 'Python'})", color=INK,
                      fontsize=10.5)
         _save(fig, out, f"repair_time_all_hd{hd}")
 
@@ -396,17 +406,21 @@ def main(argv=None):
     ap.add_argument("--root", default=str(_ROOT / "logs" / "crc32_vs_keyless"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--skip-detection", action="store_true")
+    ap.add_argument("--runs", default="*", help="glob of run dirs under <root>/recovery (default: all)")
+    ap.add_argument("--keyless-backend", default=None,
+                    help="name of the keyless inner-product backend for the repair-time legend/titles "
+                         "(e.g. galois); default = Python table loop, labels unchanged")
     a = ap.parse_args(argv)
     root = Path(a.root)
     out = Path(a.out) if a.out else root / "plots"
-    df = load_recovery(root)
+    df = load_recovery(root, a.runs)
     s = recovery_summary(df)
     out.mkdir(parents=True, exist_ok=True)
     s.to_csv(out / "recovery_summary.csv", index=False)
     print(f"  silent decodes, all recovery cells: {int(s.silent.sum())}")
     plot_recovery_rate(s, out)
-    plot_repair_time(df, out)
-    plot_repair_time_all(df, out)
+    plot_repair_time(df, out, a.keyless_backend)
+    plot_repair_time_all(df, out, a.keyless_backend)
     plot_recovery_vs_hd(s, out)
     silent_by_hd(s, out)
     if not a.skip_detection:
