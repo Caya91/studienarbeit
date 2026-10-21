@@ -483,15 +483,18 @@ def _make_arc_localizer_mac(field: TableField, packets: list[bytearray], coeff_s
     determined (MAC verification). Falls back to no-localization (None) when fewer
     than gen_size packets are trusted in BOTH segments, or the basis is rank-
     deficient (localize_errors raises)."""
-    assert repair_span in ("payload", "segment"), f"repair_span must be payload|segment, got {repair_span!r}"
+    assert repair_span in ("payload", "segment", "acr_segment"), f"bad repair_span {repair_span!r}"
     extra = _redundancy_columns(data_segment) if repair_span == "segment" else []  # ADR-0013 ticket 16 (tags, no salt)
+    # EXPERIMENT (exp/tag-vs-payload-recovery): "acr_segment" = ACR also re-derives the tag
+    # columns (homomorphic MAC = linear under recoding) -> exact localization there too.
+    width = data_segment.total_length if repair_span == "acr_segment" else data_segment.payload_length
     basis_indices = sorted(set(coeff_trusted_idx) & set(data_trusted_idx))[:gen_size]
     if len(basis_indices) < gen_size:
         return lambda i: None
 
     def synthetic(i):
         coeffs = segment_slice(packets[i], coeff_segment)[:gen_size]
-        data = segment_slice(packets[i], data_segment)[:data_segment.payload_length]
+        data = segment_slice(packets[i], data_segment)[:width]
         return bytearray(coeffs) + bytearray(data)
 
     trusted_basis = [synthetic(i) for i in basis_indices]
