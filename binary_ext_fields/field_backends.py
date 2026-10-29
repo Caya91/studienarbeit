@@ -18,6 +18,11 @@ recovery_ops/mul/add do not change; only wall-clock does.
              (FullTable lists, no C++), so it is slower than `table` -- comparison only.
   numba      compiled reference, NOT a library call: a 4-line numba kernel over the field's own
              mul table (the technique galois uses internally, without its per-call dispatch).
+  numba_check  (2026-10-29) `numba` + the WHOLE keyless acceptance check as one compiled call:
+             self-check + the W helper checks, early exit at the first nonzero product, on the raw
+             buffers (playground/new_recovery.is_orthogonal_to_trusted dispatches to it). One native
+             call per repair candidate, like zlib.crc32 for the CRC arm. The kernel returns how many
+             inner products it ran, so the op charge equals the Python loop's exactly.
 
 Unchanged in every backend: mul/add/vector ops (ACR's Gaussian elimination, tagging), so ACR
 localization costs the same in every arm and backend. `pools.field` is shared by all arms, so
@@ -32,7 +37,7 @@ from functools import lru_cache
 
 from binary_ext_fields.custom_field import CountingField, TableField, create_field
 
-FIELD_BACKENDS = ("table", "galois", "pyerasure", "numba")
+FIELD_BACKENDS = ("table", "galois", "pyerasure", "numba", "numba_check")
 
 
 def _u8(v):
@@ -49,7 +54,11 @@ class _BackendCountingField(CountingField):
     backend = "abstract"
 
     def inner_product(self, x, y) -> int:
-        n = len(x)
+        self._charge(len(x))
+        return self._backend_inner_product(x, y)
+
+    def _charge(self, n: int) -> None:
+        """n muls + n adds, phase-attributed: CountingField.inner_product's accounting."""
         if n:
             self.mul_count += n
             self.add_count += n
@@ -57,7 +66,6 @@ class _BackendCountingField(CountingField):
                 p = self._phase_stack[-1]
                 self.phase_mul[p] = self.phase_mul.get(p, 0) + n
                 self.phase_add[p] = self.phase_add.get(p, 0) + n
-        return self._backend_inner_product(x, y)
 
     def _backend_inner_product(self, x, y) -> int:
         raise NotImplementedError
@@ -146,7 +154,88 @@ class NumbaCountingField(_BackendCountingField):
         return int(self._kernel(_u8(x), _u8(y), self._mul_np))
 
 
-_BACKEND_CLASS = {"galois": GaloisCountingField, "pyerasure": PyerasureCountingField, "numba": NumbaCountingField}
+_CHECK_KERNELS: dict = {}
+
+
+def _numba_check_kernel(field: TableField):
+    """One compiled check per field (bits, modulus), cached per process: the mul table is baked in
+    as a constant (numba freezes the closure array), saving ~0.2 us of argument dispatch per call."""
+    key = (field.bit_lenght, field.prime)
+    if key not in _CHECK_KERNELS:
+        _CHECK_KERNELS[key] = _build_numba_check_kernel(field._mul, field.bit_lenght)
+    return _CHECK_KERNELS[key]
+
+
+def _build_numba_check_kernel(mul, field_bits: int):
+    import numba
+    import numpy as np
+    mul_table = np.array(mul, dtype=np.uint8 if field_bits <= 8 else np.uint16)
+
+    @numba.njit(cache=False, nogil=True)
+    def orthogonal_check(c, witnesses, n_witnesses):
+        """<c,c> == 0 and <c,w_j> == 0 for the n_witnesses rows of `witnesses` (concatenated,
+        len(c) bytes each), stopping at the first nonzero product. Returns +k on pass, -k on
+        fail, k = inner products computed (self-check included)."""
+        mul = mul_table
+        n = len(c)
+        acc = 0
+        for i in range(n):
+            acc ^= mul[c[i], c[i]]
+        if acc != 0:
+            return -1
+        for w in range(n_witnesses):
+            base = w * n
+            acc = 0
+            for i in range(n):
+                acc ^= mul[c[i], witnesses[base + i]]
+            if acc != 0:
+                return -(w + 2)
+        return n_witnesses + 1
+
+    return orthogonal_check
+
+
+class NumbaCheckCountingField(NumbaCountingField):
+    """`numba` inner products + the fused keyless acceptance check (orthogonal_to_trusted)."""
+    backend = "numba_check"
+
+    def __init__(self, base: TableField):
+        super().__init__(base)
+        self._check = _numba_check_kernel(base)
+
+    def orthogonal_to_trusted(self, candidate, witnesses) -> bool:
+        """is_orthogonal_to_trusted(self, candidate, witnesses, W=None) in one compiled call:
+        same verdict, same op charge (len(candidate) muls + adds per inner product computed)."""
+        n = len(candidate)
+        flat = b"".join(witnesses)
+        assert len(flat) == n * len(witnesses), "witness lengths must equal the candidate's"
+        if type(candidate) not in (bytearray, bytes):
+            candidate = _u8(candidate)
+        r = self._check(candidate, flat, len(witnesses))
+        self._charge(n * abs(r))
+        return r > 0
+
+    def warm_up(self) -> None:
+        """Compile both buffer types and check verdict + op charge against the Python oracle on a
+        plain CountingField (self-check pass/fail, each witness position failing, all passing)."""
+        super().warm_up()
+        from playground.new_recovery import is_orthogonal_to_trusted
+        ref = CountingField(self)   # same tables, no fused check -> the Python loop
+        rng = random.Random(1)
+        for n in (1, 55):
+            for _ in range(300):
+                # small alphabet -> self-check passes often enough to reach the witness loop
+                c = bytearray(rng.choice((0, 1, 2, 3)) for _ in range(n))
+                ws = [bytearray(rng.choice((0, 1, 2, 3)) for _ in range(n)) for _ in range(rng.randrange(5))]
+                for cand in (c, bytes(c)):
+                    self.reset(); ref.reset()
+                    got, want = self.orthogonal_to_trusted(cand, ws), is_orthogonal_to_trusted(ref, cand, ws)
+                    assert got == want and (self.mul_count, self.add_count) == (ref.mul_count, ref.add_count),                         f"numba_check: {got}/{self.mul_count} ops, python {want}/{ref.mul_count} ops"
+        self.reset()
+
+
+_BACKEND_CLASS = {"galois": GaloisCountingField, "pyerasure": PyerasureCountingField, "numba": NumbaCountingField,
+                  "numba_check": NumbaCheckCountingField}
 
 
 def make_counting_field(backend: str = "table", field_bits: int = 8) -> CountingField:

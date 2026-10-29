@@ -126,10 +126,16 @@ def is_orthogonal_to_trusted(field: TableField, candidate: bytearray, trusted_pa
     Orthogonality to a trusted set is necessary but not sufficient: with fewer
     than gen_size independent trusted packets (or a capped W) a wrong repair can
     still pass, which is exactly the silent-failure regime the simulation measures.
+
+    A field with a fused `orthogonal_to_trusted` (field_backends numba_check) runs the
+    same check as one compiled call: identical verdict and op charge.
     '''
+    witnesses = trusted_packets if W is None else trusted_packets[:W]
+    fused = getattr(field, "orthogonal_to_trusted", None)
+    if fused is not None:
+        return fused(candidate, witnesses)
     if not check_orth_packet(field, candidate):
         return False
-    witnesses = trusted_packets if W is None else trusted_packets[:W]
     for t in witnesses:
         if inner_product_bytes(field, candidate, t) != 0:
             return False

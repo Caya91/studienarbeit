@@ -57,6 +57,7 @@ from pathlib import Path
 import numpy as np
 
 from binary_ext_fields.custom_field import CountingField, create_field
+from binary_ext_fields.field_backends import FIELD_BACKENDS, make_counting_field
 from binary_ext_fields.generate_symbols import check_orth_packet
 from binary_ext_fields.operations import inner_product_bytes
 from simulation.isolated_recovery_sim import build_paired_pools, inject_paired
@@ -64,6 +65,7 @@ from simulation.segmented_crc import (
     CRC_WIDTH, Crc32Instrument, crc_verify_segment, segment_slice as crc_slice, zero_crc,
 )
 from binary_ext_fields.segmented_recovery import segment_slice as kl_slice
+from playground.new_recovery import is_orthogonal_to_trusted
 
 GEN_SIZE = 4            # ADR-0014: 4 keyless tag bytes per segment == one CRC-32
 FIELD_BITS = 8
@@ -259,7 +261,10 @@ def mc_ber(pools, field, ber: float, rounds: int, seed: int) -> tuple[int, dict[
 
 def verify_time(pools, field, reps: int) -> dict[str, tuple[int, float]]:
     """Wall-clock of ONE accept/reject check of a clean data segment per level (worst case:
-    every check runs to the end). Returns level -> (payload_bytes, seconds per verify)."""
+    every check runs to the end). Returns level -> (payload_bytes, seconds per verify).
+    A `field` with a fused check (field backend numba_check, 2026-10-29) is timed through the
+    harness oracle is_orthogonal_to_trusted -- one compiled call per verify; any other field runs
+    the original per-product loop (a clean slice passes everything, so the work is the same)."""
     g = pools.gen_size
     kl = next(s for s in pools.kl_segments if s.kind == "data")
     cs = next(s for s in pools.crc_segments if s.kind == "data")
@@ -267,12 +272,17 @@ def verify_time(pools, field, reps: int) -> dict[str, tuple[int, float]]:
     ks_, cr = kl_slice(pools.kl_clean[t], kl), crc_slice(pools.crc_clean[t], cs)
     helpers = [kl_slice(pools.kl_clean[h], kl) for h in pools.helper_idx]
     out = {}
+    fused = hasattr(field, "orthogonal_to_trusted")
     for w in range(g + 1):
         t0 = time.perf_counter()
-        for _ in range(reps):
-            check_orth_packet(field, ks_)
-            for j in range(w):
-                inner_product_bytes(field, ks_, helpers[j])
+        if fused:
+            for _ in range(reps):
+                is_orthogonal_to_trusted(field, ks_, helpers, W=w)
+        else:
+            for _ in range(reps):
+                check_orth_packet(field, ks_)
+                for j in range(w):
+                    inner_product_bytes(field, ks_, helpers[j])
         out[f"keyless_W{w}"] = (kl.payload_length, (time.perf_counter() - t0) / reps)
     inst = Crc32Instrument()
     t0 = time.perf_counter()
@@ -296,7 +306,7 @@ def _write(path: Path, rows: list[dict]) -> None:
 def run(dfs=(100, 300, 1000), num_data_segments: int = 4, seeds=range(5), gen_size: int = GEN_SIZE,
         T: int | None = None, k_max: int = K_MAX, bers=DEFAULT_BERS, mc_k_trials: int = 2000,
         mc_ber_rounds: int = 20, verify_reps: int = 2000, out_dir=None, exact_segments: int | None = None,
-        seg_bytes: int | None = None) -> Path:
+        seg_bytes: int | None = None, field_backend: str = "table") -> Path:
     """Every view for each df x seed. exact_segments caps how many data segments per seed get
     the exact count (None = all; the O(n^2) k>=3 count dominates at large df). seg_bytes = data
     bytes per segment (num_data_segments = df // seg_bytes per df, the 50 B layout of the
@@ -349,7 +359,8 @@ def run(dfs=(100, 300, 1000), num_data_segments: int = 4, seeds=range(5), gen_si
                     mcb_rows.append(dict(df=df, num_data_segments=nds, seed=seed, level=level,
                                          ber=ber, corrupted_segments=corrupted, missed=m))
             print(f"  df={df} seed={seed} done in {time.perf_counter() - t_start:.1f}s", flush=True)
-        for level, (L, s) in verify_time(pools, field, verify_reps).items():
+        vfield = field if field_backend == "table" else make_counting_field(field_backend, FIELD_BITS)
+        for level, (L, s) in verify_time(pools, vfield, verify_reps).items():
             time_rows.append(dict(df=df, num_data_segments=nds, level=level, payload_bytes=L,
                                   reps=verify_reps, seconds_per_verify=s))
         # land each df as it completes (replot-able part-way)
@@ -400,16 +411,18 @@ def main(argv=None) -> None:
     ap.add_argument("--mc-ber-rounds", type=int, default=20, help="MC BER injections per (seed, BER)")
     ap.add_argument("--exact-segments", type=int, default=None, help="data segments per seed for exact counts")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--field-backend", choices=FIELD_BACKENDS, default="table",
+                    help="keyless field for the verify-time measurement ONLY (counts are backend-free)")
     a = ap.parse_args(argv)
     if a.smoke:
         d = run(dfs=(40,), num_data_segments=a.num_data_segments, seeds=range(2), bers=SMOKE_BERS,
-                mc_k_trials=500, mc_ber_rounds=5, verify_reps=500, out_dir=a.out)
+                mc_k_trials=500, mc_ber_rounds=5, verify_reps=500, out_dir=a.out, field_backend=a.field_backend)
     else:
         d = run(dfs=tuple(int(x) for x in a.dfs.split(",")), num_data_segments=a.num_data_segments,
                 seeds=range(a.seed_start, a.seed_start + a.seeds), k_max=a.k_max,
                 bers=tuple(float(b) for b in a.bers.split(",")), mc_k_trials=a.mc_k_trials,
                 mc_ber_rounds=a.mc_ber_rounds, exact_segments=a.exact_segments, out_dir=a.out,
-                seg_bytes=a.seg_bytes)
+                seg_bytes=a.seg_bytes, field_backend=a.field_backend)
     print_summary(d)
     print(f"\ndone -> {d}")
 

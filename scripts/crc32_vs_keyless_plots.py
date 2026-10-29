@@ -384,7 +384,7 @@ def plot_detection_vs_ber(d, out: Path):
     _save(fig, out, "detection_miss_vs_ber")
 
 
-def plot_verify_time(d, out: Path):
+def plot_verify_time(d, out: Path, keyless_backend: str | None = None):
     vt = d["verify_time"].groupby("level").seconds_per_verify.mean() * 1e6
     seg = int(d["verify_time"].payload_bytes.iloc[0])
     levels = [lv for lv in LEVEL_STYLE if lv in vt.index]
@@ -395,7 +395,7 @@ def plot_verify_time(d, out: Path):
         ax.text(x_, vt[lv], f"{vt[lv]:.1f}", ha="center", va="bottom", fontsize=7.5, color=INK)
     ax.set_xticks(x, [LEVEL_STYLE[lv]["label"].replace("keyless ", "keyless\n") for lv in levels], fontsize=7)
     ax.set_ylabel("µs per check", color=INK, fontsize=9)
-    ax.set_title(f"One accept/reject check of a {seg} B data segment (CRC-32 = zlib, C; keyless = Python)", color=INK,
+    ax.set_title(f"One accept/reject check of a {seg} B data segment (CRC-32 = zlib, C; keyless = {keyless_backend or 'Python'})", color=INK,
                  fontsize=9.5)
     _style(ax)
     _save(fig, out, "detection_verify_time")
@@ -430,7 +430,7 @@ def main(argv=None):
         seg = int(d["exact_counts"].payload_bytes.mode().iloc[0])
         plot_detection_vs_k(ds, seg, out)
         plot_detection_vs_ber(d, out)
-        plot_verify_time(d, out)
+        plot_verify_time(d, out, a.keyless_backend)
 
 
 if __name__ == "__main__":
